@@ -18,7 +18,7 @@ def opencode_storage_path(path: str | None = None) -> str:
 
 class PathsConfig(BaseModel):
     """Configuration for file paths."""
-    messages_dir: str = Field(default=opencode_storage_path("messages"))
+    messages_dir: str = Field(default=opencode_storage_path("message"))
     opencode_storage_dir: str = Field(default=opencode_storage_path())
     export_dir: str = Field(default="./exports")
 
@@ -90,10 +90,10 @@ class ConfigManager:
     def _find_config_file(self) -> str:
         """Find configuration file in standard locations."""
         search_paths = [
+            os.path.join(os.path.dirname(__file__), "config.toml"),
+            os.path.expanduser("~/.config/ocmonitor/config.toml"),
             "config.toml",
             "ocmonitor.toml",
-            os.path.expanduser("~/.config/ocmonitor/config.toml"),
-            os.path.join(os.path.dirname(__file__), "..", "config.toml"),
         ]
 
         for path in search_paths:
@@ -140,7 +140,7 @@ class ConfigManager:
 
         if not os.path.exists(models_file):
             # Try in same directory as this module
-            models_file = os.path.join(os.path.dirname(__file__), "..", "models.json")
+            models_file = os.path.join(os.path.dirname(__file__), "models.json")
 
         if not os.path.exists(models_file):
             return {}
