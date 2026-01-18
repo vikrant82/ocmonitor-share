@@ -137,4 +137,7 @@ exports/
 
 # OS
 .DS_Store
-Thumbs.db.worktrees/
+Thumbs.db
+
+# Git worktrees
+.worktrees/
