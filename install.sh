@@ -26,53 +26,73 @@ else
     exit 1
 fi
 
+# Create virtual environment
+VENV_DIR=".venv"
+if [ ! -d "$VENV_DIR" ]; then
+    echo "📦 Creating virtual environment in $VENV_DIR..."
+    python3 -m venv "$VENV_DIR"
+else
+    echo "✅ Virtual environment already exists"
+fi
+
+# Activate virtual environment
+source "$VENV_DIR/bin/activate"
+
 # Install dependencies
 echo "📥 Installing dependencies..."
+python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
 
 # Install package in development mode
 echo "🔧 Installing ocmonitor in development mode..."
 python3 -m pip install -e .
 
-# Get the scripts directory and add to PATH instructions
-SCRIPTS_DIR=$(python3 -m site --user-base)/bin
-echo "📁 Python scripts will be installed to: $SCRIPTS_DIR"
+# Create a bin stub/wrapper script
+BIN_DIR="$PWD/bin"
+mkdir -p "$BIN_DIR"
+WRAPPER_SCRIPT="$BIN_DIR/ocmonitor"
+
+echo "#!/bin/bash" > "$WRAPPER_SCRIPT"
+echo "source \"$PWD/$VENV_DIR/bin/activate\"" >> "$WRAPPER_SCRIPT"
+echo "exec python3 -m ocmonitor.cli \"\$@\"" >> "$WRAPPER_SCRIPT"
+chmod +x "$WRAPPER_SCRIPT"
+
+echo "📁 Wrapper script created at: $WRAPPER_SCRIPT"
 
 # Check if scripts directory is in PATH
-if [[ ":$PATH:" != *":$SCRIPTS_DIR:"* ]]; then
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo ""
-    echo "⚠️  Warning: $SCRIPTS_DIR is not in your PATH"
+    echo "⚠️  Warning: $BIN_DIR is not in your PATH"
     echo ""
     echo "📝 To fix this, add the following line to your shell configuration file:"
     echo ""
     echo "   For bash (~/.bashrc):"
-    echo "   echo 'export PATH=\"$SCRIPTS_DIR:\$PATH\"' >> ~/.bashrc && source ~/.bashrc"
+    echo "   echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc && source ~/.bashrc"
     echo ""
     echo "   For zsh (~/.zshrc):"
-    echo "   echo 'export PATH=\"$SCRIPTS_DIR:\$PATH\"' >> ~/.zshrc && source ~/.zshrc"
+    echo "   echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc && source ~/.zshrc"
     echo ""
     echo "   Then restart your terminal or run: source ~/.bashrc (or ~/.zshrc)"
     echo ""
 else
-    echo "✅ $SCRIPTS_DIR is already in your PATH"
+    echo "✅ $BIN_DIR is already in your PATH"
 fi
 
 # Test installation
 echo "🧪 Testing installation..."
-if command -v ocmonitor &> /dev/null; then
-    echo "✅ ocmonitor command is available"
-    ocmonitor --version
+if "$WRAPPER_SCRIPT" --version &> /dev/null; then
+    echo "✅ ocmonitor command is available via wrapper"
+    "$WRAPPER_SCRIPT" --version
 else
-    echo "⚠️  ocmonitor command not found in PATH"
-    echo "   You can run it directly with:"
-    echo "   $SCRIPTS_DIR/ocmonitor --help"
+    echo "❌ Wrapper script failed to run"
+    exit 1
 fi
 
 echo ""
 echo "🎉 Installation complete!"
 echo ""
 echo "📝 Next steps:"
-echo "1. Add $SCRIPTS_DIR to your PATH if you haven't already (see instructions above)"
+echo "1. Add $BIN_DIR to your PATH if you haven't already"
 echo "2. Run 'ocmonitor --help' to see available commands"
 echo "3. Run 'ocmonitor config show' to view current configuration"
 echo ""
