@@ -91,8 +91,8 @@ exec "$OCMONITOR_SCRIPT" "$@"
 EOF
 
 # Replace placeholder with actual project directory
-sed -i.bak "s|PROJECT_DIR_PLACEHOLDER|$PROJECT_DIR|g" ocmonitor-wrapper.sh
-rm -f ocmonitor-wrapper.sh.bak
+sed "s|PROJECT_DIR_PLACEHOLDER|$PROJECT_DIR|g" ocmonitor-wrapper.sh > ocmonitor-wrapper.sh.tmp
+mv ocmonitor-wrapper.sh.tmp ocmonitor-wrapper.sh
 
 chmod +x ocmonitor-wrapper.sh
 
