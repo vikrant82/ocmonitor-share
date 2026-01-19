@@ -103,7 +103,6 @@ mkdir -p "$LOCAL_BIN"
 if cp ocmonitor-wrapper.sh "$LOCAL_BIN/ocmonitor" 2>/dev/null; then
     echo "✅ Global command installed to $LOCAL_BIN/ocmonitor"
     GLOBAL_INSTALL=true
-    INSTALL_DIR="$LOCAL_BIN"
     
     # Check if LOCAL_BIN is in PATH
     if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
