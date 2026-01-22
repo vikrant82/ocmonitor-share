@@ -37,15 +37,15 @@ Transform your OpenCode usage data into beautiful, actionable insights with comp
 
 **Option 1: Automated Installation (Recommended)**
 ```bash
-git clone https://github.com/yourusername/ocmonitor.git
-cd ocmonitor
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
 ./install.sh
 ```
 
 **Option 2: Manual Installation**
 ```bash
-git clone https://github.com/yourusername/ocmonitor.git
-cd ocmonitor
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
 python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 ```
