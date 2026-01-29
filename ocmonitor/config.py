@@ -8,7 +8,7 @@ from typing import Dict, Optional
 from pydantic import BaseModel, Field, field_validator
 from decimal import Decimal
 
-def opencode_storage_path(path: str | None = None) -> str:
+def opencode_storage_path(path: Optional[str] = None) -> str:
     base = os.getenv("XDG_DATA_HOME") or "~/.local/share"
     parts = [base, "opencode", "storage"]
     if path:
