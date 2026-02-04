@@ -151,24 +151,26 @@ class DashboardUI:
         )
 
     def create_burn_rate_panel(self, burn_rate: float) -> Panel:
-        """Create token burn rate panel."""
+        """Create output token rate panel (tokens per second)."""
         if burn_rate == 0:
             burn_text = "[dim]No recent activity[/dim]"
         else:
             # Add level indicator
-            if burn_rate > 10000:
-                level = "[red][HIGH][/red]"
-            elif burn_rate > 5000:
-                level = "[yellow][MED][/yellow]"
+            if burn_rate > 90:
+                level = "[red]VERY FAST[/red]"
+            elif burn_rate > 60:
+                level = "[cyan]FAST[/cyan]"
+            elif burn_rate >= 25:
+                level = "[yellow]MEDIUM[/yellow]"
             else:
-                level = "[green][LOW][/green]"
-            
-            burn_text = f"""[bold white]{burn_rate:,.0f}[/bold white] [dim cyan]tok/min[/dim cyan]
+                level = "[green]SLOW[/green]"
+
+            burn_text = f"""[bold white]{burn_rate:,.1f}[/bold white] [dim cyan]tok/sec[/dim cyan]
 {level}"""
 
         return Panel(
             burn_text,
-            title="Rate",
+            title="Output Rate",
             title_align="left",
             border_style="dim white"
         )

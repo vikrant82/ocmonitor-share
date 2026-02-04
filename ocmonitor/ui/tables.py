@@ -74,6 +74,7 @@ class TableFormatter:
         table.add_column("Output Tokens", justify="right", style="blue")
         table.add_column("Total Tokens", justify="right", style="bold blue")
         table.add_column("Cost", justify="right", style="red")
+        table.add_column("Speed", justify="right", style="cyan")
 
         # Sort sessions by start time
         sorted_sessions = sorted(sessions, key=lambda s: s.start_time or s.session_id)
@@ -81,6 +82,8 @@ class TableFormatter:
         total_interactions = 0
         total_tokens = TokenUsage()
         total_cost = Decimal('0.0')
+        total_duration_ms = 0
+        total_output_tokens = 0
 
         for session in sorted_sessions:
             session_cost = session.calculate_total_cost(pricing_data)
@@ -120,6 +123,17 @@ class TableFormatter:
                 # Get cost color
                 cost_color = self.get_cost_color(stats['cost'])
 
+                # Calculate speed (output tokens per second)
+                duration_ms = stats.get('duration_ms', 0)
+                output_tokens = stats['tokens'].output
+                total_duration_ms += duration_ms
+                total_output_tokens += output_tokens
+                if duration_ms > 0 and output_tokens > 0:
+                    speed = output_tokens / (duration_ms / 1000)
+                    speed_text = f"{speed:.1f} t/s"
+                else:
+                    speed_text = "-"
+
                 table.add_row(
                     start_time,
                     duration,
@@ -129,11 +143,19 @@ class TableFormatter:
                     self.format_number(stats['tokens'].input),
                     self.format_number(stats['tokens'].output),
                     self.format_number(stats['tokens'].total),
-                    Text(self.format_currency(stats['cost']), style=cost_color)
+                    Text(self.format_currency(stats['cost']), style=cost_color),
+                    speed_text
                 )
 
         # Add separator and totals
         table.add_section()
+        # Calculate aggregate speed for totals
+        if total_duration_ms > 0 and total_output_tokens > 0:
+            total_speed = total_output_tokens / (total_duration_ms / 1000)
+            total_speed_text = f"{total_speed:.1f} t/s"
+        else:
+            total_speed_text = "-"
+
         table.add_row(
             Text("TOTALS", style="bold white"),
             "",
@@ -143,7 +165,8 @@ class TableFormatter:
             Text(self.format_number(total_tokens.input), style="bold blue"),
             Text(self.format_number(total_tokens.output), style="bold blue"),
             Text(self.format_number(total_tokens.total), style="bold blue"),
-            Text(self.format_currency(total_cost), style="bold red")
+            Text(self.format_currency(total_cost), style="bold red"),
+            Text(total_speed_text, style="bold cyan")
         )
 
         return table
@@ -299,12 +322,20 @@ class TableFormatter:
         table.add_column("Total Tokens", justify="right", style="bold blue")
         table.add_column("Cost", justify="right", style="red")
         table.add_column("Cost %", justify="right", style="red")
+        table.add_column("Speed", justify="right", style="cyan")
 
         total_cost = sum(model.total_cost for model in model_stats)
 
         for model in model_stats:
             cost_percentage = self.format_percentage(float(model.total_cost), float(total_cost))
             cost_color = self.get_cost_color(model.total_cost)
+
+            # Format speed
+            speed = model.avg_output_rate
+            if speed == 0:
+                speed_text = "-"
+            else:
+                speed_text = f"{speed:.1f} t/s"
 
             table.add_row(
                 Text(model.model_name[:27] + "..." if len(model.model_name) > 30 else model.model_name),
@@ -314,7 +345,8 @@ class TableFormatter:
                 self.format_number(model.total_tokens.output),
                 self.format_number(model.total_tokens.total),
                 Text(self.format_currency(model.total_cost), style=cost_color),
-                Text(cost_percentage, style=cost_color)
+                Text(cost_percentage, style=cost_color),
+                speed_text
             )
 
         return table

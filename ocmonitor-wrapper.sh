@@ -3,7 +3,7 @@
 # This script allows ocmonitor to be run from anywhere without activating the virtual environment
 
 # Get the directory where this script is located (the project directory)
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="/Users/shelli/documents/apps/ocmonitor-share"
 
 # Path to the virtual environment's ocmonitor
 OCMONITOR_SCRIPT="$PROJECT_DIR/venv/bin/ocmonitor"

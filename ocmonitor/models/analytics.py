@@ -127,8 +127,18 @@ class ModelUsageStats(BaseModel):
     total_sessions: int = Field(default=0)
     total_interactions: int = Field(default=0)
     total_cost: Decimal = Field(default=Decimal('0.0'))
+    total_duration_ms: int = Field(default=0, description="Total processing time in milliseconds")
     first_used: Optional[datetime] = Field(default=None)
     last_used: Optional[datetime] = Field(default=None)
+
+    @computed_field
+    @property
+    def avg_output_rate(self) -> float:
+        """Calculate average output tokens per second."""
+        if self.total_duration_ms <= 0 or self.total_tokens.output == 0:
+            return 0.0
+        duration_seconds = self.total_duration_ms / 1000
+        return self.total_tokens.output / duration_seconds
 
 
 class ModelBreakdownReport(BaseModel):
@@ -293,6 +303,7 @@ class TimeframeAnalyzer:
             'sessions': set(),
             'interactions': 0,
             'cost': Decimal('0.0'),
+            'duration_ms': 0,
             'first_used': None,
             'last_used': None
         })
@@ -310,6 +321,9 @@ class TimeframeAnalyzer:
                     model_stats['tokens'].cache_read += file.tokens.cache_read
                     model_stats['interactions'] += 1
                     model_stats['cost'] += file.calculate_cost(pricing_data)
+                    # Track processing duration
+                    if file.time_data and file.time_data.duration_ms:
+                        model_stats['duration_ms'] += file.time_data.duration_ms
 
                 # Track sessions
                 model_stats['sessions'].add(session.session_id)
@@ -326,26 +340,27 @@ class TimeframeAnalyzer:
                         model_stats['last_used'] = session.end_time
 
         # Convert to ModelUsageStats objects
-        model_stats = []
+        model_stats_list = []
         for model_name, stats in model_data.items():
-            model_stats.append(ModelUsageStats(
+            model_stats_list.append(ModelUsageStats(
                 model_name=model_name,
                 total_tokens=stats['tokens'],
                 total_sessions=len(stats['sessions']),
                 total_interactions=stats['interactions'],
                 total_cost=stats['cost'],
+                total_duration_ms=stats['duration_ms'],
                 first_used=stats['first_used'],
                 last_used=stats['last_used']
             ))
 
         # Sort by total cost descending
-        model_stats.sort(key=lambda x: x.total_cost, reverse=True)
+        model_stats_list.sort(key=lambda x: x.total_cost, reverse=True)
 
         return ModelBreakdownReport(
             timeframe=timeframe,
             start_date=start_date,
             end_date=end_date,
-            model_stats=model_stats
+            model_stats=model_stats_list
         )
 
     @staticmethod

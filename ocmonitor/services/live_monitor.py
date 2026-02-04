@@ -1,7 +1,7 @@
 """Live monitoring service for OpenCode Monitor."""
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any
 from rich.live import Live
@@ -87,8 +87,8 @@ class LiveMonitor:
         if session.files:
             recent_file = max(session.files, key=lambda f: f.modification_time)
 
-        # Calculate burn rate
-        burn_rate = self._calculate_burn_rate(session)
+        # Calculate output rate (tokens per second over last 5 minutes)
+        output_rate = self._calculate_output_rate(session)
 
         # Get model pricing for quota and context window
         quota = None
@@ -103,35 +103,53 @@ class LiveMonitor:
             session=session,
             recent_file=recent_file,
             pricing_data=self.pricing_data,
-            burn_rate=burn_rate,
+            burn_rate=output_rate,
             quota=quota,
             context_window=context_window
         )
 
-    def _calculate_burn_rate(self, session: SessionData) -> float:
-        """Calculate token burn rate for a session (total tokens / total session time).
+    def _calculate_output_rate(self, session: SessionData) -> float:
+        """Calculate output token rate over the last 5 minutes of activity.
 
         Args:
-            session: SessionData object
+            session: SessionData object containing all interactions
 
         Returns:
-            Tokens per minute for the entire session
+            Output tokens per second over the last 5 minutes
         """
-        # Get total tokens for the session
-        total_tokens = session.total_tokens.total
-
-        # If no tokens, return 0
-        if total_tokens == 0:
+        if not session.files:
             return 0.0
 
-        # Calculate session duration from start time to now
-        if session.start_time:
-            current_time = datetime.now()
-            session_duration = current_time - session.start_time
-            duration_minutes = session_duration.total_seconds() / 60
+        # Calculate the cutoff time (5 minutes ago)
+        cutoff_time = datetime.now() - timedelta(minutes=5)
 
-            if duration_minutes > 0:
-                return total_tokens / duration_minutes
+        # Filter interactions from the last 5 minutes
+        recent_interactions = [
+            f for f in session.files
+            if f.modification_time >= cutoff_time
+        ]
+
+        if not recent_interactions:
+            return 0.0
+
+        # Sum output tokens from recent interactions
+        total_output_tokens = sum(f.tokens.output for f in recent_interactions)
+
+        # If no output tokens, return 0
+        if total_output_tokens == 0:
+            return 0.0
+
+        # Sum active processing time (duration_ms) from recent interactions
+        total_duration_ms = 0
+        for f in recent_interactions:
+            if f.time_data and f.time_data.duration_ms:
+                total_duration_ms += f.time_data.duration_ms
+
+        # Convert to seconds
+        total_duration_seconds = total_duration_ms / 1000
+
+        if total_duration_seconds > 0:
+            return total_output_tokens / total_duration_seconds
 
         return 0.0
 
@@ -181,7 +199,7 @@ class LiveMonitor:
             'models_used': recent_session.models_used,
             'last_activity_seconds': last_activity,
             'activity_status': activity_status,
-            'burn_rate': self._calculate_burn_rate(recent_session),
+            'output_rate': self._calculate_output_rate(recent_session),
             'recent_file': {
                 'name': recent_file.file_name,
                 'model': recent_file.model_id,
@@ -222,7 +240,7 @@ class LiveMonitor:
                 'cost': float(recent_file.calculate_cost(self.pricing_data)),
                 'modification_time': recent_file.modification_time.isoformat()
             } if recent_file else None,
-            'burn_rate': self._calculate_burn_rate(recent_session),
+            'output_rate': self._calculate_output_rate(recent_session),
             'context_usage': self._calculate_context_usage(recent_file) if recent_file else None
         }
 

@@ -18,6 +18,7 @@ Transform your OpenCode usage data into beautiful, actionable insights with comp
 - **📋 Project Analytics** - Track costs and token usage by coding project
 - **⏱️ Performance Metrics** - Session duration and processing time tracking
 - **📅 Flexible Week Boundaries** - Customize weekly reports with 7 start day options (Monday-Sunday)
+- **🚀 Output Speed Tracking** - Average output tokens per second for each model in reports
 
 ### 🎨 Beautiful User Interface
 - **🌈 Rich Terminal UI** - Professional design with clean styling and optimal space utilization
@@ -151,6 +152,7 @@ ocmonitor live ~/.local/share/opencode/storage/message --refresh 10
 - 📊 Real-time cost tracking with progress indicators
 - ⏱️ Live session duration with 5-hour progress bar
 - 📈 Token usage updates and context window monitoring
+- 🚀 **Output Rate** - Rolling 5-minute window showing output tokens per second
 - 🚦 Color-coded status indicators and time alerts
 - 📂 Project name display for better context
 - 📝 Human-readable session titles instead of cryptic IDs
@@ -164,6 +166,12 @@ ocmonitor live ~/.local/share/opencode/storage/message --refresh 10
 [![Model Usage Breakdown Screenshot](screenshots/model-usage-breakdown.png)](screenshots/model-usage-breakdown.png)
 
 *Click image to view full-size screenshot of model usage analytics*
+
+**Model Analytics Features:**
+- Per-model token usage and cost breakdown
+- Cost percentage distribution across models
+- **Speed Column** - Average output tokens per second for each model
+- Session and interaction counts per model
 
 
 ## ⚙️ Configuration
