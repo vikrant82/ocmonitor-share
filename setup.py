@@ -22,7 +22,7 @@ setup(
     long_description_content_type="text/markdown",
     author="OpenCode Monitor Team",
     author_email="",
-    url="https://github.com/yourusername/ocmonitor",
+    url="https://github.com/Shlomob/ocmonitor-share",
     packages=find_packages(),
     include_package_data=True,
     package_data={

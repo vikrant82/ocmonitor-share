@@ -9,8 +9,10 @@ from rich.panel import Panel
 
 from ..models.session import SessionData
 from ..models.analytics import DailyUsage, WeeklyUsage, MonthlyUsage, ModelBreakdownReport, ProjectBreakdownReport
+from ..models.workflow import SessionWorkflow
 from ..ui.tables import TableFormatter
 from ..services.session_analyzer import SessionAnalyzer
+from ..services.session_grouper import SessionGrouper
 from ..config import ModelPricing
 
 
@@ -101,13 +103,15 @@ class ReportGenerator:
         return report_data
 
     def generate_sessions_summary_report(self, base_path: str, limit: Optional[int] = None,
-                                       output_format: str = "table") -> Dict[str, Any]:
+                                       output_format: str = "table",
+                                       group_workflows: bool = True) -> Dict[str, Any]:
         """Generate summary report for all sessions.
 
         Args:
             base_path: Path to directory containing sessions
             limit: Maximum number of sessions to analyze
             output_format: Output format ("table", "json", "csv")
+            group_workflows: Group sessions by workflow (main + sub-agents)
 
         Returns:
             Report data
@@ -122,7 +126,10 @@ class ReportGenerator:
         }
 
         if output_format == "table":
-            self._display_sessions_summary_table(sessions, summary)
+            if group_workflows:
+                self._display_workflow_sessions_table(sessions, summary)
+            else:
+                self._display_sessions_summary_table(sessions, summary)
         elif output_format == "json":
             return self._format_sessions_summary_json(sessions, summary)
         elif output_format == "csv":
@@ -361,6 +368,168 @@ class ReportGenerator:
 
         summary_panel = self.table_formatter.create_summary_panel(sessions, self.analyzer.pricing_data)
         self.console.print(summary_panel)
+
+    def _display_workflow_sessions_table(self, sessions: List[SessionData], summary: Dict[str, Any]):
+        """Display sessions grouped by workflow."""
+        from rich.table import Table
+
+        # Group sessions into workflows
+        grouper = SessionGrouper()
+        workflows = grouper.group_sessions(sessions)
+
+        table = Table(
+            title="Session Workflows",
+            show_header=True,
+            header_style="bold blue",
+            title_style="bold magenta"
+        )
+
+        table.add_column("Started", style="cyan", no_wrap=True)
+        table.add_column("Session / Workflow", style="cyan", no_wrap=False, max_width=45)
+        table.add_column("Project", style="dim cyan", no_wrap=True, max_width=15)
+        table.add_column("Model", style="yellow", no_wrap=True, max_width=20)
+        table.add_column("Agent", justify="center", style="yellow", no_wrap=True)
+        table.add_column("Interactions", justify="right", style="green")
+        table.add_column("Tokens", justify="right", style="white")
+        table.add_column("Cost", justify="right", style="red")
+
+        # Display oldest first so most recent is at the bottom (matching --no-group behavior)
+        for workflow in reversed(workflows):
+            workflow_cost = workflow.calculate_total_cost(self.analyzer.pricing_data)
+
+            # Workflow header row (if has sub-agents, show as group)
+            if workflow.has_sub_agents:
+                # Show workflow summary row
+                title = workflow.display_title
+                if len(title) > 40:
+                    title = title[:37] + "..."
+
+                # Get start time for workflow
+                start_time = workflow.start_time.strftime('%Y-%m-%d %H:%M') if workflow.start_time else 'N/A'
+
+                # Get models from all sessions in workflow
+                all_models = []
+                for s in workflow.all_sessions:
+                    all_models.extend(s.models_used)
+                unique_models = list(set(all_models))
+                if len(unique_models) == 1:
+                    model_display = unique_models[0]
+                else:
+                    model_display = f"{unique_models[0]}+{len(unique_models)-1}"
+
+                table.add_row(
+                    f"[bold]{start_time}[/bold]",
+                    f"[bold]{title}[/bold]",
+                    workflow.project_name[:15],
+                    f"[bold]{model_display}[/bold]",
+                    f"[bold]+{workflow.sub_agent_count}[/bold]",
+                    f"[bold]{sum(s.interaction_count for s in workflow.all_sessions)}[/bold]",
+                    f"[bold]{workflow.total_tokens.total:,}[/bold]",
+                    f"[bold]${workflow_cost:.2f}[/bold]",
+                    style="bold"
+                )
+
+                # Main session row
+                main = workflow.main_session
+                main_cost = main.calculate_total_cost(self.analyzer.pricing_data)
+                main_title = main.display_title
+                if len(main_title) > 38:
+                    main_title = main_title[:35] + "..."
+
+                # Get model for main session
+                main_models = main.models_used
+                if len(main_models) == 1:
+                    main_model_display = main_models[0]
+                elif len(main_models) > 1:
+                    main_model_display = f"{main_models[0]}+{len(main_models)-1}"
+                else:
+                    main_model_display = "-"
+
+                table.add_row(
+                    "",  # No separate start time for sub-rows
+                    f"  ├─ {main_title}",
+                    "",
+                    main_model_display,
+                    main.agent or "main",
+                    f"{main.interaction_count}",
+                    f"{main.total_tokens.total:,}",
+                    f"${main_cost:.2f}",
+                    style="dim"
+                )
+
+                # Sub-agent session rows
+                for i, sub in enumerate(workflow.sub_agent_sessions):
+                    is_last = i == len(workflow.sub_agent_sessions) - 1
+                    prefix = "  └─" if is_last else "  ├─"
+                    sub_cost = sub.calculate_total_cost(self.analyzer.pricing_data)
+                    sub_title = sub.display_title
+                    if len(sub_title) > 38:
+                        sub_title = sub_title[:35] + "..."
+
+                    # Get model for sub-agent session
+                    sub_models = sub.models_used
+                    if len(sub_models) == 1:
+                        sub_model_display = sub_models[0]
+                    elif len(sub_models) > 1:
+                        sub_model_display = f"{sub_models[0]}+{len(sub_models)-1}"
+                    else:
+                        sub_model_display = "-"
+
+                    table.add_row(
+                        "",  # No separate start time for sub-rows
+                        f"{prefix} {sub_title}",
+                        "",
+                        sub_model_display,
+                        sub.agent or "sub",
+                        f"{sub.interaction_count}",
+                        f"{sub.total_tokens.total:,}",
+                        f"${sub_cost:.2f}",
+                        style="dim"
+                    )
+            else:
+                # Single session (no sub-agents)
+                main = workflow.main_session
+                main_cost = main.calculate_total_cost(self.analyzer.pricing_data)
+                title = main.display_title
+                if len(title) > 42:
+                    title = title[:39] + "..."
+
+                # Get start time for single session
+                start_time = main.start_time.strftime('%Y-%m-%d %H:%M') if main.start_time else 'N/A'
+
+                # Get model for single session
+                main_models = main.models_used
+                if len(main_models) == 1:
+                    model_display = main_models[0]
+                elif len(main_models) > 1:
+                    model_display = f"{main_models[0]}+{len(main_models)-1}"
+                else:
+                    model_display = "-"
+
+                table.add_row(
+                    start_time,
+                    title,
+                    main.project_name[:15],
+                    model_display,
+                    main.agent or "-",
+                    f"{main.interaction_count}",
+                    f"{main.total_tokens.total:,}",
+                    f"${main_cost:.2f}"
+                )
+
+        self.console.print(table)
+
+        # Summary panel
+        total_workflows = len(workflows)
+        total_with_subs = sum(1 for w in workflows if w.has_sub_agents)
+        summary_panel = self.table_formatter.create_summary_panel(sessions, self.analyzer.pricing_data)
+        self.console.print(summary_panel)
+
+        # Additional workflow info
+        if total_with_subs > 0:
+            from rich.panel import Panel
+            workflow_info = f"{total_workflows} workflows ({total_with_subs} with sub-agents)"
+            self.console.print(Panel(workflow_info, title="Workflow Summary", border_style="cyan"))
 
     def _display_daily_breakdown_table(self, daily_usage: List[DailyUsage], breakdown: bool = False):
         """Display daily breakdown as table."""

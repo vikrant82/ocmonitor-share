@@ -1,6 +1,6 @@
 # 📊 OpenCode Monitor
 
-[![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **OpenCode Monitor is a CLI tool for monitoring and analyzing OpenCode AI coding sessions.**
@@ -19,6 +19,7 @@ Transform your OpenCode usage data into beautiful, actionable insights with comp
 - **⏱️ Performance Metrics** - Session duration and processing time tracking
 - **📅 Flexible Week Boundaries** - Customize weekly reports with 7 start day options (Monday-Sunday)
 - **🚀 Output Speed Tracking** - Average output tokens per second for each model in reports
+- **🔗 Workflow Grouping** - Automatically groups main sessions with their sub-agent sessions (explore, etc.)
 
 ### 🎨 Beautiful User Interface
 - **🌈 Rich Terminal UI** - Professional design with clean styling and optimal space utilization
@@ -36,14 +37,42 @@ Transform your OpenCode usage data into beautiful, actionable insights with comp
 
 ### Installation
 
-**Option 1: Automated Installation (Recommended)**
+**Option 1: pipx Installation (Recommended - Cross Platform)**
+
+[pipx](https://pypa.github.io/pipx/) is the recommended way to install Python CLI applications. It creates isolated environments and works on all platforms (including Arch Linux, Ubuntu, macOS, etc.).
+
+```bash
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
+pipx install .
+```
+
+**Why pipx?**
+- Creates isolated environments (no dependency conflicts)
+- Works on Arch Linux without breaking system packages
+- No sudo required
+- Easy to upgrade or uninstall
+
+**Optional extras:**
+```bash
+# With visualization charts
+pipx install ".[charts]"
+
+# With export functionality  
+pipx install ".[export]"
+
+# With all extras
+pipx install ".[charts,export]"
+```
+
+**Option 2: Automated Installation (Linux/macOS)**
 ```bash
 git clone https://github.com/Shlomob/ocmonitor-share.git
 cd ocmonitor-share
 ./install.sh
 ```
 
-**Option 2: Manual Installation**
+**Option 3: Manual Installation**
 ```bash
 git clone https://github.com/Shlomob/ocmonitor-share.git
 cd ocmonitor-share
@@ -107,7 +136,26 @@ ocmonitor export sessions ~/.local/share/opencode/storage/message --format csv
 
 *Click image to view full-size screenshot of sessions summary output*
 
+#### Workflow Grouping
 
+By default, sessions are grouped into **workflows** - a main session combined with its sub-agent sessions (like `explore`). This gives you a complete picture of your coding session including all agent activity.
+
+```bash
+# Sessions with workflow grouping (default)
+ocmonitor sessions ~/.local/share/opencode/storage/message
+
+# Sessions without grouping (flat list)
+ocmonitor sessions ~/.local/share/opencode/storage/message --no-group
+
+# List detected agents and their types
+ocmonitor agents
+```
+
+**Workflow Features:**
+- Main sessions and sub-agent sessions are visually grouped with tree-style formatting
+- Aggregated tokens and costs are shown for the entire workflow
+- Sub-agent count displayed in the Agent column (e.g., `+2` means 2 sub-agents)
+- Use `--no-group` to see individual sessions without grouping
 
 ### Time-Based Reporting
 
@@ -156,6 +204,7 @@ ocmonitor live ~/.local/share/opencode/storage/message --refresh 10
 - 🚦 Color-coded status indicators and time alerts
 - 📂 Project name display for better context
 - 📝 Human-readable session titles instead of cryptic IDs
+- 🔗 **Workflow Tracking** - Automatically tracks entire workflow including sub-agents (explore, etc.)
 
 [![Live Dashboard Screenshot](screenshots/live_dashboard.png)](screenshots/live_dashboard.png)
 
@@ -215,23 +264,42 @@ include_metadata = true
 ## 🛠️ Development
 
 ### Prerequisites
-- Python 3.7+
+- Python 3.8+
 - pip package manager
 
 ### Setting Up Development Environment
+
+The project uses `pyproject.toml` for modern Python packaging. You can install in development mode using either pip or pipx:
+
 ```bash
-git clone https://github.com/yourusername/ocmonitor.git
-cd ocmonitor
-python3 -m pip install -r requirements.txt
-python3 -m pip install -e .
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
+
+# Using pip (editable install)
+python3 -m pip install -e ".[dev]"
+
+# Or using pipx (editable install)
+pipx install -e ".[dev]"
+```
+
+**Install all extras for development:**
+```bash
+python3 -m pip install -e ".[dev,charts,export]"
 ```
 
 ### Running Tests
 ```bash
-# Basic functionality test
-python3 test_basic.py
+# Run all tests
+pytest
 
-# Simple import tests  
+# Run only unit tests
+pytest -m unit
+
+# Run only integration tests
+pytest -m integration
+
+# Legacy test scripts
+python3 test_basic.py
 python3 test_simple.py
 ```
 
@@ -242,9 +310,17 @@ ocmonitor/
 │   ├── cli.py             # Command-line interface
 │   ├── config.py          # Configuration management
 │   ├── models/            # Pydantic data models
+│   │   ├── session.py     # Session and interaction models
+│   │   └── workflow.py    # Workflow grouping models
 │   ├── services/          # Business logic services
+│   │   ├── agent_registry.py    # Agent type detection
+│   │   ├── session_grouper.py   # Workflow grouping logic
+│   │   ├── live_monitor.py      # Real-time monitoring
+│   │   └── report_generator.py  # Report generation
 │   ├── ui/                # Rich UI components
+│   │   └── dashboard.py   # Live dashboard UI
 │   └── utils/             # Utility functions
+│       └── file_utils.py  # File processing
 ├── config.toml            # User configuration
 ├── models.json            # AI model pricing data
 └── test_sessions/         # Sample test data

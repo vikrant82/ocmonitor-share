@@ -244,6 +244,9 @@ class FileProcessor:
                 # Use 'cwd' as the project path, fallback to 'root' if needed
                 project_path = path_info.get('cwd') or path_info.get('root')
 
+            # Extract agent type (e.g., 'explore', 'plan', 'build')
+            agent = data.get('agent')
+
             return InteractionFile(
                 file_path=file_path,
                 session_id=session_id,
@@ -251,6 +254,7 @@ class FileProcessor:
                 tokens=tokens,
                 time_data=time_data,
                 project_path=project_path,
+                agent=agent,
                 raw_data=data
             )
 
@@ -290,11 +294,19 @@ class FileProcessor:
         # Load session title from OpenCode storage
         session_title = FileProcessor.find_session_title(session_id)
 
+        # Get agent type from first interaction file (sorted by time)
+        sorted_files = sorted(
+            interaction_files,
+            key=lambda f: f.time_data.created if f.time_data and f.time_data.created else 0
+        )
+        session_agent = sorted_files[0].agent if sorted_files else None
+
         return SessionData(
             session_id=session_id,
             session_path=session_path,
             files=interaction_files,
-            session_title=session_title
+            session_title=session_title,
+            agent=session_agent
         )
 
     @staticmethod

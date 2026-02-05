@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocmonitor"
+version = "0.9.0"
+description = "Analytics and monitoring tool for OpenCode AI coding sessions"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+authors = [
+    {name = "OpenCode Monitor Team"},
+]
+keywords = ["opencode", "ai", "coding", "analytics", "monitoring", "tokens", "cost"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Tools",
+    "Topic :: System :: Monitoring",
+]
+
+dependencies = [
+    "click>=8.0.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "toml>=0.10.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-click>=1.1.0",
+    "pytest-mock>=3.10.0",
+    "coverage>=7.0.0",
+    "black>=22.0.0",
+    "isort>=5.10.0",
+    "flake8>=4.0.0",
+]
+charts = [
+    "plotly>=5.18.0",
+    "plotly-calplot>=0.1.20",
+]
+export = [
+    "jinja2>=3.1.0",
+    "pandas>=2.0.0",
+]
+
+[project.scripts]
+ocmonitor = "ocmonitor.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Shlomob/ocmonitor-share"
+Repository = "https://github.com/Shlomob/ocmonitor-share"
+
+[tool.setuptools]
+packages = ["ocmonitor", "ocmonitor.models", "ocmonitor.services", "ocmonitor.ui", "ocmonitor.utils"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+ocmonitor = ["*.toml", "*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow tests",
+]

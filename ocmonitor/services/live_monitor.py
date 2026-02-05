@@ -3,14 +3,16 @@
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from rich.live import Live
 from rich.console import Console
 
 from ..models.session import SessionData, InteractionFile
+from ..models.workflow import SessionWorkflow
 from ..utils.file_utils import FileProcessor
 from ..ui.dashboard import DashboardUI
 from ..config import ModelPricing
+from .session_grouper import SessionGrouper
 
 
 class LiveMonitor:
@@ -26,48 +28,70 @@ class LiveMonitor:
         self.pricing_data = pricing_data
         self.console = console or Console()
         self.dashboard_ui = DashboardUI(console)
+        self.session_grouper = SessionGrouper()
 
     def start_monitoring(self, base_path: str, refresh_interval: int = 5):
-        """Start live monitoring of the most recent session.
+        """Start live monitoring of the most recent workflow (main session + sub-agents).
 
         Args:
             base_path: Path to directory containing sessions
             refresh_interval: Update interval in seconds
         """
         try:
-            # Find the most recent session
-            recent_session = FileProcessor.get_most_recent_session(base_path)
-            if not recent_session:
+            # Load recent sessions and group into workflows
+            sessions = FileProcessor.load_all_sessions(base_path, limit=50)
+            if not sessions:
                 self.console.print(f"[red]No sessions found in {base_path}[/red]")
                 return
 
-            self.console.print(f"[green]Starting live monitoring of session: {recent_session.session_id}[/green]")
+            workflows = self.session_grouper.group_sessions(sessions)
+            if not workflows:
+                self.console.print(f"[red]No workflows found[/red]")
+                return
+
+            # Get the most recent workflow
+            current_workflow = workflows[0]
+            tracked_session_ids = set(s.session_id for s in current_workflow.all_sessions)
+
+            self.console.print(f"[green]Starting live monitoring of workflow: {current_workflow.main_session.session_id}[/green]")
+            if current_workflow.has_sub_agents:
+                self.console.print(f"[cyan]Tracking {current_workflow.session_count} sessions (1 main + {current_workflow.sub_agent_count} sub-agents)[/cyan]")
             self.console.print(f"[cyan]Update interval: {refresh_interval} seconds[/cyan]")
             self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
 
             # Start live monitoring
             with Live(
-                self._generate_dashboard(recent_session),
+                self._generate_workflow_dashboard(current_workflow),
                 refresh_per_second=1/refresh_interval,
                 console=self.console
             ) as live:
                 while True:
-                    # Check for most recent session (might be a new one!)
-                    most_recent = FileProcessor.get_most_recent_session(base_path)
-                    
-                    if most_recent:
-                        # If we detected a different session, switch to it
-                        if most_recent.session_id != recent_session.session_id:
-                            recent_session = most_recent
-                            self.console.print(f"\n[yellow]New session detected: {recent_session.session_id}[/yellow]")
+                    # Reload all sessions and re-group
+                    sessions = FileProcessor.load_all_sessions(base_path, limit=50)
+                    workflows = self.session_grouper.group_sessions(sessions)
+
+                    if workflows:
+                        # Check if a new workflow started (different main session)
+                        new_workflow = workflows[0]
+                        if new_workflow.workflow_id != current_workflow.workflow_id:
+                            # Check if the new main session is not a sub-agent of our current workflow
+                            if new_workflow.main_session.session_id not in tracked_session_ids:
+                                current_workflow = new_workflow
+                                tracked_session_ids = set(s.session_id for s in current_workflow.all_sessions)
+                                self.console.print(f"\n[yellow]New workflow detected: {current_workflow.main_session.session_id}[/yellow]")
                         else:
-                            # Same session, just reload its data
-                            updated_session = FileProcessor.load_session_data(recent_session.session_path)
-                            if updated_session:
-                                recent_session = updated_session
-                    
+                            # Same workflow, update it
+                            current_workflow = new_workflow
+                            # Check for new sub-agents
+                            new_ids = set(s.session_id for s in current_workflow.all_sessions)
+                            new_subs = new_ids - tracked_session_ids
+                            if new_subs:
+                                for sub_id in new_subs:
+                                    self.console.print(f"\n[cyan]New sub-agent detected: {sub_id}[/cyan]")
+                                tracked_session_ids = new_ids
+
                     # Update dashboard
-                    live.update(self._generate_dashboard(recent_session))
+                    live.update(self._generate_workflow_dashboard(current_workflow))
                     time.sleep(refresh_interval)
 
         except KeyboardInterrupt:
@@ -107,6 +131,98 @@ class LiveMonitor:
             quota=quota,
             context_window=context_window
         )
+
+    def _generate_workflow_dashboard(self, workflow: SessionWorkflow):
+        """Generate dashboard layout for a workflow (main + sub-agents).
+
+        Args:
+            workflow: Workflow to monitor
+
+        Returns:
+            Rich layout for the dashboard
+        """
+        # Get all files from all sessions in the workflow
+        all_files: List[InteractionFile] = []
+        for session in workflow.all_sessions:
+            all_files.extend(session.files)
+
+        # Get the most recent file across all sessions
+        recent_file = None
+        if all_files:
+            recent_file = max(all_files, key=lambda f: f.modification_time)
+
+        # Calculate output rate across entire workflow
+        output_rate = self._calculate_workflow_output_rate(workflow)
+
+        # Get model pricing for quota and context window
+        quota = None
+        context_window = 200000  # Default
+
+        if recent_file and recent_file.model_id in self.pricing_data:
+            model_pricing = self.pricing_data[recent_file.model_id]
+            quota = model_pricing.session_quota
+            context_window = model_pricing.context_window
+
+        # Create a combined session-like view for the dashboard
+        # We'll pass workflow info to the dashboard UI
+        return self.dashboard_ui.create_dashboard_layout(
+            session=workflow.main_session,
+            recent_file=recent_file,
+            pricing_data=self.pricing_data,
+            burn_rate=output_rate,
+            quota=quota,
+            context_window=context_window,
+            workflow=workflow  # Pass workflow for additional display
+        )
+
+    def _calculate_workflow_output_rate(self, workflow: SessionWorkflow) -> float:
+        """Calculate output token rate across entire workflow.
+
+        Args:
+            workflow: Workflow containing all sessions
+
+        Returns:
+            Output tokens per second over the last 5 minutes
+        """
+        # Get all files from all sessions
+        all_files: List[InteractionFile] = []
+        for session in workflow.all_sessions:
+            all_files.extend(session.files)
+
+        if not all_files:
+            return 0.0
+
+        # Calculate the cutoff time (5 minutes ago)
+        cutoff_time = datetime.now() - timedelta(minutes=5)
+
+        # Filter interactions from the last 5 minutes
+        recent_interactions = [
+            f for f in all_files
+            if f.modification_time >= cutoff_time
+        ]
+
+        if not recent_interactions:
+            return 0.0
+
+        # Sum output tokens from recent interactions
+        total_output_tokens = sum(f.tokens.output for f in recent_interactions)
+
+        if total_output_tokens == 0:
+            return 0.0
+
+        # Sum active processing time (duration_ms) from recent interactions
+        total_duration_ms = 0
+        for f in recent_interactions:
+            if f.time_data and f.time_data.duration_ms:
+                total_duration_ms += f.time_data.duration_ms
+
+        # Convert to seconds
+        total_duration_seconds = total_duration_ms / 1000
+
+        if total_duration_seconds > 0:
+            return total_output_tokens / total_duration_seconds
+
+        return 0.0
 
     def _calculate_output_rate(self, session: SessionData) -> float:
         """Calculate output token rate over the last 5 minutes of activity.

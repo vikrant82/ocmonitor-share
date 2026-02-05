@@ -59,6 +59,7 @@ class InteractionFile(BaseModel):
     tokens: TokenUsage = Field(default_factory=TokenUsage)
     time_data: Optional[TimeData] = Field(default=None)
     project_path: Optional[str] = Field(default=None, description="Project working directory from OpenCode")
+    agent: Optional[str] = Field(default=None, description="Agent type (explore, plan, build, etc.)")
     raw_data: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -144,6 +145,7 @@ class SessionData(BaseModel):
     session_path: Path
     files: List[InteractionFile] = Field(default_factory=list)
     session_title: Optional[str] = Field(default=None, description="Human-readable session title from OpenCode")
+    agent: Optional[str] = Field(default=None, description="Agent type for this session (from first interaction)")
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -233,6 +235,7 @@ class SessionData(BaseModel):
             model_files = [f for f in self.files if f.model_id == model]
             model_tokens = TokenUsage()
             model_cost = Decimal('0.0')
+            model_duration_ms = 0
 
             for file in model_files:
                 model_tokens.input += file.tokens.input
@@ -240,11 +243,14 @@ class SessionData(BaseModel):
                 model_tokens.cache_write += file.tokens.cache_write
                 model_tokens.cache_read += file.tokens.cache_read
                 model_cost += file.calculate_cost(pricing_data)
+                if file.time_data and file.time_data.duration_ms:
+                    model_duration_ms += file.time_data.duration_ms
 
             breakdown[model] = {
                 'files': len(model_files),
                 'tokens': model_tokens,
-                'cost': model_cost
+                'cost': model_cost,
+                'duration_ms': model_duration_ms
             }
 
         return breakdown

@@ -10,28 +10,48 @@ Get up and running with OpenCode Monitor in just a few minutes!
 
 ## 🛠️ Installation
 
-### Option 1: Automated Installation (Recommended)
+### Option 1: pipx Installation (Recommended - Cross Platform)
+
+[pipx](https://pypa.github.io/pipx/) is the recommended way to install Python CLI applications. It creates isolated environments and works on all platforms (including Arch Linux, Ubuntu, macOS, etc.).
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd ocmonitor
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
+pipx install .
+```
 
-# Run the installation script
+**Why pipx?**
+- Creates isolated environments (no dependency conflicts)
+- Works on Arch Linux without breaking system packages
+- No sudo required
+- Easy to upgrade or uninstall
+
+**Optional extras:**
+```bash
+# With visualization charts
+pipx install ".[charts]"
+
+# With export functionality  
+pipx install ".[export]"
+
+# With all extras
+pipx install ".[charts,export]"
+```
+
+### Option 2: Automated Installation (Linux/macOS)
+
+```bash
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
 ./install.sh
 ```
 
-### Option 2: Manual Installation
+### Option 3: Manual Installation
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd ocmonitor
-
-# Install dependencies
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
 python3 -m pip install -r requirements.txt
-
-# Install the package
 python3 -m pip install -e .
 
 # Add to PATH (if needed)

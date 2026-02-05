@@ -26,44 +26,78 @@ Welcome to the complete documentation for OpenCode Monitor, a powerful CLI tool 
 ### Prerequisites
 
 Before installing OpenCode Monitor, ensure you have:
-- **Python 3.7+** installed on your system
-- **pip** package manager
+- **Python 3.8+** installed on your system
+- **pip** package manager (or **pipx** for isolated installs)
 - **OpenCode AI** installed and configured
 
-### Method 1: Automated Installation (Recommended)
+### Method 1: pipx Installation (Recommended)
 
-The easiest way to install OpenCode Monitor:
+[pipx](https://pypa.github.io/pipx/) is the recommended way to install OpenCode Monitor. It creates isolated Python environments and is the safest option across all platforms.
+
+**Advantages:**
+- ✅ No dependency conflicts with system packages
+- ✅ Works on Arch Linux, Ubuntu, macOS, Windows
+- ✅ No sudo required
+- ✅ Easy to upgrade, uninstall, or manage multiple versions
+- ✅ Automatically adds `ocmonitor` to your PATH
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ocmonitor.git
-cd ocmonitor
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
+
+# Install with pipx (recommended)
+pipx install .
+
+# Or with optional extras:
+pipx install ".[charts]"    # Includes plotly for visualization
+pipx install ".[export]"    # Includes pandas for data export
+pipx install ".[charts,export]"  # All extras
+```
+
+**Installing pipx:**
+- **Arch Linux:** `sudo pacman -S python-pipx`
+- **Ubuntu/Debian:** `sudo apt install pipx`
+- **macOS:** `brew install pipx`
+- **Other:** `python3 -m pip install --user pipx`
+
+### Method 2: Automated Installation (Linux/macOS)
+
+For Linux and macOS users who prefer a traditional virtual environment setup:
+
+```bash
+# Clone the repository
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
 
 # Run the automated installer
 ./install.sh
 ```
 
 The installer will:
-- ✅ Check Python version compatibility
-- ✅ Install all required dependencies
+- ✅ Check Python version compatibility (3.8+)
+- ✅ Create a virtual environment
+- ✅ Install all required dependencies from `pyproject.toml`
 - ✅ Configure PATH settings automatically
 - ✅ Verify the installation
 
-### Method 2: Manual Installation
+### Method 3: Manual Installation
 
-For more control over the installation process:
+For development or custom setups:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ocmonitor.git
-cd ocmonitor
+git clone https://github.com/Shlomob/ocmonitor-share.git
+cd ocmonitor-share
 
 # Install Python dependencies
 python3 -m pip install -r requirements.txt
 
 # Install the package in development mode
-python3 -m pip install -e .
+python3 -m pip install -e ".[dev,charts,export]"
 ```
+
+**Note:** The project uses `pyproject.toml` for modern Python packaging. All dependencies are properly declared and will be installed automatically.
 
 ### Verify Installation
 
@@ -71,10 +105,24 @@ After installation, verify everything works:
 
 ```bash
 # Check if ocmonitor is accessible
+ocmonitor --version
 ocmonitor --help
 
 # Test with sample data
 ocmonitor sessions test_sessions/
+
+# Verify configuration
+ocmonitor config show
+```
+
+**Troubleshooting pipx installs:**
+If `ocmonitor` command is not found after pipx install:
+```bash
+# Ensure pipx PATH is set up
+pipx ensurepath
+
+# Or manually add to your shell profile (~/.bashrc, ~/.zshrc)
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ### Configuration Setup
@@ -1209,9 +1257,20 @@ python3 -m pip install -e .
 
 **Solutions:**
 
+**Option 1: Use pipx (Recommended for dependency issues)**
+```bash
+# Uninstall current version
+pipx uninstall ocmonitor
+
+# Reinstall with pipx (creates clean isolated environment)
+cd /path/to/ocmonitor
+pipx install .
+```
+
+**Option 2: Fix pip installation**
 ```bash
 # Check Python version
-python3 --version  # Should be 3.7+
+python3 --version  # Should be 3.8+
 
 # Reinstall dependencies
 python3 -m pip install -r requirements.txt --force-reinstall
@@ -1595,6 +1654,31 @@ nano ~/.config/ocmonitor/config.prod.toml
 
 # Use specific configuration
 OCMONITOR_CONFIG=~/.config/ocmonitor/config.dev.toml ocmonitor sessions ~/.local/share/opencode/storage/message
+```
+
+---
+
+## 🧪 Testing
+
+OpenCode Monitor uses pytest for testing. Tests are organized in `tests/`:
+- `tests/unit/` - Unit tests for individual modules
+- `tests/integration/` - CLI integration tests
+- `tests/conftest.py` - Shared fixtures
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run only unit tests
+pytest -m unit
+
+# Run only integration tests
+pytest -m integration
+
+# Run with coverage
+pytest --cov=ocmonitor
 ```
 
 ---

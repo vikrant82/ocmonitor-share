@@ -8,8 +8,8 @@ Thank you for considering contributing to OpenCode Monitor! This document provid
 
 1. **Fork and Clone**
    ```bash
-   git clone https://github.com/yourusername/ocmonitor.git
-   cd ocmonitor
+   git clone https://github.com/Shlomob/ocmonitor-share.git
+   cd ocmonitor-share
    ```
 
 2. **Set Up Development Environment**
