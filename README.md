@@ -7,6 +7,8 @@
 
 Transform your OpenCode usage data into beautiful, actionable insights with comprehensive analytics, real-time monitoring, and professional reporting capabilities.
 
+**⚠️ Disclaimer** - This application is not affiliated with OpenCode AI. It is an independent community tool for monitoring OpenCode usage.
+
 [![Sessions Summary Screenshot](screenshots/sessions-summary.png)](screenshots/sessions-summary.png)
 
 ## 🌟 Features
@@ -352,7 +354,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **🧪 Beta Testing** - This application is currently in beta testing phase. Please report any issues you encounter.
 
-**⚠️ Disclaimer** - This application is not affiliated with OpenCode AI. It is an independent community tool for monitoring OpenCode usage.
 
 ---
 
