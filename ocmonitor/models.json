@@ -127,7 +127,7 @@
     "contextWindow": 200000,
     "sessionQuota": 10.0
   },
-  "gemini-3-pro": {
+  "gemini-3-pro-preview": {
     "input": 2.0,
     "output": 12.0,
     "cacheWrite": 0.0,
