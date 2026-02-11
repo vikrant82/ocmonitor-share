@@ -39,7 +39,25 @@ Transform your OpenCode usage data into beautiful, actionable insights with comp
 
 ### Installation
 
-**Option 1: pipx Installation (Recommended - Cross Platform)**
+**Option 1: uv Installation (Fastest - One-liner)**
+
+[uv](https://github.com/astral-sh/uv) is a fast Python package manager. It installs the tool in an isolated environment without cloning the repository.
+
+```bash
+# Install directly from GitHub
+uv tool install git+https://github.com/Shlomob/ocmonitor-share.git
+
+# With optional extras
+uv tool install "git+https://github.com/Shlomob/ocmonitor-share.git#egg=ocmonitor[charts,export]"
+```
+
+**Why uv?**
+- No need to clone the repository
+- Lightning-fast dependency resolution
+- Creates isolated environments automatically
+- Easy to upgrade: `uv tool upgrade ocmonitor`
+
+**Option 2: pipx Installation (Cross Platform)**
 
 [pipx](https://pypa.github.io/pipx/) is the recommended way to install Python CLI applications. It creates isolated environments and works on all platforms (including Arch Linux, Ubuntu, macOS, etc.).
 
@@ -67,14 +85,14 @@ pipx install ".[export]"
 pipx install ".[charts,export]"
 ```
 
-**Option 2: Automated Installation (Linux/macOS)**
+**Option 3: Automated Installation (Linux/macOS)**
 ```bash
 git clone https://github.com/Shlomob/ocmonitor-share.git
 cd ocmonitor-share
 ./install.sh
 ```
 
-**Option 3: Manual Installation**
+**Option 4: Manual Installation**
 ```bash
 git clone https://github.com/Shlomob/ocmonitor-share.git
 cd ocmonitor-share
