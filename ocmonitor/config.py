@@ -32,6 +32,7 @@ class PathsConfig(BaseModel):
 class UIConfig(BaseModel):
     """Configuration for UI appearance."""
     table_style: str = Field(default="rich", pattern="^(rich|simple|minimal)$")
+    theme: str = Field(default="dark", pattern="^(light|dark)$")
     progress_bars: bool = Field(default=True)
     colors: bool = Field(default=True)
     live_refresh_interval: int = Field(default=5, ge=1, le=60)
@@ -170,3 +171,4 @@ class ConfigManager:
 
 # Global configuration manager instance
 config_manager = ConfigManager()
+

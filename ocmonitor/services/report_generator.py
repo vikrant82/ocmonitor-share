@@ -1,19 +1,15 @@
 """Report generation service for OpenCode Monitor."""
 
 from typing import List, Dict, Any, Optional
-from datetime import date
 from decimal import Decimal
-from collections import defaultdict
 from rich.console import Console
 from rich.panel import Panel
 
 from ..models.session import SessionData
 from ..models.analytics import DailyUsage, WeeklyUsage, MonthlyUsage, ModelBreakdownReport, ProjectBreakdownReport
-from ..models.workflow import SessionWorkflow
 from ..ui.tables import TableFormatter
 from ..services.session_analyzer import SessionAnalyzer
 from ..services.session_grouper import SessionGrouper
-from ..config import ModelPricing
 
 
 class ReportGenerator:
@@ -358,7 +354,7 @@ class ReportGenerator:
         # Show health warnings if any
         if health['warnings']:
             warning_text = "\n".join([f"⚠️  {warning}" for warning in health['warnings']])
-            warning_panel = Panel(warning_text, title="Warnings", border_style="yellow")
+            warning_panel = Panel(warning_text, title="Warnings", border_style="status.warning")
             self.console.print(warning_panel)
 
     def _display_sessions_summary_table(self, sessions: List[SessionData], summary: Dict[str, Any]):
@@ -370,7 +366,7 @@ class ReportGenerator:
         self.console.print(summary_panel)
 
     def _display_workflow_sessions_table(self, sessions: List[SessionData], summary: Dict[str, Any]):
-        """Display sessions grouped by workflow."""
+        """Display sessions grouped by workflow using semantic theme tags."""
         from rich.table import Table
 
         # Group sessions into workflows
@@ -380,18 +376,18 @@ class ReportGenerator:
         table = Table(
             title="Session Workflows",
             show_header=True,
-            header_style="bold blue",
-            title_style="bold magenta"
+            header_style="table.header",
+            title_style="table.title"
         )
 
-        table.add_column("Started", style="cyan", no_wrap=True)
-        table.add_column("Session / Workflow", style="cyan", no_wrap=False, max_width=45)
-        table.add_column("Project", style="dim cyan", no_wrap=True, max_width=15)
-        table.add_column("Model", style="yellow", no_wrap=True, max_width=20)
-        table.add_column("Agent", justify="center", style="yellow", no_wrap=True)
-        table.add_column("Interactions", justify="right", style="green")
-        table.add_column("Tokens", justify="right", style="white")
-        table.add_column("Cost", justify="right", style="red")
+        table.add_column("Started", style="table.row.time", no_wrap=True)
+        table.add_column("Session / Workflow", style="table.row.main", no_wrap=False, max_width=45)
+        table.add_column("Project", style="table.row.project", no_wrap=True, max_width=15)
+        table.add_column("Model", style="table.row.model", no_wrap=True, max_width=20)
+        table.add_column("Agent", justify="center", style="table.row.model", no_wrap=True)
+        table.add_column("Interactions", justify="right", style="status.success")
+        table.add_column("Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Cost", justify="right", style="table.row.cost")
 
         # Display oldest first so most recent is at the bottom (matching --no-group behavior)
         for workflow in reversed(workflows):
@@ -418,15 +414,15 @@ class ReportGenerator:
                     model_display = f"{unique_models[0]}+{len(unique_models)-1}"
 
                 table.add_row(
-                    f"[bold]{start_time}[/bold]",
-                    f"[bold]{title}[/bold]",
-                    workflow.project_name[:15],
-                    f"[bold]{model_display}[/bold]",
-                    f"[bold]+{workflow.sub_agent_count}[/bold]",
-                    f"[bold]{sum(s.interaction_count for s in workflow.all_sessions)}[/bold]",
-                    f"[bold]{workflow.total_tokens.total:,}[/bold]",
-                    f"[bold]${workflow_cost:.2f}[/bold]",
-                    style="bold"
+                    f"[table.row.time]{start_time}[/table.row.time]",
+                    f"[table.row.main]{title}[/table.row.main]",
+                    f"[table.row.project]{workflow.project_name[:15]}[/table.row.project]",
+                    f"[table.row.model]{model_display}[/table.row.model]",
+                    f"[table.row.model]+{workflow.sub_agent_count}[/table.row.model]",
+                    f"[status.success]{sum(s.interaction_count for s in workflow.all_sessions)}[/status.success]",
+                    f"[table.row.tokens]{workflow.total_tokens.total:,}[/table.row.tokens]",
+                    f"[table.row.cost]${workflow_cost:.2f}[/table.row.cost]",
+                    style="table.row.main"
                 )
 
                 # Main session row
@@ -454,7 +450,7 @@ class ReportGenerator:
                     f"{main.interaction_count}",
                     f"{main.total_tokens.total:,}",
                     f"${main_cost:.2f}",
-                    style="dim"
+                    style="table.row.dim"
                 )
 
                 # Sub-agent session rows
@@ -484,7 +480,7 @@ class ReportGenerator:
                         f"{sub.interaction_count}",
                         f"{sub.total_tokens.total:,}",
                         f"${sub_cost:.2f}",
-                        style="dim"
+                        style="table.row.dim"
                     )
             else:
                 # Single session (no sub-agents)
@@ -529,24 +525,24 @@ class ReportGenerator:
         if total_with_subs > 0:
             from rich.panel import Panel
             workflow_info = f"{total_workflows} workflows ({total_with_subs} with sub-agents)"
-            self.console.print(Panel(workflow_info, title="Workflow Summary", border_style="cyan"))
+            self.console.print(Panel(workflow_info, title="Workflow Summary", border_style="table.header"))
 
     def _display_daily_breakdown_table(self, daily_usage: List[DailyUsage], breakdown: bool = False):
-        """Display daily breakdown as table."""
+        """Display daily breakdown as table using semantic theme tags."""
         if breakdown:
             from rich.table import Table
             table = Table(
                 title="Daily Usage Breakdown",
                 show_header=True,
-                header_style="bold blue",
-                title_style="bold magenta"
+                header_style="table.header",
+                title_style="table.title"
             )
             
-            table.add_column("Date / Model", style="cyan", no_wrap=True)
-            table.add_column("Sessions", justify="right", style="green")
-            table.add_column("Interactions", justify="right", style="yellow")
-            table.add_column("Total Tokens", justify="right", style="white")
-            table.add_column("Cost", justify="right", style="red")
+            table.add_column("Date / Model", style="table.row.time", no_wrap=True)
+            table.add_column("Sessions", justify="right", style="status.success")
+            table.add_column("Interactions", justify="right", style="status.success")
+            table.add_column("Total Tokens", justify="right", style="table.row.tokens")
+            table.add_column("Cost", justify="right", style="table.row.cost")
             
             for day in daily_usage:
                 day_cost = day.calculate_total_cost(self.analyzer.pricing_data)
@@ -566,7 +562,7 @@ class ReportGenerator:
                         f"{model_data['interactions']}",
                         f"{model_data['tokens']:,}",
                         f"${model_data['cost']:.2f}",
-                        style="dim"
+                        style="table.row.dim"
                     )
             
             self.console.print(table)
@@ -575,13 +571,7 @@ class ReportGenerator:
             self.console.print(table)
 
     def _display_weekly_breakdown_table(self, weekly_usage: List[WeeklyUsage], breakdown: bool = False, week_start_day: int = 0):
-        """Display weekly breakdown as table.
-        
-        Args:
-            weekly_usage: List of weekly usage data
-            breakdown: Show per-model breakdown
-            week_start_day: Day week starts on (0=Monday, 6=Sunday)
-        """
+        """Display weekly breakdown as table using semantic theme tags."""
         from rich.table import Table
         from ..utils.time_utils import TimeUtils, WEEKDAY_NAMES
         
@@ -593,16 +583,16 @@ class ReportGenerator:
         table = Table(
             title=title,
             show_header=True,
-            header_style="bold blue",
-            title_style="bold magenta"
+            header_style="table.header",
+            title_style="table.title"
         )
 
-        table.add_column("Week", style="cyan", no_wrap=True)
-        table.add_column("Date Range", style="dim cyan", no_wrap=False)
-        table.add_column("Sessions", justify="right", style="green")
-        table.add_column("Interactions", justify="right", style="yellow")
-        table.add_column("Total Tokens", justify="right", style="white")
-        table.add_column("Cost", justify="right", style="red")
+        table.add_column("Week", style="table.row.time", no_wrap=True)
+        table.add_column("Date Range", style="table.row.time", no_wrap=False)
+        table.add_column("Sessions", justify="right", style="status.success")
+        table.add_column("Interactions", justify="right", style="status.success")
+        table.add_column("Total Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Cost", justify="right", style="table.row.cost")
 
         for week in weekly_usage:
             week_cost = week.calculate_total_cost(self.analyzer.pricing_data)
@@ -632,26 +622,26 @@ class ReportGenerator:
                         f"{model_data['interactions']}",
                         f"{model_data['tokens']:,}",
                         f"${model_data['cost']:.2f}",
-                        style="dim"
+                        style="table.row.dim"
                     )
 
         self.console.print(table)
 
     def _display_monthly_breakdown_table(self, monthly_usage: List[MonthlyUsage], breakdown: bool = False):
-        """Display monthly breakdown as table."""
+        """Display monthly breakdown as table using semantic theme tags."""
         from rich.table import Table
         table = Table(
             title="Monthly Usage Breakdown",
             show_header=True,
-            header_style="bold blue",
-            title_style="bold magenta"
+            header_style="table.header",
+            title_style="table.title"
         )
 
-        table.add_column("Month / Model", style="cyan", no_wrap=True)
-        table.add_column("Sessions", justify="right", style="green")
-        table.add_column("Interactions", justify="right", style="yellow")
-        table.add_column("Total Tokens", justify="right", style="white")
-        table.add_column("Cost", justify="right", style="red")
+        table.add_column("Month / Model", style="table.row.time", no_wrap=True)
+        table.add_column("Sessions", justify="right", style="status.success")
+        table.add_column("Interactions", justify="right", style="status.success")
+        table.add_column("Total Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Cost", justify="right", style="table.row.cost")
 
         for month in monthly_usage:
             month_cost = month.calculate_total_cost(self.analyzer.pricing_data)
@@ -677,7 +667,7 @@ class ReportGenerator:
                         f"{model_data['interactions']}",
                         f"{model_data['tokens']:,}",
                         f"${model_data['cost']:.2f}",
-                        style="dim"
+                        style="table.row.dim"
                     )
 
         self.console.print(table)
@@ -688,16 +678,21 @@ class ReportGenerator:
         self.console.print(table)
 
     def _display_projects_breakdown_table(self, project_breakdown: ProjectBreakdownReport):
-        """Display projects breakdown as table."""
+        """Display projects breakdown as table using semantic theme tags."""
         from rich.table import Table
-        table = Table(title="Project Usage Breakdown", show_header=True)
+        table = Table(
+            title="Project Usage Breakdown", 
+            show_header=True,
+            header_style="table.header",
+            title_style="table.title"
+        )
 
-        table.add_column("Project", style="cyan")
-        table.add_column("Sessions", justify="right", style="green")
-        table.add_column("Interactions", justify="right", style="green")
-        table.add_column("Total Tokens", justify="right", style="bold blue")
-        table.add_column("Cost", justify="right", style="red")
-        table.add_column("Models Used", style="dim cyan")
+        table.add_column("Project", style="table.row.project")
+        table.add_column("Sessions", justify="right", style="status.success")
+        table.add_column("Interactions", justify="right", style="status.success")
+        table.add_column("Total Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Cost", justify="right", style="table.row.cost")
+        table.add_column("Models Used", style="table.row.model")
 
         for project in project_breakdown.project_stats:
             # Truncate models list if too long
@@ -719,16 +714,17 @@ class ReportGenerator:
         # Add summary
         from rich.panel import Panel
         summary_text = (
-            f"Total: {len(project_breakdown.project_stats)} projects, "
-            f"{sum(p.total_sessions for p in project_breakdown.project_stats)} sessions, "
-            f"{sum(p.total_interactions for p in project_breakdown.project_stats)} interactions, "
-            f"{project_breakdown.total_tokens.total:,} tokens, "
-            f"${project_breakdown.total_cost:.2f}"
+            f"[metric.important]Total:[/metric.important] [metric.value]{len(project_breakdown.project_stats)}[/metric.value] projects, "
+            f"[metric.value]{sum(p.total_sessions for p in project_breakdown.project_stats)}[/metric.value] sessions, "
+            f"[metric.value]{sum(p.total_interactions for p in project_breakdown.project_stats)}[/metric.value] interactions, "
+            f"[metric.tokens]{project_breakdown.total_tokens.total:,}[/metric.tokens] tokens, "
+            f"[metric.cost]${project_breakdown.total_cost:.2f}[/metric.cost]"
         )
-        summary_panel = Panel(summary_text, title="Summary", border_style="green")
+        summary_panel = Panel(summary_text, title="Summary", border_style="status.success")
         self.console.print(summary_panel)
-
-    # JSON formatting methods
+    
+    # ... Rest of formatting methods (JSON, CSV) remain unchanged ...
+    
     def _format_single_session_json(self, session: SessionData, stats: Dict[str, Any], health: Dict[str, Any]) -> Dict[str, Any]:
         """Format single session data as JSON."""
         return {
@@ -853,7 +849,6 @@ class ReportGenerator:
             ]
         }
 
-    # CSV formatting methods (returning data structures for export service)
     def _format_single_session_csv(self, session: SessionData, stats: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Format single session data for CSV export."""
         return [
@@ -1015,3 +1010,4 @@ class ReportGenerator:
             }
             for project in project_breakdown.project_stats
         ]
+

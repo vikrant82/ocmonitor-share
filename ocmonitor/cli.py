@@ -15,6 +15,7 @@ from .services.export_service import ExportService
 from .services.live_monitor import LiveMonitor
 from .services.report_generator import ReportGenerator
 from .services.session_analyzer import SessionAnalyzer
+from .ui.theme import get_theme
 from .utils.error_handling import (
     ErrorHandler,
     create_user_friendly_error,
@@ -39,9 +40,12 @@ def json_serializer(obj):
 @click.option(
     "--config", "-c", type=click.Path(exists=True), help="Path to configuration file"
 )
+@click.option(
+    "--theme", "-t", type=click.Choice(["dark", "light"]), help="Set UI theme (overrides config)"
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 @click.pass_context
-def cli(ctx: click.Context, config: Optional[str], verbose: bool):
+def cli(ctx: click.Context, config: Optional[str], theme: Optional[str], verbose: bool):
     """OpenCode Monitor - Analytics and monitoring for OpenCode sessions.
 
     Monitor token usage, costs, and performance metrics from your OpenCode
@@ -50,7 +54,6 @@ def cli(ctx: click.Context, config: Optional[str], verbose: bool):
     # Initialize context object
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
-    ctx.obj["console"] = Console()
     ctx.obj["error_handler"] = ErrorHandler(verbose=verbose)
 
     # Load configuration
@@ -59,16 +62,28 @@ def cli(ctx: click.Context, config: Optional[str], verbose: bool):
             config_manager.config_path = config
             config_manager.reload()
 
-        ctx.obj["config"] = config_manager.config
+        cfg = config_manager.config
+        
+        # Override theme if provided via CLI
+        if theme:
+            cfg.ui.theme = theme
+            
+        ctx.obj["config"] = cfg
         ctx.obj["pricing_data"] = config_manager.load_pricing_data()
+
+        # Initialize Console with the configured theme
+        theme_name = cfg.ui.theme
+        theme_obj = get_theme(theme_name)
+        console = Console(theme=theme_obj)
+        ctx.obj["console"] = console
 
         # Initialize services
         analyzer = SessionAnalyzer(ctx.obj["pricing_data"])
         ctx.obj["analyzer"] = analyzer
-        ctx.obj["report_generator"] = ReportGenerator(analyzer, ctx.obj["console"])
-        ctx.obj["export_service"] = ExportService(ctx.obj["config"].paths.export_dir)
+        ctx.obj["report_generator"] = ReportGenerator(analyzer, console)
+        ctx.obj["export_service"] = ExportService(cfg.paths.export_dir)
         ctx.obj["live_monitor"] = LiveMonitor(
-            ctx.obj["pricing_data"], ctx.obj["console"]
+            ctx.obj["pricing_data"], console
         )
 
     except Exception as e:
@@ -156,6 +171,7 @@ def sessions(
     Use --no-group to show sessions without grouping.
     """
     config = ctx.obj["config"]
+    console = ctx.obj["console"]
 
     if not path:
         path = config.paths.messages_dir
@@ -166,13 +182,13 @@ def sessions(
 
         if limit:
             sessions_list = analyzer.analyze_all_sessions(path, limit)
-            click.echo(f"Analyzing {len(sessions_list)} most recent sessions...")
+            console.print(f"[status.info]Analyzing {len(sessions_list)} most recent sessions...[/status.info]")
         else:
             sessions_list = analyzer.analyze_all_sessions(path)
-            click.echo(f"Analyzing {len(sessions_list)} sessions...")
+            console.print(f"[status.info]Analyzing {len(sessions_list)} sessions...[/status.info]")
 
         if not sessions_list:
-            click.echo("No sessions found in the specified directory.", err=True)
+            console.print("[status.error]No sessions found in the specified directory.[/status.error]")
             ctx.exit(1)
 
         result = report_generator.generate_sessions_summary_report(
@@ -210,6 +226,7 @@ def live(
           (defaults to configured messages directory)
     """
     config = ctx.obj["config"]
+    console = ctx.obj["console"]
 
     if not path:
         path = config.paths.messages_dir
@@ -224,21 +241,21 @@ def live(
         validation = live_monitor.validate_monitoring_setup(path)
         if not validation["valid"]:
             for issue in validation["issues"]:
-                click.echo(f"Error: {issue}", err=True)
+                console.print(f"[status.error]Error: {issue}[/status.error]")
             ctx.exit(1)
 
         if validation["warnings"]:
             for warning in validation["warnings"]:
-                click.echo(f"Warning: {warning}")
+                console.print(f"[status.warning]Warning: {warning}[/status.warning]")
 
-        click.echo(f"[green]Starting live dashboard...[/green]")
-        click.echo(f"Monitoring: {path}")
-        click.echo(f"Update interval: {interval}s")
+        console.print(f"[status.success]Starting live dashboard...[/status.success]")
+        console.print(f"[status.info]Monitoring: {path}[/status.info]")
+        console.print(f"[status.info]Update interval: {interval}s[/status.info]")
 
         live_monitor.start_monitoring(path, interval)
 
     except KeyboardInterrupt:
-        click.echo("\nLive monitoring stopped.")
+        console.print("\n[status.warning]Live monitoring stopped.[/status.warning]")
     except Exception as e:
         error_msg = create_user_friendly_error(e)
         click.echo(f"Error in live monitoring: {error_msg}", err=True)
@@ -568,6 +585,7 @@ def export(
     PATH: Path to analyze (defaults to configured messages directory)
     """
     config = ctx.obj["config"]
+    console = ctx.obj["console"]
 
     if not path:
         path = config.paths.messages_dir
@@ -609,7 +627,7 @@ def export(
             )  # Use 'table' to get raw data
 
         if not report_data:
-            click.echo("No data to export.", err=True)
+            console.print("[status.error]No data to export.[/status.error]")
             ctx.exit(1)
 
         # Export the data
@@ -623,11 +641,11 @@ def export(
 
         # Get export summary
         summary = export_service.get_export_summary(output_path)
-        click.echo(f"✅ Export completed successfully!")
-        click.echo(f"File: {output_path}")
-        click.echo(f"Size: {summary.get('size_human', 'Unknown')}")
+        console.print(f"[status.success]✅ Export completed successfully![/status.success]")
+        console.print(f"[metric.label]File:[/metric.label] [metric.value]{output_path}[/metric.value]")
+        console.print(f"[metric.label]Size:[/metric.label] [metric.value]{summary.get('size_human', 'Unknown')}[/metric.value]")
         if "rows" in summary:
-            click.echo(f"Rows: {summary['rows']}")
+            console.print(f"[metric.label]Rows:[/metric.label] [metric.value]{summary['rows']}[/metric.value]")
 
     except Exception as e:
         error_msg = create_user_friendly_error(e)
@@ -650,27 +668,29 @@ def config_show(ctx: click.Context):
     try:
         config = ctx.obj["config"]
         pricing_data = ctx.obj["pricing_data"]
+        console = ctx.obj["console"]
 
-        click.echo("📋 Current Configuration:")
-        click.echo()
-        click.echo("📁 Paths:")
-        click.echo(f"  Messages directory: {config.paths.messages_dir}")
-        click.echo(f"  Export directory: {config.paths.export_dir}")
-        click.echo()
-        click.echo("🎨 UI Settings:")
-        click.echo(f"  Table style: {config.ui.table_style}")
-        click.echo(f"  Progress bars: {config.ui.progress_bars}")
-        click.echo(f"  Colors: {config.ui.colors}")
-        click.echo(f"  Live refresh interval: {config.ui.live_refresh_interval}s")
-        click.echo()
-        click.echo("📤 Export Settings:")
-        click.echo(f"  Default format: {config.export.default_format}")
-        click.echo(f"  Include metadata: {config.export.include_metadata}")
-        click.echo()
-        click.echo("🤖 Models:")
-        click.echo(f"  Configured models: {len(pricing_data)}")
+        console.print("[table.title]📋 Current Configuration:[/table.title]")
+        console.print()
+        console.print("[table.header]📁 Paths:[/table.header]")
+        console.print(f"  [metric.label]Messages directory:[/metric.label] [metric.value]{config.paths.messages_dir}[/metric.value]")
+        console.print(f"  [metric.label]Export directory:[/metric.label] [metric.value]{config.paths.export_dir}[/metric.value]")
+        console.print()
+        console.print("[table.header]🎨 UI Settings:[/table.header]")
+        console.print(f"  [metric.label]Table style:[/metric.label] [metric.value]{config.ui.table_style}[/metric.value]")
+        console.print(f"  [metric.label]Theme:[/metric.label] [metric.value]{config.ui.theme}[/metric.value]")
+        console.print(f"  [metric.label]Progress bars:[/metric.label] [metric.value]{config.ui.progress_bars}[/metric.value]")
+        console.print(f"  [metric.label]Colors:[/metric.label] [metric.value]{config.ui.colors}[/metric.value]")
+        console.print(f"  [metric.label]Live refresh interval:[/metric.label] [metric.value]{config.ui.live_refresh_interval}s[/metric.value]")
+        console.print()
+        console.print("[table.header]📤 Export Settings:[/table.header]")
+        console.print(f"  [metric.label]Default format:[/metric.label] [metric.value]{config.export.default_format}[/metric.value]")
+        console.print(f"  [metric.label]Include metadata:[/metric.label] [metric.value]{config.export.include_metadata}[/metric.value]")
+        console.print()
+        console.print("[table.header]🤖 Models:[/table.header]")
+        console.print(f"  [metric.label]Configured models:[/metric.label] [metric.value]{len(pricing_data)}[/metric.value]")
         for model_name in sorted(pricing_data.keys()):
-            click.echo(f"    - {model_name}")
+            console.print(f"    - [table.row.model]{model_name}[/table.row.model]")
 
     except Exception as e:
         error_msg = create_user_friendly_error(e)
@@ -706,14 +726,14 @@ def agents(ctx: click.Context):
         registry = AgentRegistry()
         console = ctx.obj["console"]
 
-        console.print("[bold]Main agents[/bold] [dim](stay in same session)[/dim]:")
+        console.print("[table.header]Main agents[/table.header] [dim](stay in same session)[/dim]:")
         for agent in sorted(registry.get_all_main_agents()):
-            console.print(f"  - {agent}")
+            console.print(f"  - [table.row.main]{agent}[/table.row.main]")
 
         console.print()
-        console.print("[bold]Sub-agents[/bold] [dim](create separate sessions)[/dim]:")
+        console.print("[table.header]Sub-agents[/table.header] [dim](create separate sessions)[/dim]:")
         for agent in sorted(registry.get_all_sub_agents()):
-            console.print(f"  - {agent}")
+            console.print(f"  - [table.row.model]{agent}[/table.row.model]")
 
         console.print()
         console.print(f"[dim]Agent definitions from: {registry.agents_dir}[/dim]")
@@ -729,3 +749,4 @@ def agents(ctx: click.Context):
 def main():
     """Entry point for the CLI application."""
     cli()
+

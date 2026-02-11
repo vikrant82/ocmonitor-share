@@ -41,22 +41,22 @@ class LiveMonitor:
             # Load recent sessions and group into workflows
             sessions = FileProcessor.load_all_sessions(base_path, limit=50)
             if not sessions:
-                self.console.print(f"[red]No sessions found in {base_path}[/red]")
+                self.console.print(f"[status.error]No sessions found in {base_path}[/status.error]")
                 return
 
             workflows = self.session_grouper.group_sessions(sessions)
             if not workflows:
-                self.console.print(f"[red]No workflows found[/red]")
+                self.console.print(f"[status.error]No workflows found[/status.error]")
                 return
 
             # Get the most recent workflow
             current_workflow = workflows[0]
             tracked_session_ids = set(s.session_id for s in current_workflow.all_sessions)
 
-            self.console.print(f"[green]Starting live monitoring of workflow: {current_workflow.main_session.session_id}[/green]")
+            self.console.print(f"[status.success]Starting live monitoring of workflow: {current_workflow.main_session.session_id}[/status.success]")
             if current_workflow.has_sub_agents:
-                self.console.print(f"[cyan]Tracking {current_workflow.session_count} sessions (1 main + {current_workflow.sub_agent_count} sub-agents)[/cyan]")
-            self.console.print(f"[cyan]Update interval: {refresh_interval} seconds[/cyan]")
+                self.console.print(f"[status.info]Tracking {current_workflow.session_count} sessions (1 main + {current_workflow.sub_agent_count} sub-agents)[/status.info]")
+            self.console.print(f"[status.info]Update interval: {refresh_interval} seconds[/status.info]")
             self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
 
             # Start live monitoring
@@ -78,7 +78,7 @@ class LiveMonitor:
                             if new_workflow.main_session.session_id not in tracked_session_ids:
                                 current_workflow = new_workflow
                                 tracked_session_ids = set(s.session_id for s in current_workflow.all_sessions)
-                                self.console.print(f"\n[yellow]New workflow detected: {current_workflow.main_session.session_id}[/yellow]")
+                                self.console.print(f"\n[status.warning]New workflow detected: {current_workflow.main_session.session_id}[/status.warning]")
                         else:
                             # Same workflow, update it
                             current_workflow = new_workflow
@@ -87,7 +87,7 @@ class LiveMonitor:
                             new_subs = new_ids - tracked_session_ids
                             if new_subs:
                                 for sub_id in new_subs:
-                                    self.console.print(f"\n[cyan]New sub-agent detected: {sub_id}[/cyan]")
+                                    self.console.print(f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]")
                                 tracked_session_ids = new_ids
 
                     # Update dashboard
@@ -95,7 +95,7 @@ class LiveMonitor:
                     time.sleep(refresh_interval)
 
         except KeyboardInterrupt:
-            self.console.print("\n[yellow]Live monitoring stopped.[/yellow]")
+            self.console.print("\n[status.warning]Live monitoring stopped.[/status.warning]")
 
     def _generate_dashboard(self, session: SessionData):
         """Generate dashboard layout for the session.
@@ -447,3 +447,4 @@ class LiveMonitor:
             'session_directories_found': len(session_dirs),
             'most_recent_session': session_dirs[0].name if session_dirs else None
         }
+

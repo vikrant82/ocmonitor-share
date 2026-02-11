@@ -169,84 +169,97 @@ class TableFormatter:
 
 
 class ColorFormatter:
-    """Utility functions for color formatting."""
+    """Utility functions for color formatting using semantic theme tags."""
 
     @staticmethod
-    def get_cost_color(cost: Decimal, quota: Optional[Decimal] = None) -> str:
-        """Get color for cost based on quota.
+    def get_color_by_percentage(percentage: float) -> str:
+        """Get semantic color tag based on percentage.
+
+        Args:
+            percentage: Percentage value (0-100)
+
+        Returns:
+            Semantic tag for Rich formatting
+        """
+        if percentage >= 90:
+            return "status.error"
+        elif percentage >= 75:
+            return "status.warning"
+        elif percentage >= 50:
+            return "status.warning"
+        else:
+            return "status.success"
+
+    @staticmethod
+    def get_cost_color(cost: Decimal, quota: Optional[Decimal] = None, default_style: str = "metric.cost") -> str:
+        """Get color for cost based on quota using semantic tags.
 
         Args:
             cost: Current cost
             quota: Optional quota to compare against
+            default_style: Default style to return if no quota is present
 
         Returns:
-            Color name for Rich formatting
+            Semantic tag for Rich formatting
         """
-        if quota is None:
-            return "white"
+        if quota is None or quota <= 0:
+            return default_style
 
         try:
             percentage = float(cost / quota) * 100
+            return ColorFormatter.get_color_by_percentage(percentage)
         except (ZeroDivisionError, TypeError, ValueError):
-            return "white"
-
-        if percentage >= 90:
-            return "red"
-        elif percentage >= 75:
-            return "yellow"
-        elif percentage >= 50:
-            return "orange"
-        else:
-            return "green"
+            return default_style
 
     @staticmethod
-    def get_usage_color(current: int, maximum: int) -> str:
-        """Get color for usage based on maximum.
+    def get_usage_color(current: int, maximum: int, default_style: str = "metric.value") -> str:
+        """Get color for usage based on maximum using semantic tags.
 
         Args:
             current: Current usage
             maximum: Maximum allowed usage
+            default_style: Default style to return if no maximum is present
 
         Returns:
-            Color name for Rich formatting
+            Semantic tag for Rich formatting
         """
-        if maximum == 0:
-            return "white"
+        if maximum <= 0:
+            return default_style
 
         percentage = (current / maximum) * 100
 
         if percentage >= 95:
-            return "red"
+            return "status.error"
         elif percentage >= 85:
-            return "yellow"
+            return "status.warning"
         elif percentage >= 70:
-            return "orange"
+            return "status.warning"
         else:
-            return "green"
+            return "status.success"
 
     @staticmethod
     def get_status_color(status: str) -> str:
-        """Get color for status indicators.
+        """Get color for status indicators using semantic tags.
 
         Args:
             status: Status string
 
         Returns:
-            Color name for Rich formatting
+            Semantic tag for Rich formatting
         """
-        status_colors = {
-            "success": "green",
-            "warning": "yellow",
-            "error": "red",
-            "info": "blue",
-            "active": "green",
-            "inactive": "dim white",
-            "pending": "yellow",
-            "completed": "green",
-            "failed": "red"
+        status_map = {
+            "success": "status.success",
+            "warning": "status.warning",
+            "error": "status.error",
+            "info": "status.info",
+            "active": "status.active",
+            "inactive": "status.idle",
+            "pending": "status.warning",
+            "completed": "status.success",
+            "failed": "status.error"
         }
 
-        return status_colors.get(status.lower(), "white")
+        return status_map.get(status.lower(), "metric.value")
 
 
 class DataFormatter:
@@ -332,3 +345,4 @@ class DataFormatter:
 
         # Fallback to simple truncation
         return TableFormatter.truncate_text(model_name, max_length)
+

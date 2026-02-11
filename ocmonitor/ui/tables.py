@@ -6,12 +6,11 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 from rich.panel import Panel
-from rich.columns import Columns
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 
 from ..models.session import SessionData, TokenUsage
-from ..models.analytics import DailyUsage, WeeklyUsage, MonthlyUsage, ModelUsageStats
+from ..models.analytics import DailyUsage, ModelUsageStats
 from ..utils.time_utils import TimeUtils
+from ..utils.formatting import ColorFormatter
 
 
 class TableFormatter:
@@ -41,40 +40,29 @@ class TableFormatter:
         return f"{percentage:.1f}%"
 
     def get_cost_color(self, cost: Decimal, quota: Optional[Decimal] = None) -> str:
-        """Get color for cost based on quota."""
-        if quota is None:
-            return "white"
-
-        percentage = float(cost / quota) * 100
-        if percentage >= 90:
-            return "red"
-        elif percentage >= 75:
-            return "yellow"
-        elif percentage >= 50:
-            return "orange"
-        else:
-            return "green"
+        """Get color for cost based on quota using semantic theme tags."""
+        return ColorFormatter.get_cost_color(cost, quota, default_style="table.row.main")
 
     def create_sessions_table(self, sessions: List[SessionData], pricing_data: Dict[str, Any]) -> Table:
-        """Create a table for multiple sessions."""
+        """Create a table for multiple sessions using semantic theme styles."""
         table = Table(
             title="OpenCode Sessions Summary",
             show_header=True,
-            header_style="bold blue",
-            title_style="bold magenta"
+            header_style="table.header",
+            title_style="table.title"
         )
 
         # Add columns
-        table.add_column("Started", style="cyan", no_wrap=True)
-        table.add_column("Duration", style="cyan", no_wrap=True)
-        table.add_column("Session", style="magenta", max_width=35)
-        table.add_column("Model", style="yellow", max_width=25)
-        table.add_column("Interactions", justify="right", style="green")
-        table.add_column("Input Tokens", justify="right", style="blue")
-        table.add_column("Output Tokens", justify="right", style="blue")
-        table.add_column("Total Tokens", justify="right", style="bold blue")
-        table.add_column("Cost", justify="right", style="red")
-        table.add_column("Speed", justify="right", style="cyan")
+        table.add_column("Started", style="table.row.time", no_wrap=True)
+        table.add_column("Duration", style="table.row.time", no_wrap=True)
+        table.add_column("Session", style="table.row.main", max_width=35)
+        table.add_column("Model", style="table.row.model", max_width=25)
+        table.add_column("Interactions", justify="right", style="status.success")
+        table.add_column("Input Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Output Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Total Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Cost", justify="right", style="table.row.cost")
+        table.add_column("Speed", justify="right", style="table.row.time")
 
         # Sort sessions by start time
         sorted_sessions = sorted(sessions, key=lambda s: s.start_time or s.session_id)
@@ -157,39 +145,39 @@ class TableFormatter:
             total_speed_text = "-"
 
         table.add_row(
-            Text("TOTALS", style="bold white"),
+            Text("TOTALS", style="table.footer"),
             "",
             "",  # Empty session column
-            Text(f"{len(sorted_sessions)} sessions", style="bold white"),
-            Text(self.format_number(total_interactions), style="bold green"),
-            Text(self.format_number(total_tokens.input), style="bold blue"),
-            Text(self.format_number(total_tokens.output), style="bold blue"),
-            Text(self.format_number(total_tokens.total), style="bold blue"),
-            Text(self.format_currency(total_cost), style="bold red"),
-            Text(total_speed_text, style="bold cyan")
+            Text(f"{len(sorted_sessions)} sessions", style="table.footer"),
+            Text(self.format_number(total_interactions), style="status.success"),
+            Text(self.format_number(total_tokens.input), style="table.row.tokens"),
+            Text(self.format_number(total_tokens.output), style="table.row.tokens"),
+            Text(self.format_number(total_tokens.total), style="table.row.tokens"),
+            Text(self.format_currency(total_cost), style="table.row.cost"),
+            Text(total_speed_text, style="table.row.time")
         )
 
         return table
 
     def create_session_table(self, session: SessionData, pricing_data: Dict[str, Any]) -> Table:
-        """Create a table for a single session."""
+        """Create a table for a single session using semantic theme styles."""
         table = Table(
             title=f"Session: {session.display_title}",
             show_header=True,
-            header_style="bold blue",
-            title_style="bold magenta"
+            header_style="table.header",
+            title_style="table.title"
         )
 
         # Add columns
-        table.add_column("File", style="cyan", max_width=30)
-        table.add_column("Model", style="yellow")
-        table.add_column("Input", justify="right", style="blue")
-        table.add_column("Output", justify="right", style="blue")
-        table.add_column("Cache W", justify="right", style="green")
-        table.add_column("Cache R", justify="right", style="green")
-        table.add_column("Total", justify="right", style="bold blue")
-        table.add_column("Cost", justify="right", style="red")
-        table.add_column("Duration", justify="right", style="cyan")
+        table.add_column("File", style="table.row.time", max_width=30)
+        table.add_column("Model", style="table.row.model")
+        table.add_column("Input", justify="right", style="table.row.tokens")
+        table.add_column("Output", justify="right", style="table.row.tokens")
+        table.add_column("Cache W", justify="right", style="status.success")
+        table.add_column("Cache R", justify="right", style="status.success")
+        table.add_column("Total", justify="right", style="table.row.tokens")
+        table.add_column("Cost", justify="right", style="table.row.cost")
+        table.add_column("Duration", justify="right", style="table.row.time")
 
         total_cost = Decimal('0.0')
         total_tokens = TokenUsage()
@@ -223,37 +211,37 @@ class TableFormatter:
         # Add totals
         table.add_section()
         table.add_row(
-            Text("TOTALS", style="bold white"),
+            Text("TOTALS", style="table.footer"),
             "",
-            Text(self.format_number(total_tokens.input), style="bold blue"),
-            Text(self.format_number(total_tokens.output), style="bold blue"),
-            Text(self.format_number(total_tokens.cache_write), style="bold green"),
-            Text(self.format_number(total_tokens.cache_read), style="bold green"),
-            Text(self.format_number(total_tokens.total), style="bold blue"),
-            Text(self.format_currency(total_cost), style="bold red"),
+            Text(self.format_number(total_tokens.input), style="table.row.tokens"),
+            Text(self.format_number(total_tokens.output), style="table.row.tokens"),
+            Text(self.format_number(total_tokens.cache_write), style="status.success"),
+            Text(self.format_number(total_tokens.cache_read), style="status.success"),
+            Text(self.format_number(total_tokens.total), style="table.row.tokens"),
+            Text(self.format_currency(total_cost), style="table.row.cost"),
             ""
         )
 
         return table
 
     def create_daily_table(self, daily_usage: List[DailyUsage], pricing_data: Dict[str, Any]) -> Table:
-        """Create a table for daily usage breakdown."""
+        """Create a table for daily usage breakdown using semantic theme styles."""
         table = Table(
             title="Daily Usage Breakdown",
             show_header=True,
-            header_style="bold blue",
-            title_style="bold magenta"
+            header_style="table.header",
+            title_style="table.title"
         )
 
         # Add columns
-        table.add_column("Date", style="cyan", no_wrap=True)
-        table.add_column("Sessions", justify="right", style="green")
-        table.add_column("Interactions", justify="right", style="green")
-        table.add_column("Input Tokens", justify="right", style="blue")
-        table.add_column("Output Tokens", justify="right", style="blue")
-        table.add_column("Total Tokens", justify="right", style="bold blue")
-        table.add_column("Cost", justify="right", style="red")
-        table.add_column("Models", style="yellow")
+        table.add_column("Date", style="table.row.time", no_wrap=True)
+        table.add_column("Sessions", justify="right", style="status.success")
+        table.add_column("Interactions", justify="right", style="status.success")
+        table.add_column("Input Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Output Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Total Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Cost", justify="right", style="table.row.cost")
+        table.add_column("Models", style="table.row.model")
 
         total_sessions = 0
         total_interactions = 0
@@ -286,43 +274,43 @@ class TableFormatter:
                 self.format_number(day_tokens.output),
                 self.format_number(day_tokens.total),
                 Text(self.format_currency(day_cost), style=cost_color),
-                Text(models_text, style="yellow")
+                Text(models_text, style="table.row.model")
             )
 
         # Add totals
         table.add_section()
         table.add_row(
-            Text("TOTALS", style="bold white"),
-            Text(self.format_number(total_sessions), style="bold green"),
-            Text(self.format_number(total_interactions), style="bold green"),
-            Text(self.format_number(total_tokens.input), style="bold blue"),
-            Text(self.format_number(total_tokens.output), style="bold blue"),
-            Text(self.format_number(total_tokens.total), style="bold blue"),
-            Text(self.format_currency(total_cost), style="bold red"),
+            Text("TOTALS", style="table.footer"),
+            Text(self.format_number(total_sessions), style="status.success"),
+            Text(self.format_number(total_interactions), style="status.success"),
+            Text(self.format_number(total_tokens.input), style="table.row.tokens"),
+            Text(self.format_number(total_tokens.output), style="table.row.tokens"),
+            Text(self.format_number(total_tokens.total), style="table.row.tokens"),
+            Text(self.format_currency(total_cost), style="table.row.cost"),
             ""
         )
 
         return table
 
     def create_model_breakdown_table(self, model_stats: List[ModelUsageStats]) -> Table:
-        """Create a table for model usage breakdown."""
+        """Create a table for model usage breakdown using semantic theme styles."""
         table = Table(
             title="Model Usage Breakdown",
             show_header=True,
-            header_style="bold blue",
-            title_style="bold magenta"
+            header_style="table.header",
+            title_style="table.title"
         )
 
         # Add columns
-        table.add_column("Model", style="yellow", max_width=30)
-        table.add_column("Sessions", justify="right", style="green")
-        table.add_column("Interactions", justify="right", style="green")
-        table.add_column("Input Tokens", justify="right", style="blue")
-        table.add_column("Output Tokens", justify="right", style="blue")
-        table.add_column("Total Tokens", justify="right", style="bold blue")
-        table.add_column("Cost", justify="right", style="red")
-        table.add_column("Cost %", justify="right", style="red")
-        table.add_column("Speed", justify="right", style="cyan")
+        table.add_column("Model", style="table.row.model", max_width=30)
+        table.add_column("Sessions", justify="right", style="status.success")
+        table.add_column("Interactions", justify="right", style="status.success")
+        table.add_column("Input Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Output Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Total Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Cost", justify="right", style="table.row.cost")
+        table.add_column("Cost %", justify="right", style="table.row.cost")
+        table.add_column("Speed", justify="right", style="table.row.time")
 
         total_cost = sum(model.total_cost for model in model_stats)
 
@@ -362,7 +350,7 @@ class TableFormatter:
         return TimeUtils.format_duration_hm(milliseconds)
 
     def create_summary_panel(self, sessions: List[SessionData], pricing_data: Dict[str, Any]) -> Panel:
-        """Create a summary panel with key metrics."""
+        """Create a summary panel with key metrics using semantic theme styles."""
         if not sessions:
             return Panel("No sessions found", title="Summary", title_align="left")
 
@@ -381,18 +369,19 @@ class TableFormatter:
             total_cost += session.calculate_total_cost(pricing_data)
             models_used.update(session.models_used)
 
-        # Create summary text
+        # Create summary text using semantic tags
         summary_lines = [
-            f"[bold]Sessions:[/bold] {self.format_number(total_sessions)}",
-            f"[bold]Interactions:[/bold] {self.format_number(total_interactions)}",
-            f"[bold]Total Tokens:[/bold] {self.format_number(total_tokens.total)}",
-            f"[bold]Total Cost:[/bold] {self.format_currency(total_cost)}",
-            f"[bold]Models Used:[/bold] {len(models_used)}"
+            f"[metric.important]Sessions:[/metric.important] [metric.value]{self.format_number(total_sessions)}[/metric.value]",
+            f"[metric.important]Interactions:[/metric.important] [metric.value]{self.format_number(total_interactions)}[/metric.value]",
+            f"[metric.important]Total Tokens:[/metric.important] [metric.tokens]{self.format_number(total_tokens.total)}[/metric.tokens]",
+            f"[metric.important]Total Cost:[/metric.important] [metric.cost]{self.format_currency(total_cost)}[/metric.cost]",
+            f"[metric.important]Models Used:[/metric.important] [metric.value]{len(models_used)}[/metric.value]"
         ]
 
         return Panel(
             "\n".join(summary_lines),
             title="Summary",
             title_align="left",
-            border_style="blue"
+            border_style="table.header"
         )
+
