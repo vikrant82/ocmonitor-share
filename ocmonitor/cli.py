@@ -248,7 +248,7 @@ def live(
             for warning in validation["warnings"]:
                 console.print(f"[status.warning]Warning: {warning}[/status.warning]")
 
-        console.print(f"[status.success]Starting live dashboard...[/status.success]")
+        console.print("[status.success]Starting live dashboard...[/status.success]")
         console.print(f"[status.info]Monitoring: {path}[/status.info]")
         console.print(f"[status.info]Update interval: {interval}s[/status.info]")
 
