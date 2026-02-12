@@ -106,14 +106,14 @@ python3 -m pip install -e .
 # Quick configuration check
 ocmonitor config show
 
-# Analyze your sessions
-ocmonitor sessions ~/.local/share/opencode/storage/message
+# Analyze your sessions (light theme)
+ocmonitor --theme light sessions ~/.local/share/opencode/storage/message
 
 # Analyze by project
 ocmonitor projects ~/.local/share/opencode/storage/message
 
-# Real-time monitoring
-ocmonitor live ~/.local/share/opencode/storage/message
+# Real-time monitoring (dark theme)
+ocmonitor --theme dark live ~/.local/share/opencode/storage/message
 
 # Export your data
 ocmonitor export sessions ~/.local/share/opencode/storage/message --format csv

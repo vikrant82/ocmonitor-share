@@ -1,23 +1,20 @@
 """Live dashboard UI components for OpenCode Monitor."""
 
 import os
-import time
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from rich.columns import Columns
 from rich.console import Console
 from rich.layout import Layout
-from rich.live import Live
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from ..models.session import SessionData, TokenUsage
+from ..models.session import SessionData
 from ..models.workflow import SessionWorkflow
 from ..utils.time_utils import TimeUtils
+from ..utils.formatting import ColorFormatter
 
 
 class DashboardUI:
@@ -39,12 +36,28 @@ class DashboardUI:
 
         if workflow and workflow.has_sub_agents:
             # Show workflow info with sub-agent count
-            header_text = f"""[bold blue]OpenCode Live Dashboard[/bold blue]  [dim]Project:[/dim] [bold cyan]{workflow.project_name}[/bold cyan]  [dim]Session:[/dim] [bold white]{workflow.display_title}[/bold white]  [dim]Updated:[/dim] [bold white]{current_time}[/bold white]  [dim]Workflow:[/dim] [bold yellow]{workflow.session_count} sessions[/bold yellow] [dim]([/dim][bold white]1 main + {workflow.sub_agent_count} sub[/bold white][dim])[/dim]"""
+            header_text = (
+                f"[dashboard.header]OpenCode Live Dashboard[/dashboard.header]  "
+                f"[metric.label]Project:[/metric.label] [dashboard.project]{workflow.project_name}[/dashboard.project]  "
+                f"[metric.label]Session:[/metric.label] [dashboard.session]{workflow.display_title}[/dashboard.session]  "
+                f"[metric.label]Updated:[/metric.label] [metric.value]{current_time}[/metric.value]  "
+                f"[metric.label]Workflow:[/metric.label] [dashboard.info]{workflow.session_count} sessions[/dashboard.info] "
+                f"[metric.label]([/metric.label][metric.value]1 main + {workflow.sub_agent_count} sub[/metric.value][metric.label])[/metric.label]"
+            )
         else:
-            header_text = f"""[bold blue]OpenCode Live Dashboard[/bold blue]  [dim]Project:[/dim] [bold cyan]{session.project_name}[/bold cyan]  [dim]Session:[/dim] [bold white]{session.display_title}[/bold white]  [dim]Updated:[/dim] [bold white]{current_time}[/bold white]  [dim]Interactions:[/dim] [bold white]{session.interaction_count}[/bold white]"""
+            header_text = (
+                f"[dashboard.header]OpenCode Live Dashboard[/dashboard.header]  "
+                f"[metric.label]Project:[/metric.label] [dashboard.project]{session.project_name}[/dashboard.project]  "
+                f"[metric.label]Session:[/metric.label] [dashboard.session]{session.display_title}[/dashboard.session]  "
+                f"[metric.label]Updated:[/metric.label] [metric.value]{current_time}[/metric.value]  "
+                f"[metric.label]Interactions:[/metric.label] [metric.value]{session.interaction_count}[/metric.value]"
+            )
 
         return Panel(
-            header_text, title="Dashboard", title_align="left", border_style="dim blue"
+            header_text,
+            title=Text("Dashboard", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_token_panel(
@@ -55,22 +68,34 @@ class DashboardUI:
 
         # Create compact horizontal layout
         if recent_file:
-            token_text = f"""[bold blue]Recent Interaction[/bold blue]
-[dim]Input:[/dim] [bold white]{recent_file.tokens.input:,}[/bold white]    [dim]Cache W:[/dim] [bold white]{recent_file.tokens.cache_write:,}[/bold white]
-[dim]Output:[/dim] [bold white]{recent_file.tokens.output:,}[/bold white]   [dim]Cache R:[/dim] [bold white]{recent_file.tokens.cache_read:,}[/bold white]
-
-[bold blue]Session Totals[/bold blue]
-[dim]Input:[/dim] [bold white]{session_tokens.input:,}[/bold white]    [dim]Cache W:[/dim] [bold white]{session_tokens.cache_write:,}[/bold white]
-[dim]Output:[/dim] [bold white]{session_tokens.output:,}[/bold white]   [dim]Cache R:[/dim] [bold white]{session_tokens.cache_read:,}[/bold white]
-[dim]Total:[/dim] [bold cyan]{session_tokens.total:,}[/bold cyan]"""
+            token_text = (
+                f"[dashboard.header]Recent Interaction[/dashboard.header]\n"
+                f"[metric.label]Input:[/metric.label] [metric.value]{recent_file.tokens.input:,}[/metric.value]    "
+                f"[metric.label]Cache W:[/metric.label] [metric.value]{recent_file.tokens.cache_write:,}[/metric.value]\n"
+                f"[metric.label]Output:[/metric.label] [metric.value]{recent_file.tokens.output:,}[/metric.value]   "
+                f"[metric.label]Cache R:[/metric.label] [metric.value]{recent_file.tokens.cache_read:,}[/metric.value]\n\n"
+                f"[dashboard.header]Session Totals[/dashboard.header]\n"
+                f"[metric.label]Input:[/metric.label] [metric.value]{session_tokens.input:,}[/metric.value]    "
+                f"[metric.label]Cache W:[/metric.label] [metric.value]{session_tokens.cache_write:,}[/metric.value]\n"
+                f"[metric.label]Output:[/metric.label] [metric.value]{session_tokens.output:,}[/metric.value]   "
+                f"[metric.label]Cache R:[/metric.label] [metric.value]{session_tokens.cache_read:,}[/metric.value]\n"
+                f"[metric.label]Total:[/metric.label] [metric.tokens]{session_tokens.total:,}[/metric.tokens]"
+            )
         else:
-            token_text = f"""[bold blue]Session Totals[/bold blue]
-[dim]Input:[/dim] [bold white]{session_tokens.input:,}[/bold white]    [dim]Cache W:[/dim] [bold white]{session_tokens.cache_write:,}[/bold white]
-[dim]Output:[/dim] [bold white]{session_tokens.output:,}[/bold white]   [dim]Cache R:[/dim] [bold white]{session_tokens.cache_read:,}[/bold white]
-[dim]Total:[/dim] [bold cyan]{session_tokens.total:,}[/bold cyan]"""
+            token_text = (
+                f"[dashboard.header]Session Totals[/dashboard.header]\n"
+                f"[metric.label]Input:[/metric.label] [metric.value]{session_tokens.input:,}[/metric.value]    "
+                f"[metric.label]Cache W:[/metric.label] [metric.value]{session_tokens.cache_write:,}[/metric.value]\n"
+                f"[metric.label]Output:[/metric.label] [metric.value]{session_tokens.output:,}[/metric.value]   "
+                f"[metric.label]Cache R:[/metric.label] [metric.value]{session_tokens.cache_read:,}[/metric.value]\n"
+                f"[metric.label]Total:[/metric.label] [metric.tokens]{session_tokens.total:,}[/metric.tokens]"
+            )
 
         return Panel(
-            token_text, title="Tokens", title_align="left", border_style="dim white"
+            token_text,
+            title=Text("Tokens", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_cost_panel(
@@ -87,17 +112,24 @@ class DashboardUI:
             progress_bar = self.create_compact_progress_bar(percentage)
             cost_color = self.get_cost_color(percentage)
 
-            cost_text = f"""[bold blue]Cost Tracking[/bold blue]
-[dim]Session:[/dim] [bold white]${total_cost:.2f}[/bold white]
-[dim]Quota:[/dim] [bold white]${quota:.2f}[/bold white]
-[{cost_color}]{progress_bar}[/{cost_color}]"""
+            cost_text = (
+                f"[dashboard.header]Cost Tracking[/dashboard.header]\n"
+                f"[metric.label]Session:[/metric.label] [metric.cost]${total_cost:.2f}[/metric.cost]\n"
+                f"[metric.label]Quota:[/metric.label] [metric.cost]${quota:.2f}[/metric.cost]\n"
+                f"[{cost_color}]{progress_bar}[/{cost_color}]"
+            )
         else:
-            cost_text = f"""[bold blue]Cost Tracking[/bold blue]
-[dim]Session:[/dim] [bold white]${total_cost:.2f}[/bold white]
-[dim]No quota configured[/dim]"""
+            cost_text = (
+                f"[dashboard.header]Cost Tracking[/dashboard.header]\n"
+                f"[metric.label]Session:[/metric.label] [metric.cost]${total_cost:.2f}[/metric.cost]\n"
+                f"[metric.label]No quota configured[/metric.label]"
+            )
 
         return Panel(
-            cost_text, title="Cost", title_align="left", border_style="dim white"
+            cost_text,
+            title=Text("Cost", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_model_panel(
@@ -108,24 +140,27 @@ class DashboardUI:
 
         if not model_breakdown:
             return Panel(
-                "[dim]No model data available[/dim]",
-                title="Models",
-                border_style="dim white",
+                "[metric.label]No model data available[/metric.label]",
+                title=Text("Models", style="dashboard.title"),
+                border_style="dashboard.border",
             )
 
         model_lines = []
         for model, stats in model_breakdown.items():
             model_name = model[:25] + "..." if len(model) > 28 else model
             model_lines.append(
-                f"[dim]{model_name}[/dim]  "
-                f"[bold white]{stats['tokens'].total:,}[/bold white] [dim cyan]tokens[/dim cyan]  "
-                f"[bold white]${stats['cost']:.2f}[/bold white]"
+                f"[metric.label]{model_name}[/metric.label]  "
+                f"[metric.value]{stats['tokens'].total:,}[/metric.value] [metric.tokens]tokens[/metric.tokens]  "
+                f"[metric.cost]${stats['cost']:.2f}[/metric.cost]"
             )
 
         model_text = "\n".join(model_lines)
 
         return Panel(
-            model_text, title="Models", title_align="left", border_style="dim white"
+            model_text,
+            title=Text("Models", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_context_panel(
@@ -134,9 +169,9 @@ class DashboardUI:
         """Create context window status panel."""
         if not recent_file:
             return Panel(
-                "[dim]No recent interaction[/dim]",
-                title="Context",
-                border_style="dim white",
+                "[metric.label]No recent interaction[/metric.label]",
+                title=Text("Context", style="dashboard.title"),
+                border_style="dashboard.border",
             )
 
         # Calculate context size (input + cache read + cache write from most recent)
@@ -150,43 +185,53 @@ class DashboardUI:
         progress_bar = self.create_compact_progress_bar(percentage, 12)
         context_color = self.get_context_color(percentage)
 
-        context_text = f"""[dim]Size:[/dim] [bold white]{context_size:,}[/bold white]
-[dim]Window:[/dim] [bold white]{context_window:,}[/bold white]
-[{context_color}]{progress_bar}[/{context_color}]"""
+        context_text = (
+            f"[metric.label]Size:[/metric.label] [metric.value]{context_size:,}[/metric.value]\n"
+            f"[metric.label]Window:[/metric.label] [metric.value]{context_window:,}[/metric.value]\n"
+            f"[{context_color}]{progress_bar}[/{context_color}]"
+        )
 
         return Panel(
-            context_text, title="Context", title_align="left", border_style="dim white"
+            context_text,
+            title=Text("Context", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_burn_rate_panel(self, burn_rate: float) -> Panel:
         """Create output token rate panel (tokens per second)."""
         if burn_rate == 0:
-            burn_text = "[dim]No recent activity[/dim]"
+            burn_text = "[metric.label]No recent activity[/metric.label]"
         else:
             # Add level indicator
             if burn_rate > 90:
-                level = "[red]VERY FAST[/red]"
+                level = "[status.error]VERY FAST[/status.error]"
             elif burn_rate > 60:
-                level = "[cyan]FAST[/cyan]"
+                level = "[status.info]FAST[/status.info]"
             elif burn_rate >= 25:
-                level = "[yellow]MEDIUM[/yellow]"
+                level = "[status.warning]MEDIUM[/status.warning]"
             else:
-                level = "[green]SLOW[/green]"
+                level = "[status.success]SLOW[/status.success]"
 
-            burn_text = f"""[bold white]{burn_rate:,.1f}[/bold white] [dim cyan]tok/sec[/dim cyan]
-{level}"""
+            burn_text = (
+                f"[metric.value]{burn_rate:,.1f}[/metric.value] [metric.tokens]tok/sec[/metric.tokens]\n"
+                f"{level}"
+            )
 
         return Panel(
-            burn_text, title="Output Rate", title_align="left", border_style="dim white"
+            burn_text,
+            title=Text("Output Rate", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_session_time_panel(self, session: SessionData) -> Panel:
         """Create session time progress panel with 5-hour maximum."""
         if not session.start_time:
             return Panel(
-                "[dim]No session timing data[/dim]",
-                title="Session Time",
-                border_style="dim white",
+                "[metric.label]No session timing data[/metric.label]",
+                title=Text("Session Time", style="dashboard.title"),
+                border_style="dashboard.border",
             )
 
         # Calculate duration from start_time to now (updates continuously even when idle)
@@ -206,22 +251,26 @@ class DashboardUI:
         progress_bar = self.create_compact_progress_bar(percentage, 12)
         time_color = self.get_time_color(percentage)
 
-        time_text = f"""[dim]Duration:[/dim] [bold white]{duration_display}[/bold white]
-[dim]Max:[/dim] [bold white]{max_hours:.0f}h[/bold white]
-[{time_color}]{progress_bar}[/{time_color}]"""
+        time_text = (
+            f"[metric.label]Duration:[/metric.label] [metric.value]{duration_display}[/metric.value]\n"
+            f"[metric.label]Max:[/metric.label] [metric.value]{max_hours:.0f}h[/metric.value]\n"
+            f"[{time_color}]{progress_bar}[/{time_color}]"
+        )
 
         return Panel(
             time_text,
-            title="Session Time",
+            title=Text("Session Time", style="dashboard.title"),
             title_align="left",
-            border_style="dim white",
+            border_style="dashboard.border",
         )
 
     def create_recent_file_panel(self, recent_file: Optional[Any]) -> Panel:
         """Create recent file info panel."""
         if not recent_file:
             return Panel(
-                "[dim]No recent files[/dim]", title="Recent", border_style="dim white"
+                "[metric.label]No recent files[/metric.label]",
+                title=Text("Recent", style="dashboard.title"),
+                border_style="dashboard.border",
             )
 
         # Truncate file name if too long
@@ -229,15 +278,20 @@ class DashboardUI:
         if len(file_name) > 20:
             file_name = "..." + file_name[-17:]
 
-        file_text = f"""[dim]File:[/dim] [bold white]{file_name}[/bold white]
-[dim]Model:[/dim] [bold white]{recent_file.model_id[:15]}[/bold white]"""
+        file_text = (
+            f"[metric.label]File:[/metric.label] [metric.value]{file_name}[/metric.value]\n"
+            f"[metric.label]Model:[/metric.label] [metric.value]{recent_file.model_id[:15]}[/metric.value]"
+        )
 
         if recent_file.time_data and recent_file.time_data.duration_ms:
             duration = self.format_duration(recent_file.time_data.duration_ms)
-            file_text += f"\n[dim]Duration:[/dim] [bold white]{duration}[/bold white]"
+            file_text += f"\n[metric.label]Duration:[/metric.label] [metric.value]{duration}[/metric.value]"
 
         return Panel(
-            file_text, title="Recent", title_align="left", border_style="dim white"
+            file_text,
+            title=Text("Recent", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_dashboard_layout(
@@ -314,36 +368,15 @@ class DashboardUI:
 
     def get_cost_color(self, percentage: float) -> str:
         """Get color for cost based on percentage."""
-        if percentage >= 90:
-            return "red"
-        elif percentage >= 75:
-            return "yellow"
-        elif percentage >= 50:
-            return "orange"
-        else:
-            return "green"
+        return ColorFormatter.get_color_by_percentage(percentage)
 
     def get_context_color(self, percentage: float) -> str:
         """Get color for context window based on percentage."""
-        if percentage >= 95:
-            return "red"
-        elif percentage >= 85:
-            return "yellow"
-        elif percentage >= 70:
-            return "orange"
-        else:
-            return "green"
+        return ColorFormatter.get_color_by_percentage(percentage)
 
     def get_time_color(self, percentage: float) -> str:
         """Get color for session time based on percentage of 5-hour max."""
-        if percentage >= 90:
-            return "red"
-        elif percentage >= 75:
-            return "yellow"
-        elif percentage >= 50:
-            return "orange"
-        else:
-            return "green"
+        return ColorFormatter.get_color_by_percentage(percentage)
 
     def format_duration(self, milliseconds: int) -> str:
         """Format duration in milliseconds to hours and minutes format."""
@@ -356,8 +389,8 @@ class DashboardUI:
     def create_simple_table(self, data: Dict[str, Any]) -> Table:
         """Create a simple data table for fallback rendering."""
         table = Table(show_header=False, box=None)
-        table.add_column("Key", style="cyan")
-        table.add_column("Value", style="white")
+        table.add_column("Key", style="metric.important")
+        table.add_column("Value", style="metric.value")
 
         for key, value in data.items():
             table.add_row(key, str(value))
@@ -372,22 +405,34 @@ class DashboardUI:
 
         # Create compact horizontal layout showing workflow totals
         if recent_file:
-            token_text = f"""[bold blue]Recent Interaction[/bold blue]
-[dim]Input:[/dim] [bold white]{recent_file.tokens.input:,}[/bold white]    [dim]Cache W:[/dim] [bold white]{recent_file.tokens.cache_write:,}[/bold white]
-[dim]Output:[/dim] [bold white]{recent_file.tokens.output:,}[/bold white]   [dim]Cache R:[/dim] [bold white]{recent_file.tokens.cache_read:,}[/bold white]
-
-[bold blue]Workflow Totals[/bold blue] [dim]({workflow.session_count} sessions)[/dim]
-[dim]Input:[/dim] [bold white]{workflow_tokens.input:,}[/bold white]    [dim]Cache W:[/dim] [bold white]{workflow_tokens.cache_write:,}[/bold white]
-[dim]Output:[/dim] [bold white]{workflow_tokens.output:,}[/bold white]   [dim]Cache R:[/dim] [bold white]{workflow_tokens.cache_read:,}[/bold white]
-[dim]Total:[/dim] [bold cyan]{workflow_tokens.total:,}[/bold cyan]"""
+            token_text = (
+                f"[dashboard.header]Recent Interaction[/dashboard.header]\n"
+                f"[metric.label]Input:[/metric.label] [metric.value]{recent_file.tokens.input:,}[/metric.value]    "
+                f"[metric.label]Cache W:[/metric.label] [metric.value]{recent_file.tokens.cache_write:,}[/metric.value]\n"
+                f"[metric.label]Output:[/metric.label] [metric.value]{recent_file.tokens.output:,}[/metric.value]   "
+                f"[metric.label]Cache R:[/metric.label] [metric.value]{recent_file.tokens.cache_read:,}[/metric.value]\n\n"
+                f"[dashboard.header]Workflow Totals[/dashboard.header] [metric.label]({workflow.session_count} sessions)[/metric.label]\n"
+                f"[metric.label]Input:[/metric.label] [metric.value]{workflow_tokens.input:,}[/metric.value]    "
+                f"[metric.label]Cache W:[/metric.label] [metric.value]{workflow_tokens.cache_write:,}[/metric.value]\n"
+                f"[metric.label]Output:[/metric.label] [metric.value]{workflow_tokens.output:,}[/metric.value]   "
+                f"[metric.label]Cache R:[/metric.label] [metric.value]{workflow_tokens.cache_read:,}[/metric.value]\n"
+                f"[metric.label]Total:[/metric.label] [metric.tokens]{workflow_tokens.total:,}[/metric.tokens]"
+            )
         else:
-            token_text = f"""[bold blue]Workflow Totals[/bold blue] [dim]({workflow.session_count} sessions)[/dim]
-[dim]Input:[/dim] [bold white]{workflow_tokens.input:,}[/bold white]    [dim]Cache W:[/dim] [bold white]{workflow_tokens.cache_write:,}[/bold white]
-[dim]Output:[/dim] [bold white]{workflow_tokens.output:,}[/bold white]   [dim]Cache R:[/dim] [bold white]{workflow_tokens.cache_read:,}[/bold white]
-[dim]Total:[/dim] [bold cyan]{workflow_tokens.total:,}[/bold cyan]"""
+            token_text = (
+                f"[dashboard.header]Workflow Totals[/dashboard.header] [metric.label]({workflow.session_count} sessions)[/metric.label]\n"
+                f"[metric.label]Input:[/metric.label] [metric.value]{workflow_tokens.input:,}[/metric.value]    "
+                f"[metric.label]Cache W:[/metric.label] [metric.value]{workflow_tokens.cache_write:,}[/metric.value]\n"
+                f"[metric.label]Output:[/metric.label] [metric.value]{workflow_tokens.output:,}[/metric.value]   "
+                f"[metric.label]Cache R:[/metric.label] [metric.value]{workflow_tokens.cache_read:,}[/metric.value]\n"
+                f"[metric.label]Total:[/metric.label] [metric.tokens]{workflow_tokens.total:,}[/metric.tokens]"
+            )
 
         return Panel(
-            token_text, title="Tokens", title_align="left", border_style="dim white"
+            token_text,
+            title=Text("Tokens", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_workflow_cost_panel(
@@ -404,17 +449,24 @@ class DashboardUI:
             progress_bar = self.create_compact_progress_bar(percentage)
             cost_color = self.get_cost_color(percentage)
 
-            cost_text = f"""[bold blue]Workflow Cost[/bold blue]
-[dim]Total:[/dim] [bold white]${total_cost:.2f}[/bold white]
-[dim]Quota:[/dim] [bold white]${quota:.2f}[/bold white]
-[{cost_color}]{progress_bar}[/{cost_color}]"""
+            cost_text = (
+                f"[dashboard.header]Workflow Cost[/dashboard.header]\n"
+                f"[metric.label]Total:[/metric.label] [metric.cost]${total_cost:.2f}[/metric.cost]\n"
+                f"[metric.label]Quota:[/metric.label] [metric.cost]${quota:.2f}[/metric.cost]\n"
+                f"[{cost_color}]{progress_bar}[/{cost_color}]"
+            )
         else:
-            cost_text = f"""[bold blue]Workflow Cost[/bold blue]
-[dim]Total:[/dim] [bold white]${total_cost:.2f}[/bold white]
-[dim]No quota configured[/dim]"""
+            cost_text = (
+                f"[dashboard.header]Workflow Cost[/dashboard.header]\n"
+                f"[metric.label]Total:[/metric.label] [metric.cost]${total_cost:.2f}[/metric.cost]\n"
+                f"[metric.label]No quota configured[/metric.label]"
+            )
 
         return Panel(
-            cost_text, title="Cost", title_align="left", border_style="dim white"
+            cost_text,
+            title=Text("Cost", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_workflow_model_panel(
@@ -422,7 +474,6 @@ class DashboardUI:
     ) -> Panel:
         """Create model usage panel for workflow."""
         from collections import defaultdict
-        from decimal import Decimal
 
         # Aggregate model stats across all sessions
         model_data: Dict[str, Dict[str, Any]] = defaultdict(
@@ -437,9 +488,9 @@ class DashboardUI:
 
         if not model_data:
             return Panel(
-                "[dim]No model data available[/dim]",
-                title="Models",
-                border_style="dim white",
+                "[metric.label]No model data available[/metric.label]",
+                title=Text("Models", style="dashboard.title"),
+                border_style="dashboard.border",
             )
 
         model_lines = []
@@ -448,24 +499,27 @@ class DashboardUI:
         ):
             model_name = model[:25] + "..." if len(model) > 28 else model
             model_lines.append(
-                f"[dim]{model_name}[/dim]  "
-                f"[bold white]{stats['tokens']:,}[/bold white] [dim cyan]tokens[/dim cyan]  "
-                f"[bold white]${stats['cost']:.2f}[/bold white]"
+                f"[metric.label]{model_name}[/metric.label]  "
+                f"[metric.value]{stats['tokens']:,}[/metric.value] [metric.tokens]tokens[/metric.tokens]  "
+                f"[metric.cost]${stats['cost']:.2f}[/metric.cost]"
             )
 
         model_text = "\n".join(model_lines)
 
         return Panel(
-            model_text, title="Models", title_align="left", border_style="dim white"
+            model_text,
+            title=Text("Models", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
         )
 
     def create_workflow_time_panel(self, workflow: SessionWorkflow) -> Panel:
         """Create session time progress panel for workflow."""
         if not workflow.start_time:
             return Panel(
-                "[dim]No workflow timing data[/dim]",
-                title="Workflow Time",
-                border_style="dim white",
+                "[metric.label]No workflow timing data[/metric.label]",
+                title=Text("Workflow Time", style="dashboard.title"),
+                border_style="dashboard.border",
             )
 
         # Calculate duration from workflow start_time to now
@@ -485,13 +539,16 @@ class DashboardUI:
         progress_bar = self.create_compact_progress_bar(percentage, 12)
         time_color = self.get_time_color(percentage)
 
-        time_text = f"""[dim]Duration:[/dim] [bold white]{duration_display}[/bold white]
-[dim]Max:[/dim] [bold white]{max_hours:.0f}h[/bold white]
-[{time_color}]{progress_bar}[/{time_color}]"""
+        time_text = (
+            f"[metric.label]Duration:[/metric.label] [metric.value]{duration_display}[/metric.value]\n"
+            f"[metric.label]Max:[/metric.label] [metric.value]{max_hours:.0f}h[/metric.value]\n"
+            f"[{time_color}]{progress_bar}[/{time_color}]"
+        )
 
         return Panel(
             time_text,
-            title="Workflow Time",
+            title=Text("Workflow Time", style="dashboard.title"),
             title_align="left",
-            border_style="dim white",
+            border_style="dashboard.border",
         )
+
