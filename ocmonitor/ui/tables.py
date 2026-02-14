@@ -385,3 +385,160 @@ class TableFormatter:
             border_style="table.header"
         )
 
+    def create_hierarchical_table(self, hierarchy: Dict[str, Any], pricing_data: Dict[str, Any]) -> Table:
+        """Create a hierarchical table showing parent sessions with sub-agents.
+        
+        Args:
+            hierarchy: Dictionary with 'root_sessions' and 'source'
+            pricing_data: Model pricing information
+            
+        Returns:
+            Rich Table with hierarchical display
+        """
+        source = hierarchy.get('source', 'unknown')
+        root_sessions = hierarchy.get('root_sessions', [])
+        
+        table = Table(
+            title=f"OpenCode Sessions (Source: {source.upper()})",
+            show_header=True,
+            header_style="table.header",
+            title_style="table.title"
+        )
+        
+        # Add columns
+        table.add_column("Session", style="table.row.main", max_width=40)
+        table.add_column("Type", style="table.row.model", width=12)
+        table.add_column("Interactions", justify="right", style="status.success")
+        table.add_column("Tokens", justify="right", style="table.row.tokens")
+        table.add_column("Cost", justify="right", style="table.row.cost")
+        table.add_column("Duration", justify="right", style="table.row.time")
+        
+        for root in root_sessions:
+            session = root['session']
+            sub_agents = root.get('sub_agents', [])
+            
+            # Parent session row
+            session_cost = session.calculate_total_cost(pricing_data)
+            duration = self._format_duration(session.duration_ms) if session.duration_ms else 'N/A'
+            title = session.display_title
+            if len(title) > 37:
+                title = title[:34] + "..."
+            
+            # Format parent row with folder icon
+            parent_text = f"📁 {title}"
+            
+            table.add_row(
+                Text(parent_text, style="bold"),
+                "Parent",
+                self.format_number(session.interaction_count),
+                self.format_number(session.total_tokens.total),
+                Text(self.format_currency(session_cost), style=self.get_cost_color(session_cost)),
+                duration
+            )
+            
+            # Sub-agent rows
+            for sub in sub_agents:
+                sub_cost = sub.calculate_total_cost(pricing_data)
+                sub_duration = self._format_duration(sub.duration_ms) if sub.duration_ms else 'N/A'
+                sub_title = sub.display_title
+                if len(sub_title) > 35:
+                    sub_title = sub_title[:32] + "..."
+                
+                # Indent sub-agent with tree branch
+                sub_text = f"└── ↳ {sub_title}"
+                
+                table.add_row(
+                    Text(sub_text, style="dim"),
+                    "Sub-agent",
+                    self.format_number(sub.interaction_count),
+                    self.format_number(sub.total_tokens.total),
+                    Text(self.format_currency(sub_cost), style=self.get_cost_color(sub_cost)),
+                    sub_duration
+                )
+            
+            # Add separator after each parent group (except last)
+            if root != root_sessions[-1]:
+                table.add_section()
+        
+        return table
+
+    def create_live_dashboard_table(self, hierarchy: Dict[str, Any], pricing_data: Dict[str, Any]) -> Table:
+        """Create a live dashboard table with hierarchical display.
+        
+        Args:
+            hierarchy: Dictionary with 'root_sessions' and 'source'
+            pricing_data: Model pricing information
+            
+        Returns:
+            Rich Table formatted for live dashboard
+        """
+        source = hierarchy.get('source', 'unknown')
+        root_sessions = hierarchy.get('root_sessions', [])
+        
+        # Get top 10 most recent parent sessions
+        recent_roots = root_sessions[:10]
+        
+        table = Table(
+            show_header=True,
+            header_style="table.header",
+            title_style="table.title",
+            expand=True
+        )
+        
+        # Add columns
+        table.add_column("Session", style="table.row.main", max_width=45)
+        table.add_column("Tokens", justify="right", style="table.row.tokens", width=12)
+        table.add_column("Cost", justify="right", style="table.row.cost", width=10)
+        table.add_column("Quota", justify="left", style="table.row.time", width=20)
+        
+        for root in recent_roots:
+            session = root['session']
+            sub_agents = root.get('sub_agents', [])
+            
+            # Parent session
+            session_cost = session.calculate_total_cost(pricing_data)
+            title = session.display_title
+            if len(title) > 40:
+                title = title[:37] + "..."
+            
+            # Progress bar for quota
+            quota_bar = self.create_progress_bar(session.duration_percentage, width=12)
+            
+            parent_text = f"📁 {title}"
+            
+            table.add_row(
+                Text(parent_text, style="bold"),
+                self.format_number(session.total_tokens.total),
+                Text(self.format_currency(session_cost), style=self.get_cost_color(session_cost)),
+                quota_bar
+            )
+            
+            # Sub-agents (show max 3)
+            for sub in sub_agents[:3]:
+                sub_cost = sub.calculate_total_cost(pricing_data)
+                sub_title = sub.display_title
+                if len(sub_title) > 38:
+                    sub_title = sub_title[:35] + "..."
+                
+                sub_text = f"└── ↳ {sub_title}"
+                
+                table.add_row(
+                    Text(sub_text, style="dim"),
+                    self.format_number(sub.total_tokens.total),
+                    Text(self.format_currency(sub_cost), style=self.get_cost_color(sub_cost)),
+                    ""
+                )
+            
+            # Show indicator if more sub-agents exist
+            if len(sub_agents) > 3:
+                table.add_row(
+                    Text(f"    ... and {len(sub_agents) - 3} more sub-agents", style="dim italic"),
+                    "", "", ""
+                )
+            
+            # Add separator
+            if root != recent_roots[-1]:
+                table.add_section()
+        
+        return table
+

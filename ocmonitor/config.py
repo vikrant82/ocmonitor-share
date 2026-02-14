@@ -20,6 +20,7 @@ class PathsConfig(BaseModel):
     """Configuration for file paths."""
     messages_dir: str = Field(default=opencode_storage_path("message"))
     opencode_storage_dir: str = Field(default=opencode_storage_path())
+    database_file: str = Field(default="~/.local/share/opencode/opencode.db")
     export_dir: str = Field(default="./exports")
 
     @field_validator('messages_dir', 'opencode_storage_dir', 'export_dir')

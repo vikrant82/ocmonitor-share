@@ -180,24 +180,33 @@ source ~/.bashrc  # or ~/.zshrc
 # Show current configuration
 ocmonitor config show
 
-# Analyze all your sessions
-ocmonitor sessions ~/.local/share/opencode/storage/message
+# Analyze all your sessions (auto-detects SQLite or files)
+ocmonitor sessions
 
 # Get a weekly breakdown
-ocmonitor weekly ~/.local/share/opencode/storage/message
+ocmonitor weekly
 
 # Start live monitoring
-ocmonitor live ~/.local/share/opencode/storage/message
+ocmonitor live
+
+# Force specific data source
+ocmonitor live --source sqlite
+ocmonitor sessions --source files
 ```
 
-### Default OpenCode Message Location
+### Default OpenCode Storage Locations
 
-By default, OpenCode stores messages at:
+OpenCode v1.2.0+ uses SQLite database:
 ```
-~/.local/share/opencode/storage/message
+~/.local/share/opencode/opencode.db
 ```
 
-You can use this path in all commands, or configure a custom path (see [Configuration](#configuration) section).
+Legacy versions (< v1.2.0) use flat JSON files:
+```
+~/.local/share/opencode/storage/message/
+```
+
+The tool automatically detects and uses the appropriate source. Use `--source` flag to force a specific backend.
 
 ---
 
@@ -225,18 +234,25 @@ ocmonitor session ~/.local/share/opencode/storage/message/ses_20250118_143022 --
 
 ```
 
-#### `ocmonitor sessions <path>`
-Analyze all sessions in a directory with summary statistics.
+#### `ocmonitor sessions [path]`
+Analyze all sessions with summary statistics. Auto-detects SQLite database or legacy files.
 
 ```bash
-# Analyze all sessions
+# Analyze all sessions (auto-detect source)
+ocmonitor sessions
+
+# Specify path (legacy files only)
 ocmonitor sessions ~/.local/share/opencode/storage/message
 
 # Limit to recent sessions
-ocmonitor sessions ~/.local/share/opencode/storage/message --limit 10
+ocmonitor sessions --limit 10
+
+# Force specific source
+ocmonitor sessions --source sqlite
+ocmonitor sessions --source files
 
 # JSON format for programmatic use
-ocmonitor sessions ~/.local/share/opencode/storage/message --format json
+ocmonitor sessions --format json
 ```
 
 **Example Output:**
@@ -421,9 +437,9 @@ OpenCode Monitor searches for configuration files in this order:
 3. `ocmonitor.toml` (current working directory)
 4. Project directory fallback
 
-### Setting Custom Message Path
+### Data Source Configuration
 
-OpenCode Monitor can be configured to use custom paths for your message data.
+OpenCode Monitor supports both SQLite database (OpenCode v1.2.0+) and legacy JSON files (< v1.2.0).
 
 #### Method 1: Edit Configuration File
 
@@ -431,18 +447,21 @@ Edit your `~/.config/ocmonitor/config.toml` file:
 
 ```toml
 [paths]
-# Custom path to OpenCode messages directory
-messages_dir = "/custom/path/to/messages"
+# OpenCode v1.2.0+ SQLite database (preferred)
+database_file = "~/.local/share/opencode/opencode.db"
+# Legacy file storage (fallback for pre-v1.2.0)
+messages_dir = "~/.local/share/opencode/storage/message"
 # Directory for exports
 export_dir = "./my-exports"
 ```
 
-#### Method 2: Environment Variable
-
-Set the path via environment variable:
+#### Method 2: Environment Variables
 
 ```bash
-# Set custom path
+# SQLite database path
+export OCMONITOR_DATABASE_FILE="/custom/path/to/opencode.db"
+
+# Legacy messages directory
 export OCMONITOR_MESSAGES_DIR="/custom/path/to/messages"
 
 # Use in commands
@@ -451,11 +470,13 @@ ocmonitor sessions
 
 #### Method 3: Command Line Override
 
-Override the path for individual commands:
-
 ```bash
-# Use custom path for this command only
-ocmonitor sessions /custom/path/to/messages
+# Force specific source
+ocmonitor sessions --source sqlite
+ocmonitor sessions --source files
+
+# With legacy file path
+ocmonitor sessions --source files /custom/path/to/messages
 ```
 
 ### Full Configuration Options
@@ -466,7 +487,9 @@ Here's a complete `~/.config/ocmonitor/config.toml` with all available options:
 # OpenCode Monitor Configuration
 
 [paths]
-# Default path to OpenCode messages directory
+# OpenCode v1.2.0+ SQLite database (preferred)
+database_file = "~/.local/share/opencode/opencode.db"
+# Legacy path to OpenCode messages directory (< v1.2.0)
 messages_dir = "~/.local/share/opencode/storage/message"
 # Directory for exports
 export_dir = "./exports"
@@ -831,13 +854,16 @@ Export detailed session data:
 
 ```bash
 # Export all sessions to CSV
-ocmonitor export sessions ~/.local/share/opencode/storage/message --format csv --output sessions_report.csv
+ocmonitor export sessions --format csv --output sessions_report.csv
 
 # Export to JSON
-ocmonitor export sessions ~/.local/share/opencode/storage/message --format json --output sessions_data.json
+ocmonitor export sessions --format json --output sessions_data.json
 
 # Export recent sessions only
-ocmonitor export sessions ~/.local/share/opencode/storage/message --limit 50 --format csv
+ocmonitor export sessions --limit 50 --format csv
+
+# Force SQLite source
+ocmonitor export sessions --source sqlite --format csv
 ```
 
 #### 2. Daily Reports Export
@@ -978,17 +1004,16 @@ Create a script for daily exports:
 
 DATE=$(date +%Y%m%d)
 EXPORT_DIR="./reports"
-MESSAGES_PATH="~/.local/share/opencode/storage/message"
 
 mkdir -p $EXPORT_DIR
 
 # Export daily report
-ocmonitor export daily $MESSAGES_PATH \
+ocmonitor export daily \
   --format csv \
   --output "$EXPORT_DIR/daily_${DATE}.csv"
 
 # Export sessions
-ocmonitor export sessions $MESSAGES_PATH \
+ocmonitor export sessions \
   --format json \
   --output "$EXPORT_DIR/sessions_${DATE}.json" \
   --include-metadata
@@ -1003,12 +1028,12 @@ echo "Reports exported to $EXPORT_DIR/"
 # weekly_report.sh
 
 WEEK=$(date +%Y_W%U)
-ocmonitor export weekly ~/.local/share/opencode/storage/message \
+ocmonitor export weekly \
   --format csv \
   --output "weekly_report_${WEEK}.csv" \
   --weeks 1
 
-ocmonitor export models ~/.local/share/opencode/storage/message \
+ocmonitor export models \
   --format csv \
   --output "model_usage_${WEEK}.csv"
 ```
@@ -1408,20 +1433,45 @@ ocmonitor config validate
 
 ```bash
 # Test export with verbose output
-ocmonitor export sessions ~/.local/share/opencode/storage/message --format csv --output test.csv --verbose
+ocmonitor export sessions --format csv --output test.csv --verbose
 
 # Check export directory permissions
 ls -la ./exports
 
 # Try different export format
-ocmonitor export sessions ~/.local/share/opencode/storage/message --format json --output test.json
+ocmonitor export sessions --format json --output test.json
 
 # Test with limited data
-ocmonitor export sessions ~/.local/share/opencode/storage/message --limit 5 --format csv
+ocmonitor export sessions --limit 5 --format csv
 
 # Check disk space
 df -h .
 ```
+
+#### 9. SQLite Database Not Found (OpenCode v1.2.0+)
+
+**Problem:** Sessions not found after upgrading OpenCode to v1.2.0+
+
+**Solutions:**
+
+```bash
+# Check if SQLite database exists
+ls -la ~/.local/share/opencode/opencode.db
+
+# Verify data source detection
+ocmonitor sessions --verbose
+
+# Force SQLite mode
+ocmonitor sessions --source sqlite
+
+# Check for legacy files (pre-v1.2.0)
+ls -la ~/.local/share/opencode/storage/message/
+
+# Update configuration to specify database location
+ocmonitor config set paths.database_file "/custom/path/to/opencode.db"
+```
+
+**Note:** OpenCode v1.2.0+ stores sessions in SQLite at `~/.local/share/opencode/opencode.db`. The tool automatically detects and prefers SQLite when available, falling back to legacy files only when SQLite is not found.
 
 ### Debug Mode
 
@@ -1507,13 +1557,13 @@ The `--breakdown` flag adds per-model token consumption and cost details to dail
 
 ```bash
 # Show model breakdown in daily report
-ocmonitor daily ~/.local/share/opencode/storage/message --breakdown
+ocmonitor daily --breakdown
 
 # Show model breakdown in weekly report
-ocmonitor weekly ~/.local/share/opencode/storage/message --breakdown
+ocmonitor weekly --breakdown
 
 # Show model breakdown in monthly report
-ocmonitor monthly ~/.local/share/opencode/storage/message --breakdown
+ocmonitor monthly --breakdown
 ```
 
 **Example Output:**
@@ -1545,23 +1595,22 @@ ocmonitor monthly ~/.local/share/opencode/storage/message --breakdown
 
 ```bash
 # Process large datasets efficiently
-ocmonitor sessions ~/.local/share/opencode/storage/message --limit 1000
+ocmonitor sessions --limit 1000
 
 # Use JSON format for faster processing
-ocmonitor sessions ~/.local/share/opencode/storage/message --format json | jq '.sessions | length'
+ocmonitor sessions --format json | jq '.sessions | length'
 
 # Focus on recent data
-ocmonitor daily ~/.local/share/opencode/storage/message --days 7
+ocmonitor daily --days 7
 ```
 
 #### Batch Processing
 
 ```bash
-# Process multiple directories
-for dir in /path/to/project1/messages /path/to/project2/messages; do
-    echo "Processing $dir"
-    ocmonitor sessions "$dir" --format csv --output "$(basename $dir)_report.csv"
-done
+# Export multiple reports with different filters
+ocmonitor sessions --limit 100 --format csv --output recent_sessions.csv
+ocmonitor weekly --weeks 4 --format json --output last_month.json
+ocmonitor projects --format csv --output all_projects.csv
 ```
 
 ### Integration with Other Tools
@@ -1572,7 +1621,7 @@ done
 #!/bin/bash
 # Monthly cost check script
 
-COST=$(ocmonitor monthly ~/.local/share/opencode/storage/message --format json | jq '.summary.total_cost')
+COST=$(ocmonitor monthly --format json | jq '.summary.total_cost')
 LIMIT=100.0
 
 if (( $(echo "$COST > $LIMIT" | bc -l) )); then
@@ -1585,13 +1634,13 @@ fi
 
 ```bash
 # Export for data analysis
-ocmonitor export sessions ~/.local/share/opencode/storage/message \
+ocmonitor export sessions \
     --format json \
     --include-raw-data \
     --output sessions.json
 
 # Export project data for analysis
-ocmonitor export projects ~/.local/share/opencode/storage/message \
+ocmonitor export projects \
     --format json \
     --include-metadata \
     --output projects.json
@@ -1633,7 +1682,7 @@ if __name__ == "__main__":
 
 Usage:
 ```bash
-ocmonitor export sessions ~/.local/share/opencode/storage/message --format json --output temp.json
+ocmonitor export sessions --format json --output temp.json
 python3 custom_export.py temp.json > custom_report.csv
 ```
 
@@ -1653,7 +1702,7 @@ cp ~/.config/ocmonitor/config.toml ~/.config/ocmonitor/config.prod.toml
 nano ~/.config/ocmonitor/config.prod.toml
 
 # Use specific configuration
-OCMONITOR_CONFIG=~/.config/ocmonitor/config.dev.toml ocmonitor sessions ~/.local/share/opencode/storage/message
+OCMONITOR_CONFIG=~/.config/ocmonitor/config.dev.toml ocmonitor sessions
 ```
 
 ---

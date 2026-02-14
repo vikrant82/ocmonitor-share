@@ -1,7 +1,7 @@
 """Analytics data models for OpenCode Monitor."""
 
 from datetime import datetime, date, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from decimal import Decimal
 from pydantic import BaseModel, Field, computed_field
 from collections import defaultdict
@@ -190,7 +190,10 @@ class ProjectBreakdownReport(BaseModel):
     @property
     def total_cost(self) -> Decimal:
         """Calculate total cost across all projects."""
-        return sum(project.total_cost for project in self.project_stats)
+        total: Decimal = Decimal('0.0')
+        for project in self.project_stats:
+            total += project.total_cost
+        return total
 
     @computed_field
     @property
@@ -298,15 +301,20 @@ class TimeframeAnalyzer:
                         continue
                     filtered_sessions.append(session)
 
-        model_data = defaultdict(lambda: {
-            'tokens': TokenUsage(),
-            'sessions': set(),
-            'interactions': 0,
-            'cost': Decimal('0.0'),
-            'duration_ms': 0,
-            'first_used': None,
-            'last_used': None
-        })
+        from typing import Dict, Set
+        
+        # Define model stats structure with proper types
+        class ModelStats:
+            def __init__(self):
+                self.tokens = TokenUsage()
+                self.sessions: Set[str] = set()
+                self.interactions = 0
+                self.cost = Decimal('0.0')
+                self.duration_ms = 0
+                self.first_used: Optional[datetime] = None
+                self.last_used: Optional[datetime] = None
+        
+        model_data: Dict[str, ModelStats] = defaultdict(ModelStats)
 
         for session in filtered_sessions:
             for model in session.models_used:
@@ -315,42 +323,40 @@ class TimeframeAnalyzer:
 
                 # Update token counts
                 for file in model_files:
-                    model_stats['tokens'].input += file.tokens.input
-                    model_stats['tokens'].output += file.tokens.output
-                    model_stats['tokens'].cache_write += file.tokens.cache_write
-                    model_stats['tokens'].cache_read += file.tokens.cache_read
-                    model_stats['interactions'] += 1
-                    model_stats['cost'] += file.calculate_cost(pricing_data)
+                    model_stats.tokens.input += file.tokens.input
+                    model_stats.tokens.output += file.tokens.output
+                    model_stats.tokens.cache_write += file.tokens.cache_write
+                    model_stats.tokens.cache_read += file.tokens.cache_read
+                    model_stats.interactions += 1
+                    model_stats.cost += file.calculate_cost(pricing_data)
                     # Track processing duration
                     if file.time_data and file.time_data.duration_ms:
-                        model_stats['duration_ms'] += file.time_data.duration_ms
+                        model_stats.duration_ms += file.time_data.duration_ms
 
                 # Track sessions
-                model_stats['sessions'].add(session.session_id)
+                model_stats.sessions.add(session.session_id)
 
                 # Update first/last used times
                 if session.start_time:
-                    if (model_stats['first_used'] is None or
-                        session.start_time < model_stats['first_used']):
-                        model_stats['first_used'] = session.start_time
+                    if model_stats.first_used is None or session.start_time < model_stats.first_used:
+                        model_stats.first_used = session.start_time
 
                 if session.end_time:
-                    if (model_stats['last_used'] is None or
-                        session.end_time > model_stats['last_used']):
-                        model_stats['last_used'] = session.end_time
+                    if model_stats.last_used is None or session.end_time > model_stats.last_used:
+                        model_stats.last_used = session.end_time
 
         # Convert to ModelUsageStats objects
         model_stats_list = []
         for model_name, stats in model_data.items():
             model_stats_list.append(ModelUsageStats(
                 model_name=model_name,
-                total_tokens=stats['tokens'],
-                total_sessions=len(stats['sessions']),
-                total_interactions=stats['interactions'],
-                total_cost=stats['cost'],
-                total_duration_ms=stats['duration_ms'],
-                first_used=stats['first_used'],
-                last_used=stats['last_used']
+                total_tokens=stats.tokens,
+                total_sessions=len(stats.sessions),
+                total_interactions=stats.interactions,
+                total_cost=stats.cost,
+                total_duration_ms=stats.duration_ms,
+                first_used=stats.first_used,
+                last_used=stats.last_used
             ))
 
         # Sort by total cost descending
@@ -385,15 +391,18 @@ class TimeframeAnalyzer:
                         continue
                     filtered_sessions.append(session)
 
-        project_data = defaultdict(lambda: {
-            'tokens': TokenUsage(),
-            'sessions': 0,
-            'interactions': 0,
-            'cost': Decimal('0.0'),
-            'models_used': set(),
-            'first_activity': None,
-            'last_activity': None
-        })
+        # Define project stats structure with proper types
+        class ProjectStats:
+            def __init__(self):
+                self.tokens = TokenUsage()
+                self.sessions = 0
+                self.interactions = 0
+                self.cost = Decimal('0.0')
+                self.models_used: Set[str] = set()
+                self.first_activity: Optional[datetime] = None
+                self.last_activity: Optional[datetime] = None
+        
+        project_data: Dict[str, ProjectStats] = defaultdict(ProjectStats)
 
         for session in filtered_sessions:
             project_name = session.project_name or "Unknown"
@@ -401,39 +410,39 @@ class TimeframeAnalyzer:
             
             # Update aggregated data
             session_tokens = session.total_tokens
-            project_stats['tokens'].input += session_tokens.input
-            project_stats['tokens'].output += session_tokens.output
-            project_stats['tokens'].cache_write += session_tokens.cache_write
-            project_stats['tokens'].cache_read += session_tokens.cache_read
+            project_stats.tokens.input += session_tokens.input
+            project_stats.tokens.output += session_tokens.output
+            project_stats.tokens.cache_write += session_tokens.cache_write
+            project_stats.tokens.cache_read += session_tokens.cache_read
             
-            project_stats['sessions'] += 1
-            project_stats['interactions'] += session.interaction_count
-            project_stats['cost'] += session.calculate_total_cost(pricing_data)
-            project_stats['models_used'].update(session.models_used)
+            project_stats.sessions += 1
+            project_stats.interactions += session.interaction_count
+            project_stats.cost += session.calculate_total_cost(pricing_data)
+            project_stats.models_used.update(session.models_used)
             
             # Track first/last activity times
             if session.start_time:
-                if (project_stats['first_activity'] is None or 
-                    session.start_time < project_stats['first_activity']):
-                    project_stats['first_activity'] = session.start_time
+                if (project_stats.first_activity is None or 
+                    session.start_time < project_stats.first_activity):
+                    project_stats.first_activity = session.start_time
                     
             if session.end_time:
-                if (project_stats['last_activity'] is None or 
-                    session.end_time > project_stats['last_activity']):
-                    project_stats['last_activity'] = session.end_time
+                if (project_stats.last_activity is None or 
+                    session.end_time > project_stats.last_activity):
+                    project_stats.last_activity = session.end_time
 
         # Convert to ProjectUsageStats objects
         project_stats = []
         for project_name, stats in project_data.items():
             project_stats.append(ProjectUsageStats(
                 project_name=project_name,
-                total_tokens=stats['tokens'],
-                total_sessions=stats['sessions'],
-                total_interactions=stats['interactions'],
-                total_cost=stats['cost'],
-                models_used=list(stats['models_used']),
-                first_activity=stats['first_activity'],
-                last_activity=stats['last_activity']
+                total_tokens=stats.tokens,
+                total_sessions=stats.sessions,
+                total_interactions=stats.interactions,
+                total_cost=stats.cost,
+                models_used=list(stats.models_used),
+                first_activity=stats.first_activity,
+                last_activity=stats.last_activity
             ))
 
         # Sort by total cost descending

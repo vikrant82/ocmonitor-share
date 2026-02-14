@@ -23,6 +23,12 @@ Transform your OpenCode usage data into beautiful, actionable insights with comp
 - **🚀 Output Speed Tracking** - Average output tokens per second for each model in reports
 - **🔗 Workflow Grouping** - Automatically groups main sessions with their sub-agent sessions (explore, etc.)
 
+### 🗄️ Storage Support
+- **SQLite Database** - Native support for OpenCode v1.2.0+ SQLite format (`~/.local/share/opencode/opencode.db`)
+- **Legacy File Support** - Backwards compatible with pre-v1.2.0 JSON file storage
+- **Auto Detection** - Automatically detects and uses the appropriate storage backend
+- **Hierarchical Sessions** - Parent/sub-agent relationships from SQLite displayed as tree view
+
 ### 🎨 Beautiful User Interface
 - **🌈 Rich Terminal UI** - Professional design with clean styling and optimal space utilization
 - **📊 Progress Bars** - Visual indicators for cost quotas, context usage, and session time
@@ -106,17 +112,21 @@ python3 -m pip install -e .
 # Quick configuration check
 ocmonitor config show
 
-# Analyze your sessions (light theme)
-ocmonitor --theme light sessions ~/.local/share/opencode/storage/message
+# Analyze your sessions (auto-detects SQLite or files)
+ocmonitor --theme light sessions
 
 # Analyze by project
-ocmonitor projects ~/.local/share/opencode/storage/message
+ocmonitor projects
 
 # Real-time monitoring (dark theme)
-ocmonitor --theme dark live ~/.local/share/opencode/storage/message
+ocmonitor --theme dark live
 
 # Export your data
-ocmonitor export sessions ~/.local/share/opencode/storage/message --format csv
+ocmonitor export sessions --format csv
+
+# Force specific data source
+ocmonitor sessions --source sqlite
+ocmonitor sessions --source files
 ```
 
 ## 📖 Documentation
@@ -263,6 +273,9 @@ The tool is highly configurable through the `config.toml` file:
 
 ```toml
 [paths]
+# OpenCode v1.2.0+ SQLite database (preferred)
+database_file = "~/.local/share/opencode/opencode.db"
+# Legacy file storage (fallback)
 messages_dir = "~/.local/share/opencode/storage/message"
 export_dir = "./exports"
 
@@ -340,7 +353,9 @@ ocmonitor/
 │   ├── ui/                # Rich UI components
 │   │   └── dashboard.py   # Live dashboard UI
 │   └── utils/             # Utility functions
-│       └── file_utils.py  # File processing
+│       ├── data_loader.py # Unified data loading (SQLite/files)
+│       ├── file_utils.py  # File processing
+│       └── sqlite_utils.py # SQLite database access
 ├── config.toml            # User configuration
 ├── models.json            # AI model pricing data
 └── test_sessions/         # Sample test data

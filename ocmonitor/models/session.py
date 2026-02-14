@@ -1,7 +1,7 @@
 """Session data models for OpenCode Monitor."""
 
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from pathlib import Path
 from decimal import Decimal
 from pydantic import BaseModel, Field, computed_field, field_validator, ConfigDict
@@ -142,17 +142,22 @@ class InteractionFile(BaseModel):
 class SessionData(BaseModel):
     """Model for a complete OpenCode session."""
     session_id: str
-    session_path: Path
+    session_path: Optional[Path] = Field(default=None, description="Path to session directory (None for SQLite sessions)")
+    parent_id: Optional[str] = Field(default=None, description="Parent session ID for sub-agents")
+    is_sub_agent: bool = Field(default=False, description="Whether this is a sub-agent session")
     files: List[InteractionFile] = Field(default_factory=list)
     session_title: Optional[str] = Field(default=None, description="Human-readable session title from OpenCode")
     agent: Optional[str] = Field(default=None, description="Agent type for this session (from first interaction)")
+    source: Literal["sqlite", "files"] = Field(default="sqlite", description="Data source: sqlite or files")
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @field_validator('session_path')
     @classmethod
     def validate_session_path(cls, v):
-        """Ensure session path is a Path object."""
+        """Ensure session path is a Path object if provided."""
+        if v is None:
+            return None
         return Path(v) if not isinstance(v, Path) else v
 
     @computed_field

@@ -5,6 +5,53 @@ All notable changes to OpenCode Monitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-02-14
+
+### ✨ SQLite Database Support
+
+OpenCode v1.2.0+ migrated session storage from flat JSON files to SQLite. This release adds full support for the new database format while maintaining backwards compatibility.
+
+#### Added
+- **SQLite Database Support** - Read sessions from `~/.local/share/opencode/opencode.db`
+- **Dual Storage Architecture** - Automatically prefers SQLite when available, falls back to legacy files
+- **Hierarchical Session Display** - Parent sessions with sub-agents shown in tree view
+- **Live Workflow Monitoring** - Tracks only current workflow (main + sub-agents) from SQLite
+- **DataLoader Abstraction** - Unified interface with automatic source detection
+
+#### Files Added
+- `ocmonitor/utils/sqlite_utils.py` - SQLite database access layer
+- `ocmonitor/utils/data_loader.py` - Unified data loading with automatic fallback
+
+#### Modified Commands
+```bash
+# Auto-detect SQLite or files (default)
+ocmonitor live
+ocmonitor sessions
+
+# Force specific source
+ocmonitor live --source sqlite
+ocmonitor live --source files
+ocmonitor sessions --source sqlite
+```
+
+#### Features
+- 🗄️ **SQLite Integration** - Reads from `opencode.db` session/message tables
+- 🌳 **Hierarchical View** - Parent sessions grouped with sub-agents
+- 🔄 **Auto Fallback** - Automatically uses legacy files if SQLite unavailable
+- 📊 **Workflow Tracking** - Live dashboard monitors current workflow only
+- 🔍 **Source Detection** - Verbose mode shows which data source is active
+
+#### Database Schema Support
+- **session table** → SessionData with parent_id relationships
+- **message table** → InteractionFile (parsed from JSON data column)
+- **project table** → Project paths via JOIN
+
+#### Technical Changes
+- SessionData model extended with `parent_id`, `is_sub_agent`, `source` fields
+- LiveMonitor adds SQLite workflow monitoring methods
+- DataLoader provides `sqlite_available`, `files_available` properties
+- Backwards compatible with OpenCode < v1.2.0
+
 ## [0.9.0] - 2026-02-05
 
 ### 🎉 Initial Release
@@ -96,6 +143,7 @@ ocmonitor export <type>    # Data export functionality
 
 ## Version History Summary
 
+- **v0.9.1** - SQLite database support for OpenCode v1.2.0+
 - **v0.9.0** - Pre-release version for community feedback and testing before stable v1.0.0
 - **Pre-release** - Development phases transforming basic scripts into professional CLI tool
 

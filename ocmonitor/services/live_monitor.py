@@ -4,15 +4,77 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from decimal import Decimal
 from rich.live import Live
 from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.layout import Layout
 
-from ..models.session import SessionData, InteractionFile
+from ..models.session import SessionData, InteractionFile, TokenUsage
 from ..models.workflow import SessionWorkflow
 from ..utils.file_utils import FileProcessor
+from ..utils.data_loader import DataLoader
+from ..utils.sqlite_utils import SQLiteProcessor
 from ..ui.dashboard import DashboardUI
+from ..ui.tables import TableFormatter
 from ..config import ModelPricing
 from .session_grouper import SessionGrouper
+
+
+class WorkflowWrapper:
+    """Wrapper for SQLite workflow data that mimics SessionWorkflow interface."""
+    
+    def __init__(self, workflow_dict: Dict[str, Any], pricing_data: Dict[str, ModelPricing]):
+        self.main_session: SessionData = workflow_dict['main_session']
+        self.sub_agents: List[SessionData] = workflow_dict['sub_agents']
+        self.all_sessions: List[SessionData] = workflow_dict['all_sessions']
+        self.project_name: str = workflow_dict['project_name']
+        self.display_title: str = workflow_dict['display_title']
+        self.session_count: int = workflow_dict['session_count']
+        self.sub_agent_count: int = workflow_dict['sub_agent_count']
+        self.has_sub_agents: bool = workflow_dict['has_sub_agents']
+        self.workflow_id: str = workflow_dict['workflow_id']
+        self._pricing_data = pricing_data
+        
+        # Calculate total tokens across all sessions
+        self.total_tokens = TokenUsage()
+        for session in self.all_sessions:
+            tokens = session.total_tokens
+            self.total_tokens.input += tokens.input
+            self.total_tokens.output += tokens.output
+            self.total_tokens.cache_write += tokens.cache_write
+            self.total_tokens.cache_read += tokens.cache_read
+        
+        # Calculate time properties across all sessions
+        start_times = []
+        end_times = []
+        for session in self.all_sessions:
+            if session.start_time:
+                start_times.append(session.start_time)
+            if session.end_time:
+                end_times.append(session.end_time)
+        
+        self.start_time: Optional[datetime] = min(start_times) if start_times else None
+        self.end_time: Optional[datetime] = max(end_times) if end_times else None
+        
+        # Calculate duration
+        if self.start_time and self.end_time:
+            self.duration_ms: Optional[int] = int((self.end_time - self.start_time).total_seconds() * 1000)
+            self.duration_hours: float = self.duration_ms / (1000 * 60 * 60)
+            self.duration_percentage: float = min(100.0, (self.duration_hours / 5.0) * 100)
+        else:
+            self.duration_ms = None
+            self.duration_hours = 0.0
+            self.duration_percentage = 0.0
+    
+    def calculate_total_cost(self, pricing_data: Optional[Dict[str, ModelPricing]] = None) -> Decimal:
+        """Calculate total cost across all sessions in workflow."""
+        pricing = pricing_data or self._pricing_data
+        total = Decimal('0.0')
+        for session in self.all_sessions:
+            total += session.calculate_total_cost(pricing)
+        return total
 
 
 class LiveMonitor:
@@ -394,57 +456,233 @@ class LiveMonitor:
             'usage_percentage': min(100.0, usage_percentage)
         }
 
-    def validate_monitoring_setup(self, base_path: str) -> Dict[str, Any]:
+    def start_sqlite_workflow_monitoring(self, refresh_interval: int = 5):
+        """Start live monitoring of the most recent workflow from SQLite (v1.2.0+).
+        
+        Similar to file-based workflow monitoring but reads from SQLite database.
+        Shows only the current workflow (main session + sub-agents) with detailed metrics.
+        
+        Args:
+            refresh_interval: Update interval in seconds
+        """
+        try:
+            # Check if SQLite is available
+            db_path = SQLiteProcessor.find_database_path()
+            if not db_path:
+                self.console.print("[status.error]SQLite database not found.[/status.error]")
+                return
+            
+            # Load the most recent workflow
+            workflow = SQLiteProcessor.get_most_recent_workflow(db_path)
+            if not workflow:
+                self.console.print("[status.error]No sessions found in database.[/status.error]")
+                return
+            
+            current_workflow_id = workflow['workflow_id']
+            tracked_session_ids = set(s.session_id for s in workflow['all_sessions'])
+            
+            self.console.print(f"[status.success]Starting live monitoring of workflow: {current_workflow_id}[/status.success]")
+            if workflow['has_sub_agents']:
+                self.console.print(f"[status.info]Tracking {workflow['session_count']} sessions (1 main + {workflow['sub_agent_count']} sub-agents)[/status.info]")
+            self.console.print(f"[status.info]Update interval: {refresh_interval} seconds[/status.info]")
+            self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
+            
+            # Start live monitoring
+            with Live(
+                self._generate_sqlite_workflow_dashboard(workflow),
+                refresh_per_second=1/refresh_interval,
+                console=self.console
+            ) as live:
+                while True:
+                    # Reload workflow from SQLite
+                    new_workflow = SQLiteProcessor.get_most_recent_workflow(db_path)
+                    
+                    if new_workflow:
+                        # Check if a new workflow started (different main session)
+                        if new_workflow['workflow_id'] != current_workflow_id:
+                            # Check if the new main session is not a sub-agent of our current workflow
+                            if new_workflow['workflow_id'] not in tracked_session_ids:
+                                workflow = new_workflow
+                                current_workflow_id = workflow['workflow_id']
+                                tracked_session_ids = set(s.session_id for s in workflow['all_sessions'])
+                                self.console.print(f"\n[status.warning]New workflow detected: {current_workflow_id}[/status.warning]")
+                                if workflow['has_sub_agents']:
+                                    self.console.print(f"[status.info]Now tracking {workflow['session_count']} sessions (1 main + {workflow['sub_agent_count']} sub-agents)[/status.info]")
+                        else:
+                            # Same workflow, update it
+                            workflow = new_workflow
+                            # Check for new sub-agents
+                            new_ids = set(s.session_id for s in workflow['all_sessions'])
+                            new_subs = new_ids - tracked_session_ids
+                            if new_subs:
+                                for sub_id in new_subs:
+                                    self.console.print(f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]")
+                                tracked_session_ids = new_ids
+                    
+                    # Update dashboard
+                    live.update(self._generate_sqlite_workflow_dashboard(workflow))
+                    time.sleep(refresh_interval)
+        
+        except KeyboardInterrupt:
+            self.console.print("\n[status.warning]Live monitoring stopped.[/status.warning]")
+    
+    def _generate_sqlite_workflow_dashboard(self, workflow: Dict[str, Any]):
+        """Generate dashboard layout for a SQLite workflow (main + sub-agents).
+        
+        Args:
+            workflow: Workflow dict from SQLiteProcessor.get_most_recent_workflow()
+        
+        Returns:
+            Rich layout for the dashboard
+        """
+        # Get all files from all sessions in the workflow
+        all_files = []
+        for session in workflow['all_sessions']:
+            all_files.extend(session.files)
+        
+        # Get the most recent file across all sessions
+        recent_file = None
+        if all_files:
+            recent_file = max(all_files, key=lambda f: f.time_data.created if f.time_data and f.time_data.created else 0)
+        
+        # Calculate output rate across entire workflow
+        output_rate = self._calculate_sqlite_workflow_output_rate(workflow)
+        
+        # Get model pricing for quota and context window
+        quota = None
+        context_window = 200000  # Default
+        
+        if recent_file and recent_file.model_id in self.pricing_data:
+            model_pricing = self.pricing_data[recent_file.model_id]
+            quota = model_pricing.session_quota
+            context_window = model_pricing.context_window
+        
+        # Create a workflow wrapper for the dashboard UI
+        workflow_wrapper = WorkflowWrapper(workflow, self.pricing_data)
+        
+        # Use the existing dashboard UI
+        # Note: WorkflowWrapper mimics SessionWorkflow interface for dashboard compatibility
+        from typing import cast, Any
+        return self.dashboard_ui.create_dashboard_layout(
+            session=workflow['main_session'],
+            recent_file=recent_file,
+            pricing_data=self.pricing_data,
+            burn_rate=output_rate,
+            quota=quota,
+            context_window=context_window,
+            workflow=cast(Any, workflow_wrapper)
+        )
+    
+    def _calculate_sqlite_workflow_output_rate(self, workflow: Dict[str, Any]) -> float:
+        """Calculate output token rate across SQLite workflow.
+        
+        Args:
+            workflow: Workflow containing all sessions
+            
+        Returns:
+            Output tokens per second over the last 5 minutes
+        """
+        # Get all files from all sessions
+        all_files = []
+        for session in workflow['all_sessions']:
+            all_files.extend(session.files)
+        
+        if not all_files:
+            return 0.0
+        
+        # Calculate the cutoff time (5 minutes ago)
+        cutoff_time = datetime.now() - timedelta(minutes=5)
+        
+        # Filter interactions from the last 5 minutes
+        recent_interactions = []
+        for f in all_files:
+            if f.time_data and f.time_data.created:
+                file_time = datetime.fromtimestamp(f.time_data.created / 1000)
+                if file_time >= cutoff_time:
+                    recent_interactions.append(f)
+        
+        if not recent_interactions:
+            return 0.0
+        
+        # Sum output tokens from recent interactions
+        total_output_tokens = sum(f.tokens.output for f in recent_interactions)
+        
+        if total_output_tokens == 0:
+            return 0.0
+        
+        # Sum active processing time (duration_ms) from recent interactions
+        total_duration_ms = 0
+        for f in recent_interactions:
+            if f.time_data and f.time_data.duration_ms:
+                total_duration_ms += f.time_data.duration_ms
+        
+        # Convert to seconds
+        total_duration_seconds = total_duration_ms / 1000
+        
+        if total_duration_seconds > 0:
+            return total_output_tokens / total_duration_seconds
+        
+        return 0.0
+
+    def validate_monitoring_setup(self, base_path: Optional[str] = None) -> Dict[str, Any]:
         """Validate that monitoring can be set up properly.
 
         Args:
-            base_path: Path to directory containing sessions
+            base_path: Path to directory containing sessions (optional, for legacy mode)
 
         Returns:
             Validation results
         """
         issues = []
         warnings = []
+        info = {}
 
-        # Check if base path exists
-        base_path_obj = Path(base_path)
-        if not base_path_obj.exists():
-            issues.append(f"Base path does not exist: {base_path}")
-            return {
-                'valid': False,
-                'issues': issues,
-                'warnings': warnings
-            }
-
-        if not base_path_obj.is_dir():
-            issues.append(f"Base path is not a directory: {base_path}")
-            return {
-                'valid': False,
-                'issues': issues,
-                'warnings': warnings
-            }
-
-        # Check for session directories
-        session_dirs = FileProcessor.find_session_directories(base_path)
-        if not session_dirs:
-            warnings.append("No session directories found")
+        # First check for SQLite database (v1.2.0+)
+        db_path = SQLiteProcessor.find_database_path()
+        if db_path:
+            stats = SQLiteProcessor.get_database_stats(db_path)
+            if stats.get('exists'):
+                info['sqlite'] = {
+                    'available': True,
+                    'path': str(db_path),
+                    'sessions': stats.get('session_count', 0),
+                    'sub_agents': stats.get('sub_agent_count', 0)
+                }
+            else:
+                warnings.append("SQLite database found but cannot read stats")
         else:
-            # Check most recent session
-            recent_session = FileProcessor.load_session_data(session_dirs[0])
-            if not recent_session:
-                warnings.append("Most recent session directory contains no valid data")
-            elif not recent_session.files:
-                warnings.append("Most recent session has no interaction files")
+            info['sqlite'] = {'available': False}
+
+        # Check for file-based storage (legacy)
+        if base_path:
+            base_path_obj = Path(base_path)
+            if base_path_obj.exists() and base_path_obj.is_dir():
+                session_dirs = FileProcessor.find_session_directories(base_path)
+                if session_dirs:
+                    info['files'] = {
+                        'available': True,
+                        'path': str(base_path),
+                        'sessions': len(session_dirs)
+                    }
+                else:
+                    info['files'] = {'available': True, 'path': str(base_path), 'sessions': 0}
+            else:
+                info['files'] = {'available': False}
+        else:
+            info['files'] = {'available': False}
 
         # Check pricing data
         if not self.pricing_data:
             warnings.append("No pricing data available - costs will show as $0.00")
 
+        # Determine if at least one source is available
+        if not info['sqlite']['available'] and not info['files'].get('available'):
+            issues.append("No session data source found. Expected SQLite database or file storage.")
+
         return {
             'valid': len(issues) == 0,
             'issues': issues,
             'warnings': warnings,
-            'session_directories_found': len(session_dirs),
-            'most_recent_session': session_dirs[0].name if session_dirs else None
+            'info': info
         }
 

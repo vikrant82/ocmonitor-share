@@ -154,6 +154,12 @@ def session(ctx: click.Context, path: Optional[str], output_format: str):
 @click.option(
     "--no-group", is_flag=True, help="Show sessions without workflow grouping"
 )
+@click.option(
+    "--source", "-s",
+    type=click.Choice(["auto", "sqlite", "files"]),
+    default="auto",
+    help="Data source: auto (prefer SQLite), sqlite (v1.2.0+), or files (legacy)"
+)
 @click.pass_context
 def sessions(
     ctx: click.Context,
@@ -161,24 +167,26 @@ def sessions(
     output_format: str,
     limit: Optional[int],
     no_group: bool,
+    source: str,
 ):
-    """Analyze all OpenCode sessions in a directory.
+    """Analyze all OpenCode sessions.
 
-    PATH: Path to directory containing session folders
-          (defaults to configured messages directory)
+    Supports OpenCode v1.2.0+ SQLite database with hierarchical sub-agent view,
+    or legacy file-based storage.
 
-    By default, sessions are grouped into workflows (main session + sub-agents).
-    Use --no-group to show sessions without grouping.
+    PATH: Path to directory containing session folders (legacy, optional)
+          For v1.2.0+, data is read from SQLite database automatically
     """
     config = ctx.obj["config"]
     console = ctx.obj["console"]
 
-    if not path:
-        path = config.paths.messages_dir
-
     try:
         analyzer = ctx.obj["analyzer"]
         report_generator = ctx.obj["report_generator"]
+
+        # Get data source info
+        source_info = analyzer.get_data_source_info()
+        console.print(f"[status.info]Using data source: {source_info['last_used'] or 'auto-detect'}[/status.info]")
 
         if limit:
             sessions_list = analyzer.analyze_all_sessions(path, limit)
@@ -216,29 +224,43 @@ def sessions(
     "--interval", "-i", type=int, default=None, help="Update interval in seconds"
 )
 @click.option("--no-color", is_flag=True, help="Disable colored output")
+@click.option(
+    "--source", "-s",
+    type=click.Choice(["auto", "sqlite", "files"]),
+    default="auto",
+    help="Data source: auto (prefer SQLite), sqlite (v1.2.0+), or files (legacy)"
+)
 @click.pass_context
 def live(
-    ctx: click.Context, path: Optional[str], interval: Optional[int], no_color: bool
+    ctx: click.Context,
+    path: Optional[str],
+    interval: Optional[int],
+    no_color: bool,
+    source: str
 ):
-    """Start live dashboard for monitoring the most recent session.
+    """Start live dashboard for monitoring the current workflow.
 
-    PATH: Path to directory containing session folders
-          (defaults to configured messages directory)
+    Monitors the most recent session and its sub-agents (if any) with real-time updates.
+    Automatically uses SQLite for OpenCode v1.2.0+ or falls back to file-based storage.
+
+    PATH: Path to directory containing session folders (legacy, optional)
+          For v1.2.0+, data is read from SQLite database automatically
     """
     config = ctx.obj["config"]
     console = ctx.obj["console"]
 
-    if not path:
-        path = config.paths.messages_dir
-
     if interval is None:
         interval = config.ui.live_refresh_interval
+
+    # Disable colors if requested
+    if no_color:
+        console._color_system = None
 
     try:
         live_monitor = ctx.obj["live_monitor"]
 
         # Validate monitoring setup
-        validation = live_monitor.validate_monitoring_setup(path)
+        validation = live_monitor.validate_monitoring_setup(path if path else None)
         if not validation["valid"]:
             for issue in validation["issues"]:
                 console.print(f"[status.error]Error: {issue}[/status.error]")
@@ -248,11 +270,28 @@ def live(
             for warning in validation["warnings"]:
                 console.print(f"[status.warning]Warning: {warning}[/status.warning]")
 
-        console.print("[status.success]Starting live dashboard...[/status.success]")
-        console.print(f"[status.info]Monitoring: {path}[/status.info]")
-        console.print(f"[status.info]Update interval: {interval}s[/status.info]")
+        # Determine data source
+        sqlite_available = validation["info"]["sqlite"]["available"]
+        files_available = validation["info"]["files"].get("available", False)
 
-        live_monitor.start_monitoring(path, interval)
+        # Determine which monitoring method to use
+        use_sqlite = (source == "sqlite") or (source == "auto" and sqlite_available)
+        use_files = (source == "files") or (source == "auto" and not sqlite_available and files_available)
+
+        if use_sqlite and sqlite_available:
+            # Use SQLite workflow monitoring (v1.2.0+)
+            live_monitor.start_sqlite_workflow_monitoring(interval)
+        elif use_files and files_available:
+            # Use file-based workflow monitoring (legacy)
+            if not path:
+                path = config.paths.messages_dir
+            console.print("[status.success]Starting workflow live dashboard (legacy file mode)[/status.success]")
+            console.print(f"[status.info]Monitoring: {path}[/status.info]")
+            console.print(f"[status.info]Update interval: {interval}s[/status.info]")
+            live_monitor.start_monitoring(path, interval)
+        else:
+            console.print("[status.error]No data source available. Please check OpenCode installation.[/status.error]")
+            ctx.exit(1)
 
     except KeyboardInterrupt:
         console.print("\n[status.warning]Live monitoring stopped.[/status.warning]")

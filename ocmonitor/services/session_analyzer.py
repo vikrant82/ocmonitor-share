@@ -12,6 +12,7 @@ from ..models.analytics import (
     ModelBreakdownReport, ProjectBreakdownReport, TimeframeAnalyzer
 )
 from ..utils.file_utils import FileProcessor
+from ..utils.data_loader import DataLoader, DataSourceError
 from ..utils.time_utils import TimeUtils
 from ..config import ModelPricing
 
@@ -26,6 +27,48 @@ class SessionAnalyzer:
             pricing_data: Model pricing information
         """
         self.pricing_data = pricing_data
+        self._data_loader = DataLoader()
+
+    def load_session_hierarchy(self, base_path: Optional[str] = None) -> Dict[str, Any]:
+        """Load sessions organized by parent-child hierarchy.
+        
+        Uses the DataLoader which prefers SQLite but falls back to files.
+        
+        Args:
+            base_path: Optional path override (used only for file-based loading)
+            
+        Returns:
+            Dictionary with:
+                - 'root_sessions': List of parent sessions with sub_agents
+                - 'all_sessions': Flat list of all sessions
+                - 'source': 'sqlite' or 'files'
+                
+        Raises:
+            DataSourceError: If no data source is available
+        """
+        return self._data_loader.load_session_hierarchy()
+
+    def analyze_all_sessions(self, base_path: Optional[str] = None, limit: Optional[int] = None) -> List[SessionData]:
+        """Analyze all sessions from the preferred data source.
+        
+        Uses the DataLoader which prefers SQLite but falls back to files.
+        
+        Args:
+            base_path: Optional path override (used only for file-based loading)
+            limit: Maximum number of sessions to analyze
+            
+        Returns:
+            List of SessionData objects
+        """
+        return self._data_loader.load_all_sessions(limit)
+
+    def get_data_source_info(self) -> Dict[str, Any]:
+        """Get information about the current data source.
+        
+        Returns:
+            Dictionary with source availability and paths
+        """
+        return self._data_loader.get_source_info()
 
     def analyze_single_session(self, session_path: str) -> Optional[SessionData]:
         """Analyze a single session directory.
@@ -38,18 +81,6 @@ class SessionAnalyzer:
         """
         path = Path(session_path)
         return FileProcessor.load_session_data(path)
-
-    def analyze_all_sessions(self, base_path: str, limit: Optional[int] = None) -> List[SessionData]:
-        """Analyze all sessions in a directory.
-
-        Args:
-            base_path: Path to directory containing sessions
-            limit: Maximum number of sessions to analyze
-
-        Returns:
-            List of SessionData objects
-        """
-        return FileProcessor.load_all_sessions(base_path, limit)
 
     def get_sessions_summary(self, sessions: List[SessionData]) -> Dict[str, Any]:
         """Generate summary statistics for multiple sessions.
