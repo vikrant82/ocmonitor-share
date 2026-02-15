@@ -18,7 +18,7 @@ from ..utils.data_loader import DataLoader
 from ..utils.sqlite_utils import SQLiteProcessor
 from ..ui.dashboard import DashboardUI
 from ..ui.tables import TableFormatter
-from ..config import ModelPricing
+from ..config import ModelPricing, opencode_storage_path
 from .session_grouper import SessionGrouper
 
 
@@ -654,6 +654,7 @@ class LiveMonitor:
             info['sqlite'] = {'available': False}
 
         # Check for file-based storage (legacy)
+        base_path = base_path or opencode_storage_path("message")
         if base_path:
             base_path_obj = Path(base_path)
             if base_path_obj.exists() and base_path_obj.is_dir():
@@ -685,4 +686,3 @@ class LiveMonitor:
             'warnings': warnings,
             'info': info
         }
-

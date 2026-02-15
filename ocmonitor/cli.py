@@ -260,7 +260,7 @@ def live(
         live_monitor = ctx.obj["live_monitor"]
 
         # Validate monitoring setup
-        validation = live_monitor.validate_monitoring_setup(path if path else None)
+        validation = live_monitor.validate_monitoring_setup(path or config.paths.messages_dir)
         if not validation["valid"]:
             for issue in validation["issues"]:
                 console.print(f"[status.error]Error: {issue}[/status.error]")
@@ -788,4 +788,3 @@ def agents(ctx: click.Context):
 def main():
     """Entry point for the CLI application."""
     cli()
-
