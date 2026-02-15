@@ -83,7 +83,7 @@ def cli(ctx: click.Context, config: Optional[str], theme: Optional[str], verbose
         ctx.obj["report_generator"] = ReportGenerator(analyzer, console)
         ctx.obj["export_service"] = ExportService(cfg.paths.export_dir)
         ctx.obj["live_monitor"] = LiveMonitor(
-            ctx.obj["pricing_data"], console
+            ctx.obj["pricing_data"], console, paths_config=cfg.paths
         )
 
     except Exception as e:
@@ -260,7 +260,7 @@ def live(
         live_monitor = ctx.obj["live_monitor"]
 
         # Validate monitoring setup
-        validation = live_monitor.validate_monitoring_setup(path or config.paths.messages_dir)
+        validation = live_monitor.validate_monitoring_setup(path if path else None)
         if not validation["valid"]:
             for issue in validation["issues"]:
                 console.print(f"[status.error]Error: {issue}[/status.error]")
