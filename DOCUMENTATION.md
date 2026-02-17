@@ -13,11 +13,12 @@ Welcome to the complete documentation for OpenCode Monitor, a powerful CLI tool 
 3. [Command Reference](#command-reference)
 4. [Configuration](#configuration)
 5. [Adding New Models](#adding-new-models)
-6. [Setting Usage Quotas](#setting-usage-quotas)
-7. [Exporting Reports](#exporting-reports)
-8. [Configuration Commands](#configuration-commands)
-9. [Troubleshooting](#troubleshooting)
-10. [Advanced Tips](#advanced-tips)
+6. [Remote Pricing Fallback](#remote-pricing-fallback)
+7. [Setting Usage Quotas](#setting-usage-quotas)
+8. [Exporting Reports](#exporting-reports)
+9. [Configuration Commands](#configuration-commands)
+10. [Troubleshooting](#troubleshooting)
+11. [Advanced Tips](#advanced-tips)
 
 ---
 
@@ -211,6 +212,36 @@ The tool automatically detects and uses the appropriate source. Use `--source` f
 ---
 
 ## 📋 Command Reference
+
+### Global Options
+
+These options can be used with any command:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `--config, -c` | Path to configuration file | `--config /path/to/config.toml` |
+| `--theme, -t` | Set UI theme (`dark` or `light`) | `--theme light` |
+| `--verbose, -v` | Enable verbose output | `--verbose` |
+| `--no-remote` | Disable remote pricing fallback | `--no-remote` |
+| `--version` | Show version information | `--version` |
+
+#### The `--no-remote` Flag
+
+Use `--no-remote` to disable remote pricing fallback for a single command:
+
+```bash
+# Force local-only pricing for this session
+ocmonitor --no-remote sessions
+
+# Works with any command
+ocmonitor --no-remote models
+ocmonitor --no-remote daily --breakdown
+```
+
+This is useful when:
+- You want to ensure only local pricing is used
+- You're working offline and want to avoid fetch attempts
+- Debugging pricing discrepancies
 
 ### 1. Session Analysis Commands
 
@@ -516,6 +547,16 @@ include_raw_data = false
 # Path to models pricing configuration
 config_file = "models.json"
 
+# Remote pricing fallback from models.dev
+# Automatically fetches pricing for models not in local files
+remote_fallback = false
+remote_url = "https://models.dev/api.json"
+remote_timeout_seconds = 8
+remote_cache_ttl_hours = 24
+remote_cache_path = "~/.cache/ocmonitor/models_dev_api.json"
+user_file = "~/.config/ocmonitor/models.json"
+allow_stale_cache_on_error = true
+
 [analytics]
 # Default timeframe for reports: "daily", "weekly", "monthly"
 default_timeframe = "daily"
@@ -683,6 +724,116 @@ For free models, set all costs to `0.0`:
   }
 }
 ```
+
+---
+
+## 🌐 Remote Pricing Fallback
+
+OpenCode Monitor supports automatic pricing updates from [models.dev](https://models.dev), a community-maintained database of AI model pricing.
+
+### What is models.dev?
+
+[models.dev](https://models.dev) is an open-source project that maintains up-to-date pricing information for AI models from various providers. It provides a standardized API for accessing model costs, context windows, and rate limits.
+
+### How Remote Fallback Works
+
+When enabled, OpenCode Monitor will:
+1. **Check local pricing first** - Uses your local `models.json` and user override file
+2. **Fetch from models.dev** - Downloads current pricing for any missing models
+3. **Cache the results** - Stores data locally for 24 hours to minimize API calls
+4. **Merge intelligently** - Only fills gaps; never overwrites your local prices
+
+### Pricing Precedence
+
+Models are resolved in this order (highest to lowest priority):
+
+1. **User override file** (`~/.config/ocmonitor/models.json`) - Your personal overrides
+2. **Project/local `models.json`** - Project-specific pricing
+3. **models.dev remote fallback** - Community pricing (fill-only, never overwrites)
+
+### Enabling Remote Fallback
+
+Edit your `~/.config/ocmonitor/config.toml`:
+
+```toml
+[models]
+# Enable remote pricing fallback
+remote_fallback = true
+
+# Optional: customize settings
+remote_url = "https://models.dev/api.json"
+remote_timeout_seconds = 8
+remote_cache_ttl_hours = 24
+remote_cache_path = "~/.cache/ocmonitor/models_dev_api.json"
+user_file = "~/.config/ocmonitor/models.json"
+allow_stale_cache_on_error = true
+```
+
+### Configuration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `remote_fallback` | Enable remote pricing fetch | `false` |
+| `remote_url` | models.dev API endpoint | `https://models.dev/api.json` |
+| `remote_timeout_seconds` | HTTP request timeout | `8` |
+| `remote_cache_ttl_hours` | Cache validity period | `24` |
+| `remote_cache_path` | Local cache file location | `~/.cache/ocmonitor/models_dev_api.json` |
+| `user_file` | User pricing overrides | `~/.config/ocmonitor/models.json` |
+| `allow_stale_cache_on_error` | Use expired cache if fetch fails | `true` |
+
+### Disabling Remote Fallback
+
+**For a single command:**
+```bash
+ocmonitor --no-remote sessions
+ocmonitor --no-remote models
+```
+
+**Globally:**
+```toml
+[models]
+remote_fallback = false
+```
+
+### Shared Cache
+
+The remote pricing cache is stored at `~/.cache/ocmonitor/models_dev_api.json` and is shared across all your OpenCode Monitor projects. This means:
+- ✅ One download serves all projects
+- ✅ Works offline after first fetch
+- ✅ Automatically refreshes after TTL expires
+- ✅ Uses file locking for safe concurrent access
+
+### Offline Behavior
+
+If remote fetch fails (no internet, API down):
+- ✅ Uses cached data if available (even if expired)
+- ✅ Falls back to local-only pricing
+- ✅ CLI continues working without errors
+- ✅ No pricing gaps for known models
+
+### User Override File
+
+Create `~/.config/ocmonitor/models.json` for personal pricing overrides:
+
+```json
+{
+  "my-custom-model": {
+    "input": 5.0,
+    "output": 25.0,
+    "cacheWrite": 6.25,
+    "cacheRead": 0.50,
+    "contextWindow": 128000,
+    "sessionQuota": 15.0
+  },
+  "claude-sonnet-4": {
+    "input": 2.5,
+    "output": 12.0,
+    "sessionQuota": 5.0
+  }
+}
+```
+
+User overrides have **highest priority** and will overwrite any local or remote pricing.
 
 ### Pricing Examples
 

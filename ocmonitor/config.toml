@@ -28,6 +28,17 @@ include_raw_data = false
 # Path to models pricing configuration
 config_file = "models.json"
 
+# Remote pricing fallback from models.dev
+# When enabled, fetches pricing data from https://models.dev/api.json
+# to fill gaps not covered by local pricing files
+remote_fallback = false
+remote_url = "https://models.dev/api.json"
+remote_timeout_seconds = 8
+remote_cache_ttl_hours = 24
+remote_cache_path = "~/.cache/ocmonitor/models_dev_api.json"
+user_file = "~/.config/ocmonitor/models.json"
+allow_stale_cache_on_error = true
+
 [analytics]
 # Default timeframe for reports: "daily", "weekly", "monthly"
 default_timeframe = "daily"

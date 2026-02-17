@@ -2,11 +2,14 @@
 
 import json
 import os
-import toml
-from typing import Dict, Optional
-
-from pydantic import BaseModel, Field, field_validator
+import warnings
 from decimal import Decimal
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import toml
+from pydantic import BaseModel, Field, field_validator
+
 
 def opencode_storage_path(path: Optional[str] = None) -> str:
     base = os.getenv("XDG_DATA_HOME") or "~/.local/share"
@@ -14,6 +17,12 @@ def opencode_storage_path(path: Optional[str] = None) -> str:
     if path:
         parts.append(path)
     return os.path.join(*parts)
+
+
+def get_default_cache_path() -> str:
+    """Get default cache path for models.dev API."""
+    cache_home = os.getenv("XDG_CACHE_HOME") or "~/.cache"
+    return os.path.join(cache_home, "ocmonitor", "models_dev_api.json")
 
 
 class PathsConfig(BaseModel):
@@ -49,6 +58,22 @@ class ExportConfig(BaseModel):
 class ModelsConfig(BaseModel):
     """Configuration for model pricing."""
     config_file: str = Field(default="models.json")
+    # Remote pricing fallback settings
+    remote_fallback: bool = Field(default=False)
+    remote_url: str = Field(default="https://models.dev/api.json")
+    remote_timeout_seconds: int = Field(default=8, ge=1, le=60)
+    remote_cache_ttl_hours: int = Field(default=24, ge=1, le=168)
+    remote_cache_path: str = Field(default=get_default_cache_path())
+    user_file: Optional[str] = Field(default="~/.config/ocmonitor/models.json")
+    allow_stale_cache_on_error: bool = Field(default=True)
+
+    @field_validator('remote_cache_path', 'user_file')
+    @classmethod
+    def expand_model_paths(cls, v):
+        """Expand user paths and environment variables for model paths."""
+        if v is None:
+            return v
+        return os.path.expanduser(os.path.expandvars(v))
 
 
 class AnalyticsConfig(BaseModel):
@@ -74,6 +99,52 @@ class ModelPricing(BaseModel):
     cache_read: Decimal = Field(alias="cacheRead", description="Cost per 1M cache read tokens")
     context_window: int = Field(alias="contextWindow", description="Maximum context window size")
     session_quota: Decimal = Field(alias="sessionQuota", description="Maximum session cost quota")
+
+
+def merge_model_prices(
+    local_raw: Dict[str, Any],
+    user_raw: Dict[str, Any],
+    remote_raw: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge pricing data from multiple sources with proper precedence.
+    
+    Precedence (highest to lowest):
+    1. User override file (user_raw)
+    2. Project/local models.json (local_raw)
+    3. models.dev fallback (remote_raw) - fill-only
+    
+    Args:
+        local_raw: Raw pricing dict from local models.json
+        user_raw: Raw pricing dict from user override file
+        remote_raw: Raw pricing dict from models.dev (fill-only)
+        
+    Returns:
+        Merged raw pricing dict
+    """
+    merged = {}
+    
+    # Start with remote data (lowest precedence - fill-only)
+    if remote_raw:
+        for model_name, model_data in remote_raw.items():
+            merged[model_name] = model_data.copy()
+    
+    # Overlay local data (middle precedence)
+    for model_name, model_data in local_raw.items():
+        if model_name in merged:
+            # Field-level merge: local overwrites remote for existing model
+            merged[model_name].update(model_data)
+        else:
+            merged[model_name] = model_data.copy()
+    
+    # Overlay user data (highest precedence)
+    for model_name, model_data in user_raw.items():
+        if model_name in merged:
+            # Field-level merge: user overwrites everything for existing model
+            merged[model_name].update(model_data)
+        else:
+            merged[model_name] = model_data.copy()
+    
+    return merged
 
 
 class ConfigManager:
@@ -125,43 +196,131 @@ class ConfigManager:
         except (toml.TomlDecodeError, ValueError) as e:
             raise ValueError(f"Invalid configuration file {self.config_path}: {e}")
 
-    def load_pricing_data(self) -> Dict[str, ModelPricing]:
-        """Load model pricing data."""
+    def load_pricing_data(self, no_remote: bool = False) -> Dict[str, ModelPricing]:
+        """Load model pricing data.
+        
+        Args:
+            no_remote: If True, disable remote fallback regardless of config setting
+            
+        Returns:
+            Dict mapping model names to ModelPricing objects
+        """
         if self._pricing_data is None:
-            self._pricing_data = self._load_pricing_data()
+            self._pricing_data = self._load_pricing_data(no_remote=no_remote)
         return self._pricing_data
 
-    def _load_pricing_data(self) -> Dict[str, ModelPricing]:
-        """Load pricing data from JSON file."""
-        models_file = self.config.models.config_file
+    def _load_pricing_data(self, no_remote: bool = False) -> Dict[str, ModelPricing]:
+        """Load pricing data from all sources and merge them.
+        
+        Args:
+            no_remote: If True, disable remote fallback regardless of config setting
+            
+        Returns:
+            Dict mapping model names to ModelPricing objects
+        """
+        models_config = self.config.models
+        
+        # Load local project pricing file (with package fallback for default models)
+        local_raw = self._load_raw_pricing_file(models_config.config_file, use_package_fallback=True)
+        
+        # Load user override file if it exists
+        user_raw = {}
+        if models_config.user_file:
+            user_path = Path(models_config.user_file)
+            if user_path.exists():
+                user_raw = self._load_raw_pricing_file(str(user_path))
+        
+        # Load remote pricing if enabled and not disabled by CLI flag
+        remote_raw = {}
+        if not no_remote and models_config.remote_fallback:
+            try:
+                from .services.price_fetcher import get_remote_payload, map_models_dev_to_local
+                
+                cache_path = Path(models_config.remote_cache_path)
+                payload = get_remote_payload(
+                    url=models_config.remote_url,
+                    timeout=models_config.remote_timeout_seconds,
+                    cache_path=cache_path,
+                    cache_ttl_hours=models_config.remote_cache_ttl_hours,
+                    allow_stale_on_error=models_config.allow_stale_cache_on_error,
+                )
+                
+                if payload is not None:
+                    remote_raw = map_models_dev_to_local(payload)
+            except Exception:
+                # Remote fetch failed, continue with local-only pricing
+                # Don't fail the entire operation due to remote issues
+                pass
+        
+        # Merge all sources
+        merged_raw = merge_model_prices(local_raw, user_raw, remote_raw)
+        
+        # Validate each merged entry into ModelPricing objects
+        pricing_data = {}
+        for model_name, model_data in merged_raw.items():
+            try:
+                pricing_data[model_name] = ModelPricing(**model_data)
+            except (ValueError, TypeError) as e:
+                # Skip invalid entries with warning
+                warnings.warn(
+                    f"Skipping invalid pricing data for model '{model_name}': {e}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+        
+        return pricing_data
 
+    def _load_raw_pricing_file(self, file_path: str, use_package_fallback: bool = False) -> Dict[str, Any]:
+        """Load raw pricing data from a JSON file.
+        
+        Args:
+            file_path: Path to pricing JSON file (can be relative to config)
+            use_package_fallback: If True and file not found, try package directory
+            
+        Returns:
+            Raw dict of pricing data
+        """
+        original_path = file_path
+        
         # Try relative to config file first
-        if not os.path.isabs(models_file):
+        if not os.path.isabs(file_path):
             config_dir = os.path.dirname(self.config_path)
-            models_file = os.path.join(config_dir, models_file)
-
-        if not os.path.exists(models_file):
-            # Try in same directory as this module
-            models_file = os.path.join(os.path.dirname(__file__), "models.json")
-
-        if not os.path.exists(models_file):
+            abs_path = os.path.join(config_dir, file_path)
+            if os.path.exists(abs_path):
+                file_path = abs_path
+            else:
+                # Try in same directory as this module
+                module_path = os.path.join(os.path.dirname(__file__), file_path)
+                if os.path.exists(module_path):
+                    file_path = module_path
+        
+        # For the main models file, fall back to package directory
+        if use_package_fallback and not os.path.exists(file_path):
+            package_models = os.path.join(os.path.dirname(__file__), "models.json")
+            if os.path.exists(package_models):
+                file_path = package_models
+        
+        if not os.path.exists(file_path):
+            return {}
+        
+        try:
+            with open(file_path, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
             return {}
 
-        try:
-            with open(models_file, 'r') as f:
-                raw_data = json.load(f)
-
-            pricing_data = {}
-            for model_name, model_data in raw_data.items():
-                pricing_data[model_name] = ModelPricing(**model_data)
-
-            return pricing_data
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Invalid pricing file {models_file}: {e}")
-
-    def get_model_pricing(self, model_name: str) -> Optional[ModelPricing]:
-        """Get pricing information for a specific model."""
-        pricing_data = self.load_pricing_data()
+    def get_model_pricing(self, model_name: str, no_remote: bool = False) -> Optional[ModelPricing]:
+        """Get pricing information for a specific model.
+        
+        Args:
+            model_name: Name of the model to look up
+            no_remote: If True, disable remote fallback
+            
+        Returns:
+            ModelPricing object or None if not found
+        """
+        pricing_data = self.load_pricing_data(no_remote=no_remote)
         return pricing_data.get(model_name)
 
     def reload(self):
@@ -172,4 +331,3 @@ class ConfigManager:
 
 # Global configuration manager instance
 config_manager = ConfigManager()
-

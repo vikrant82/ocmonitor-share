@@ -5,6 +5,7 @@ import json
 import pytest
 from pathlib import Path
 from decimal import Decimal
+from unittest.mock import patch
 
 from ocmonitor.config import (
     PathsConfig,
@@ -322,3 +323,186 @@ config_file = "{models_file}"
             _ = manager.config
         
         assert "Invalid configuration file" in str(exc_info.value)
+
+
+class TestModelsConfigRemote:
+    """Tests for ModelsConfig remote pricing settings."""
+    
+    def test_models_config_defaults_include_remote_fields(self):
+        """Test that ModelsConfig has default remote pricing fields."""
+        config = ModelsConfig()
+        
+        assert hasattr(config, 'remote_fallback')
+        assert config.remote_fallback is False
+        assert hasattr(config, 'remote_url')
+        assert config.remote_url == "https://models.dev/api.json"
+        assert hasattr(config, 'remote_timeout_seconds')
+        assert config.remote_timeout_seconds == 8
+        assert hasattr(config, 'remote_cache_ttl_hours')
+        assert config.remote_cache_ttl_hours == 24
+        assert hasattr(config, 'remote_cache_path')
+        assert ".cache/ocmonitor" in config.remote_cache_path
+        assert hasattr(config, 'user_file')
+        assert config.user_file == "~/.config/ocmonitor/models.json"
+        assert hasattr(config, 'allow_stale_cache_on_error')
+        assert config.allow_stale_cache_on_error is True
+    
+    def test_models_paths_expand_user_and_env_vars(self, monkeypatch):
+        """Test that model paths are properly expanded."""
+        monkeypatch.setenv("CACHE_DIR", "/custom/cache")
+        
+        config = ModelsConfig(
+            remote_cache_path="$CACHE_DIR/models.json",
+            user_file="~/custom/models.json"
+        )
+        
+        assert "/custom/cache/models.json" in config.remote_cache_path
+        assert config.user_file is not None
+        assert not config.user_file.startswith("~")
+        assert config.user_file.endswith("custom/models.json")
+
+
+class TestMergeModelPrices:
+    """Tests for merge_model_prices function."""
+    
+    def test_merge_precedence_user_over_local_over_remote(self):
+        """Test that merge respects precedence: user > local > remote."""
+        from ocmonitor.config import merge_model_prices
+        
+        remote = {"model-a": {"input": 1.0, "output": 10.0}}
+        local = {"model-a": {"input": 2.0}, "model-b": {"input": 5.0}}
+        user = {"model-a": {"input": 3.0}}
+        
+        result = merge_model_prices(local, user, remote)
+        
+        # User value wins for model-a input
+        assert result["model-a"]["input"] == 3.0
+        # User doesn't have output, local doesn't have output, remote provides it
+        assert result["model-a"]["output"] == 10.0
+        # Local provides model-b
+        assert result["model-b"]["input"] == 5.0
+    
+    def test_remote_fill_only_does_not_override_local_values(self):
+        """Test that remote data only fills gaps, doesn't override."""
+        from ocmonitor.config import merge_model_prices
+        
+        remote = {"model-a": {"input": 1.0, "output": 10.0, "contextWindow": 1000}}
+        local = {"model-a": {"input": 2.0}}
+        user = {}
+        
+        result = merge_model_prices(local, user, remote)
+        
+        # Local input overrides remote
+        assert result["model-a"]["input"] == 2.0
+        # Remote provides output and contextWindow
+        assert result["model-a"]["output"] == 10.0
+        assert result["model-a"]["contextWindow"] == 1000
+    
+    def test_field_level_merge_for_existing_models(self):
+        """Test field-level merge when model exists in multiple sources."""
+        from ocmonitor.config import merge_model_prices
+        
+        remote = {"model-x": {"input": 1.0, "output": 10.0, "cacheRead": 0.1}}
+        local = {"model-x": {"input": 2.0, "cacheWrite": 5.0}}
+        user = {"model-x": {"output": 20.0}}
+        
+        result = merge_model_prices(local, user, remote)
+        
+        # User output overrides everything
+        assert result["model-x"]["output"] == 20.0
+        # Local input overrides remote
+        assert result["model-x"]["input"] == 2.0
+        # Local cacheWrite is preserved
+        assert result["model-x"]["cacheWrite"] == 5.0
+        # Remote cacheRead is preserved (not in local or user)
+        assert result["model-x"]["cacheRead"] == 0.1
+
+
+class TestLoadPricingDataWithRemote:
+    """Tests for ConfigManager.load_pricing_data with remote fallback."""
+    
+    def test_user_file_missing_is_non_fatal(self, tmp_path):
+        """Test that missing user file doesn't cause errors."""
+        # Create minimal local pricing
+        models_file = tmp_path / "models.json"
+        models_file.write_text(json.dumps({
+            "test-model": {
+                "input": 1.0, "output": 2.0, "cacheWrite": 1.5,
+                "cacheRead": 0.1, "contextWindow": 1000, "sessionQuota": 5.0
+            }
+        }))
+        
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f"""
+[models]
+config_file = "{models_file}"
+user_file = "/nonexistent/path/models.json"
+remote_fallback = false
+""")
+        
+        manager = ConfigManager(config_path=str(config_file))
+        pricing = manager.load_pricing_data()
+        
+        # Should still load local pricing without error
+        assert "test-model" in pricing
+    
+    def test_load_pricing_data_respects_no_remote_override(self, tmp_path):
+        """Test that no_remote=True disables remote fallback."""
+        models_file = tmp_path / "models.json"
+        models_file.write_text(json.dumps({}))
+        
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f"""
+[models]
+config_file = "{models_file}"
+remote_fallback = true
+""")
+        
+        manager = ConfigManager(config_path=str(config_file))
+        
+        # Patch where it's imported, not where it's defined
+        with patch('ocmonitor.services.price_fetcher.get_remote_payload') as mock_get:
+            mock_get.return_value = {"providers": {}}
+            
+            # With no_remote=True, should not call get_remote_payload
+            pricing = manager.load_pricing_data(no_remote=True)
+            mock_get.assert_not_called()
+            
+            # Reset mock
+            mock_get.reset_mock()
+            
+            # With no_remote=False (default), should call get_remote_payload
+            manager._pricing_data = None  # Clear cache
+            pricing = manager.load_pricing_data(no_remote=False)
+            mock_get.assert_called_once()
+    
+    def test_invalid_remote_entries_are_skipped_not_fatal(self, tmp_path):
+        """Test that invalid pricing entries are skipped with warning."""
+        models_file = tmp_path / "models.json"
+        models_file.write_text(json.dumps({
+            "valid-model": {
+                "input": 1.0, "output": 2.0, "cacheWrite": 1.5,
+                "cacheRead": 0.1, "contextWindow": 1000, "sessionQuota": 5.0
+            },
+            "invalid-model": {
+                "input": "not-a-number",  # Invalid type
+                "output": 2.0
+            }
+        }))
+        
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f"""
+[models]
+config_file = "{models_file}"
+remote_fallback = false
+""")
+        
+        manager = ConfigManager(config_path=str(config_file))
+        
+        with pytest.warns(UserWarning, match="Skipping invalid pricing data"):
+            pricing = manager.load_pricing_data()
+        
+        # Valid model should be present
+        assert "valid-model" in pricing
+        # Invalid model should be skipped
+        assert "invalid-model" not in pricing

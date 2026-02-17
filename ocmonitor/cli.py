@@ -44,8 +44,11 @@ def json_serializer(obj):
     "--theme", "-t", type=click.Choice(["dark", "light"]), help="Set UI theme (overrides config)"
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
+@click.option(
+    "--no-remote", is_flag=True, help="Disable remote pricing fallback (local-only mode)"
+)
 @click.pass_context
-def cli(ctx: click.Context, config: Optional[str], theme: Optional[str], verbose: bool):
+def cli(ctx: click.Context, config: Optional[str], theme: Optional[str], verbose: bool, no_remote: bool):
     """OpenCode Monitor - Analytics and monitoring for OpenCode sessions.
 
     Monitor token usage, costs, and performance metrics from your OpenCode
@@ -67,9 +70,12 @@ def cli(ctx: click.Context, config: Optional[str], theme: Optional[str], verbose
         # Override theme if provided via CLI
         if theme:
             cfg.ui.theme = theme
+        
+        # Store no_remote flag in context for later use
+        ctx.obj["no_remote"] = no_remote
             
         ctx.obj["config"] = cfg
-        ctx.obj["pricing_data"] = config_manager.load_pricing_data()
+        ctx.obj["pricing_data"] = config_manager.load_pricing_data(no_remote=no_remote)
 
         # Initialize Console with the configured theme
         theme_name = cfg.ui.theme

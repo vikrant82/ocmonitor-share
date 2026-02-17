@@ -287,12 +287,49 @@ colors = true
 [export]
 default_format = "csv"
 include_metadata = true
+
+[models]
+# Path to local models pricing configuration
+config_file = "models.json"
+# Remote pricing fallback from models.dev (disabled by default)
+remote_fallback = false
+remote_url = "https://models.dev/api.json"
+remote_timeout_seconds = 8
+remote_cache_ttl_hours = 24
 ```
 
 **Configuration File Search Order:**
 1. `~/.config/ocmonitor/config.toml` (recommended user location)
 2. `config.toml` (current directory)
 3. Project directory fallback
+
+### Remote Pricing Fallback
+
+OpenCode Monitor supports automatic pricing updates from [models.dev](https://models.dev), a community-maintained pricing database.
+
+**Features:**
+- Automatically fetches pricing for new models not in your local `models.json`
+- Fill-only mode - never overwrites your local or user-defined prices
+- Shared cache across all your projects (`~/.cache/ocmonitor/models_dev_api.json`)
+- 24-hour TTL with stale cache fallback on errors
+- Works offline using cached data
+
+**Enable Remote Fallback:**
+```toml
+[models]
+remote_fallback = true
+```
+
+**Use `--no-remote` to disable for a single run:**
+```bash
+# Force local-only pricing for this command
+ocmonitor --no-remote sessions
+```
+
+**Pricing Precedence (highest to lowest):**
+1. User override file (`~/.config/ocmonitor/models.json`)
+2. Project/local `models.json`
+3. models.dev remote fallback (fill-only)
 
 ## 🛠️ Development
 
