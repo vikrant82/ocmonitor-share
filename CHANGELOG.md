@@ -5,6 +5,59 @@ All notable changes to OpenCode Monitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-02-17
+
+### 🌐 Remote Pricing Fallback
+
+Optional integration with [models.dev](https://models.dev) for automatic model pricing updates, filling gaps not covered by local pricing files.
+
+#### Added
+- **Remote Pricing Fallback** - Fetch model pricing from `https://models.dev/api.json`
+- **Shared Cache** - Cross-project cache at `~/.cache/ocmonitor/models_dev_api.json`
+- **User Override File** - `~/.config/ocmonitor/models.json` with highest priority
+- **`--no-remote` Flag** - Disable remote fetch for a single command
+- **Stale Cache Fallback** - Use expired cache when network unavailable
+
+#### Files Added
+- `ocmonitor/services/price_fetcher.py` - Remote fetcher with caching and locking
+
+#### Configuration
+```toml
+[models]
+remote_fallback = false           # Opt-in (default: disabled)
+remote_url = "https://models.dev/api.json"
+remote_timeout_seconds = 8
+remote_cache_ttl_hours = 24
+remote_cache_path = "~/.cache/ocmonitor/models_dev_api.json"
+user_file = "~/.config/ocmonitor/models.json"
+allow_stale_cache_on_error = true
+```
+
+#### Pricing Precedence (highest → lowest)
+1. User override file (`~/.config/ocmonitor/models.json`)
+2. Project/local `models.json`
+3. models.dev remote fallback (fill-only, never overwrites)
+
+#### Features
+- 🔒 **Atomic Cache Writes** - Safe concurrent access with file locking
+- 📦 **Dual Model Keys** - Both `model-name` and `provider/model-name` supported
+- 🔄 **TTL-based Caching** - 24-hour default, configurable
+- 🛡️ **Graceful Degradation** - CLI works offline, uses stale cache if available
+- ⚡ **Field-level Merge** - Remote only fills missing fields, never overwrites
+
+#### Usage
+```bash
+# Enable in config, then use normally
+ocmonitor sessions
+
+# Force local-only pricing
+ocmonitor --no-remote sessions
+```
+
+#### Tests
+- 25 unit tests for price fetcher (cache, locking, mapping)
+- 8 unit tests for config merge logic
+
 ## [0.9.1] - 2026-02-14
 
 ### ✨ SQLite Database Support
@@ -143,6 +196,7 @@ ocmonitor export <type>    # Data export functionality
 
 ## Version History Summary
 
+- **v0.9.2** - Remote pricing fallback from models.dev
 - **v0.9.1** - SQLite database support for OpenCode v1.2.0+
 - **v0.9.0** - Pre-release version for community feedback and testing before stable v1.0.0
 - **Pre-release** - Development phases transforming basic scripts into professional CLI tool
