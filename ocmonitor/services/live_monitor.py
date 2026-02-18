@@ -147,13 +147,8 @@ class LiveMonitor:
         new_ids = {wf["workflow_id"] for wf in workflows}
         ended_ids = current_ids - new_ids
         for ended_id in ended_ids:
-            wf = self._active_workflows.get(ended_id)
-            if wf:
-                main_session = wf.get("main_session")
-                if main_session is not None:
-                    end_time = getattr(main_session, "end_time", None)
-                    if end_time is not None:
-                        del self._active_workflows[ended_id]
+            if ended_id in self._active_workflows:
+                del self._active_workflows[ended_id]
         for wf in workflows:
             self._active_workflows[wf["workflow_id"]] = wf
         if self._active_workflows:
