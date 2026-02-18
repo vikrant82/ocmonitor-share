@@ -193,6 +193,7 @@ class LiveMonitor:
             tracked_session_ids = set()
             for w in active_workflows:
                 tracked_session_ids.update(s.session_id for s in w.all_sessions)
+            prev_tracked = tracked_session_ids.copy()
 
             current_workflow = self._select_most_recent_file_workflow(active_workflows)
             current_workflow_id = current_workflow.workflow_id
@@ -253,6 +254,7 @@ class LiveMonitor:
                         active_workflows_dict = new_workflows_dict
                         active_workflows = list(new_workflows_dict.values())
 
+                        prev_tracked = tracked_session_ids.copy()
                         tracked_session_ids = set()
                         for w in active_workflows:
                             tracked_session_ids.update(
@@ -274,13 +276,12 @@ class LiveMonitor:
                         new_ids_set = set(
                             s.session_id for s in current_workflow.all_sessions
                         )
-                        new_subs = new_ids_set - tracked_session_ids
+                        new_subs = new_ids_set - prev_tracked
                         if new_subs:
                             for sub_id in new_subs:
                                 self.console.print(
                                     f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]"
                                 )
-                            tracked_session_ids.update(new_ids_set)
 
                     if current_workflow:
                         live.update(self._generate_workflow_dashboard(current_workflow))
