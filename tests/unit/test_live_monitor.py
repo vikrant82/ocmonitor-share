@@ -107,6 +107,60 @@ class TestMultiWorkflowTracking:
         displayed = monitor._get_displayed_workflow()
         assert displayed["workflow_id"] == "session-new"
 
+    def test_prev_tracked_reset_on_workflow_switch(self, monkeypatch, tmp_path):
+        now = 1700000000
+        workflow_a = {
+            "workflow_id": "workflow-a",
+            "main_session": MagicMock(
+                session_id="workflow-a",
+                end_time=None,
+                start_time=now - 3600,
+            ),
+            "all_sessions": [
+                MagicMock(session_id="session-a1"),
+                MagicMock(session_id="session-a2"),
+            ],
+        }
+        workflow_b = {
+            "workflow_id": "workflow-b",
+            "main_session": MagicMock(
+                session_id="workflow-b",
+                end_time=None,
+                start_time=now,
+            ),
+            "all_sessions": [
+                MagicMock(session_id="session-b1"),
+            ],
+        }
+
+        call_count = [0]
+
+        def mock_get_workflows(db_path):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return [workflow_a]
+            return [workflow_b]
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            mock_get_workflows,
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        assert monitor._get_displayed_workflow()["workflow_id"] == "workflow-a"
+        assert monitor.prev_tracked == {"session-a1", "session-a2"}
+
+        monitor._refresh_active_workflows(str(tmp_path / "test.db"))
+
+        assert monitor._get_displayed_workflow()["workflow_id"] == "workflow-b"
+        assert monitor.prev_tracked == set()
+
 
 class TestLiveMonitorValidation:
     def test_validate_monitoring_setup_uses_default_file_storage_when_path_not_provided(

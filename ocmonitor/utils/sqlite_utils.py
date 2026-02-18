@@ -445,15 +445,17 @@ class SQLiteProcessor:
 
     @classmethod
     def get_all_active_workflows(
-        cls, db_path: Optional[Path] = None
+        cls, db_path: Optional[Path] = None, active_threshold_minutes: int = 30
     ) -> List[Dict[str, Any]]:
         """Get all active workflows (parent sessions that are still ongoing).
 
-        A workflow is considered active if its main session has no time_archived
-        (i.e., not yet archived, meaning the session is still running).
+        A workflow is considered active if its most recent message is within
+        active_threshold_minutes (default 30). This avoids relying on time_archived
+        which may not be set reliably when sessions end.
 
         Args:
             db_path: Path to database (uses default if not provided)
+            active_threshold_minutes: Consider session active if activity within this window
 
         Returns:
             List of workflow dictionaries, sorted by most recent activity first.
@@ -467,14 +469,27 @@ class SQLiteProcessor:
 
         conn = cls._get_connection(db_path)
         try:
-            parent_rows = conn.execute("""
+            import time
+
+            threshold_ms = int(time.time() * 1000) - (
+                active_threshold_minutes * 60 * 1000
+            )
+
+            parent_rows = conn.execute(
+                """
                 SELECT s.*, p.worktree as project_path, p.name as project_name
                 FROM session s
                 LEFT JOIN project p ON s.project_id = p.id
-                WHERE s.parent_id IS NULL AND s.time_archived IS NULL
+                WHERE s.parent_id IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM message m
+                    WHERE m.session_id = s.id AND m.time_created > ?
+                )
                 ORDER BY s.time_created DESC
                 LIMIT 10
-            """).fetchall()
+            """,
+                (threshold_ms,),
+            ).fetchall()
 
             if not parent_rows:
                 return []

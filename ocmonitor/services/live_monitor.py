@@ -115,6 +115,7 @@ class LiveMonitor:
         self.session_grouper = SessionGrouper()
         self._active_workflows: Dict[str, Any] = {}
         self._displayed_workflow_id: Optional[str] = None
+        self.prev_tracked: set = set()
         if init_from_db:
             self._initialize_active_workflows()
 
@@ -131,6 +132,9 @@ class LiveMonitor:
                     list(self._active_workflows.values())
                 )
                 self._displayed_workflow_id = most_recent["workflow_id"]
+                self.prev_tracked = set(
+                    s.session_id for s in most_recent["all_sessions"]
+                )
 
     def _get_tracked_workflow_ids(self) -> Set[str]:
         """Return set of tracked workflow IDs (for testing)."""
@@ -157,7 +161,13 @@ class LiveMonitor:
             most_recent = self._select_most_recent_workflow(
                 list(self._active_workflows.values())
             )
-            self._displayed_workflow_id = most_recent["workflow_id"]
+            if self._displayed_workflow_id != most_recent["workflow_id"]:
+                self._displayed_workflow_id = most_recent["workflow_id"]
+                self.prev_tracked = set()
+            else:
+                self.prev_tracked = set(
+                    s.session_id for s in most_recent["all_sessions"]
+                )
         else:
             self._displayed_workflow_id = None
 
@@ -194,6 +204,8 @@ class LiveMonitor:
             for w in active_workflows:
                 tracked_session_ids.update(s.session_id for s in w.all_sessions)
             prev_tracked = tracked_session_ids.copy()
+            self.prev_tracked = tracked_session_ids.copy()
+            prev_workflow_ids = set(active_workflows_dict.keys())
 
             current_workflow = self._select_most_recent_file_workflow(active_workflows)
             current_workflow_id = current_workflow.workflow_id
@@ -243,18 +255,23 @@ class LiveMonitor:
                                     f"[status.info]Tracking {w.session_count} sessions (1 main + {w.sub_agent_count} sub-agents)[/status.info]"
                                 )
 
-                        ended_ids = set(active_workflows_dict.keys()) - set(
-                            new_workflows_dict.keys()
-                        )
-                        for wid in ended_ids:
-                            self.console.print(
-                                f"\n[status.info]Workflow ended: {wid}[/status.info]"
-                            )
-
                         active_workflows_dict = new_workflows_dict
-                        active_workflows = list(new_workflows_dict.values())
+
+                    # Check for ended workflows (outside if workflows: to detect when new poll returns empty)
+                    ended_ids = set(prev_workflow_ids) - set(
+                        active_workflows_dict.keys()
+                    )
+                    for wid in ended_ids:
+                        self.console.print(
+                            f"\n[status.info]Workflow ended: {wid}[/status.info]"
+                        )
+
+                    if active_workflows_dict:
+                        active_workflows = list(active_workflows_dict.values())
+                        prev_workflow_ids = set(active_workflows_dict.keys())
 
                         prev_tracked = tracked_session_ids.copy()
+                        self.prev_tracked = tracked_session_ids.copy()
                         tracked_session_ids = set()
                         for w in active_workflows:
                             tracked_session_ids.update(
@@ -267,6 +284,8 @@ class LiveMonitor:
                             )
                             if new_current.workflow_id != current_workflow_id:
                                 current_workflow_id = new_current.workflow_id
+                                prev_tracked = set()
+                                self.prev_tracked = set()
                                 self.console.print(
                                     f"\n[status.info]Switched to workflow: {current_workflow_id}[/status.info]"
                                 )
@@ -282,6 +301,8 @@ class LiveMonitor:
                                 self.console.print(
                                     f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]"
                                 )
+                        prev_tracked |= new_ids_set
+                        self.prev_tracked = prev_tracked
 
                     if current_workflow:
                         live.update(self._generate_workflow_dashboard(current_workflow))
@@ -634,6 +655,8 @@ class LiveMonitor:
             for w in active_workflows:
                 tracked_session_ids.update(s.session_id for s in w["all_sessions"])
             prev_tracked = tracked_session_ids.copy()
+            self.prev_tracked = tracked_session_ids.copy()
+            prev_workflow_ids = set(active_workflows_dict.keys())
 
             # Get the workflow to display (most recently active)
             current_workflow = self._select_most_recent_workflow(active_workflows)
@@ -686,21 +709,13 @@ class LiveMonitor:
                                     f"[status.info]Tracking {w['session_count']} sessions (1 main + {w['sub_agent_count']} sub-agents)[/status.info]"
                                 )
 
-                        # Check for ended workflows
-                        ended_ids = set(active_workflows_dict.keys()) - set(
-                            new_workflows_dict.keys()
-                        )
-                        for wid in ended_ids:
-                            self.console.print(
-                                f"\n[status.info]Workflow ended: {wid}[/status.info]"
-                            )
-
                         # Update active workflows
                         active_workflows_dict = new_workflows_dict
                         active_workflows = list(new_workflows_dict.values())
 
                         # Update tracked session ids
                         prev_tracked = tracked_session_ids.copy()
+                        self.prev_tracked = tracked_session_ids.copy()
                         tracked_session_ids = set()
                         for w in active_workflows:
                             tracked_session_ids.update(
@@ -714,10 +729,24 @@ class LiveMonitor:
                             )
                             if new_current["workflow_id"] != current_workflow_id:
                                 current_workflow_id = new_current["workflow_id"]
+                                prev_tracked = set()
+                                self.prev_tracked = set()
                                 self.console.print(
                                     f"\n[status.info]Switched to workflow: {current_workflow_id}[/status.info]"
                                 )
                             current_workflow = new_current
+
+                    # Check for ended workflows (outside if new_active_workflows: to detect when new poll returns empty)
+                    ended_ids = set(prev_workflow_ids) - set(
+                        active_workflows_dict.keys()
+                    )
+                    for wid in ended_ids:
+                        self.console.print(
+                            f"\n[status.info]Workflow ended: {wid}[/status.info]"
+                        )
+
+                    if active_workflows_dict:
+                        prev_workflow_ids = set(active_workflows_dict.keys())
 
                     # Check for new sub-agents in current workflow
                     if current_workflow:
@@ -730,6 +759,8 @@ class LiveMonitor:
                                 self.console.print(
                                     f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]"
                                 )
+                        prev_tracked |= new_ids_set
+                        self.prev_tracked = prev_tracked
 
                     # Update dashboard
                     if current_workflow:
