@@ -1,5 +1,111 @@
+from unittest.mock import MagicMock, patch
 from ocmonitor.config import PathsConfig
 from ocmonitor.services.live_monitor import LiveMonitor
+
+
+class TestMultiWorkflowTracking:
+    def test_tracks_multiple_active_workflows(self, monkeypatch, tmp_path):
+        active_workflow_a = {
+            "workflow_id": "session-a",
+            "main_session": MagicMock(session_id="session-a", end_time=None),
+            "all_sessions": [MagicMock(session_id="session-a")],
+        }
+        active_workflow_b = {
+            "workflow_id": "session-b",
+            "main_session": MagicMock(session_id="session-b", end_time=None),
+            "all_sessions": [MagicMock(session_id="session-b")],
+        }
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda self, db_path: [active_workflow_a, active_workflow_b],
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        assert monitor._get_tracked_workflow_ids() == {"session-a", "session-b"}
+
+    def test_removes_ended_workflow_from_tracking(self, monkeypatch, tmp_path):
+        ended_workflow = {
+            "workflow_id": "session-ended",
+            "main_session": MagicMock(session_id="session-ended", end_time=1000),
+            "all_sessions": [MagicMock(session_id="session-ended")],
+        }
+        active_workflow = {
+            "workflow_id": "session-active",
+            "main_session": MagicMock(session_id="session-active", end_time=None),
+            "all_sessions": [MagicMock(session_id="session-active")],
+        }
+
+        call_count = [0]
+
+        def mock_get_workflows(self, db_path):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return [ended_workflow, active_workflow]
+            return [active_workflow]
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            mock_get_workflows,
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        assert monitor._get_tracked_workflow_ids() == {
+            "session-ended",
+            "session-active",
+        }
+
+        monitor._refresh_active_workflows(str(tmp_path / "test.db"))
+
+        assert monitor._get_tracked_workflow_ids() == {"session-active"}
+
+    def test_displays_most_recently_active_workflow(self, monkeypatch, tmp_path):
+        now = 1700000000
+        older_workflow = {
+            "workflow_id": "session-old",
+            "main_session": MagicMock(
+                session_id="session-old",
+                end_time=None,
+                start_time=now - 3600,
+            ),
+            "all_sessions": [MagicMock(session_id="session-old")],
+        }
+        newer_workflow = {
+            "workflow_id": "session-new",
+            "main_session": MagicMock(
+                session_id="session-new",
+                end_time=None,
+                start_time=now,
+            ),
+            "all_sessions": [MagicMock(session_id="session-new")],
+        }
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda self, db_path: [older_workflow, newer_workflow],
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        displayed = monitor._get_displayed_workflow()
+        assert displayed["workflow_id"] == "session-new"
 
 
 class TestLiveMonitorValidation:

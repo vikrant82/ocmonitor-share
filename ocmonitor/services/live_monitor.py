@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from rich.console import Console
 from rich.layout import Layout
@@ -107,16 +107,66 @@ class LiveMonitor:
         self.paths_config = paths_config
         self.dashboard_ui = DashboardUI(console)
         self.session_grouper = SessionGrouper()
+        self._active_workflows: Dict[str, Any] = {}
+        self._displayed_workflow_id: Optional[str] = None
+        self._initialize_active_workflows()
+
+    def _initialize_active_workflows(self):
+        """Initialize tracking of active workflows from database."""
+        db_path = SQLiteProcessor.find_database_path()
+        if db_path:
+            processor = SQLiteProcessor()
+            workflows = processor.get_all_active_workflows(Path(db_path))
+            for wf in workflows:
+                wf_id = wf["workflow_id"]
+                self._active_workflows[wf_id] = wf
+            if self._active_workflows:
+                most_recent = self._select_most_recent_workflow(
+                    list(self._active_workflows.values())
+                )
+                self._displayed_workflow_id = most_recent["workflow_id"]
+
+    def _get_tracked_workflow_ids(self) -> Set[str]:
+        """Return set of tracked workflow IDs (for testing)."""
+        return set(self._active_workflows.keys())
+
+    def _get_displayed_workflow(self) -> Optional[Dict[str, Any]]:
+        """Return the currently displayed workflow (for testing)."""
+        if self._displayed_workflow_id:
+            return self._active_workflows.get(self._displayed_workflow_id)
+        return None
+
+    def _refresh_active_workflows(self, db_path: str):
+        """Refresh active workflows from database (for testing)."""
+        processor = SQLiteProcessor()
+        workflows = processor.get_all_active_workflows(Path(db_path))
+        current_ids = set(self._active_workflows.keys())
+        new_ids = {wf["workflow_id"] for wf in workflows}
+        ended_ids = current_ids - new_ids
+        for ended_id in ended_ids:
+            wf = self._active_workflows.get(ended_id)
+            if wf and wf.get("main_session", {}).get("end_time") is not None:
+                del self._active_workflows[ended_id]
+        for wf in workflows:
+            self._active_workflows[wf["workflow_id"]] = wf
+        if self._active_workflows:
+            most_recent = self._select_most_recent_workflow(
+                list(self._active_workflows.values())
+            )
+            self._displayed_workflow_id = most_recent["workflow_id"]
+        else:
+            self._displayed_workflow_id = None
 
     def start_monitoring(self, base_path: str, refresh_interval: int = 5):
-        """Start live monitoring of the most recent workflow (main session + sub-agents).
+        """Start live monitoring of all active workflows (main session + sub-agents).
+
+        Tracks all active (ongoing) workflows and displays the one with most recent activity.
 
         Args:
             base_path: Path to directory containing sessions
             refresh_interval: Update interval in seconds
         """
         try:
-            # Load recent sessions and group into workflows
             sessions = FileProcessor.load_all_sessions(base_path, limit=50)
             if not sessions:
                 self.console.print(
@@ -129,11 +179,19 @@ class LiveMonitor:
                 self.console.print(f"[status.error]No workflows found[/status.error]")
                 return
 
-            # Get the most recent workflow
-            current_workflow = workflows[0]
-            tracked_session_ids = set(
-                s.session_id for s in current_workflow.all_sessions
-            )
+            active_workflows = [w for w in workflows if w.end_time is None]
+            if not active_workflows:
+                active_workflows = workflows[:1]
+
+            active_workflows_dict: Dict[str, SessionWorkflow] = {
+                w.workflow_id: w for w in active_workflows
+            }
+            tracked_session_ids = set()
+            for w in active_workflows:
+                tracked_session_ids.update(s.session_id for s in w.all_sessions)
+
+            current_workflow = self._select_most_recent_file_workflow(active_workflows)
+            current_workflow_id = current_workflow.workflow_id
 
             self.console.print(
                 f"[status.success]Starting live monitoring of workflow: {current_workflow.main_session.session_id}[/status.success]"
@@ -142,55 +200,86 @@ class LiveMonitor:
                 self.console.print(
                     f"[status.info]Tracking {current_workflow.session_count} sessions (1 main + {current_workflow.sub_agent_count} sub-agents)[/status.info]"
                 )
+            if len(active_workflows_dict) > 1:
+                self.console.print(
+                    f"[status.info]Monitoring {len(active_workflows_dict)} active workflows[/status.info]"
+                )
             self.console.print(
                 f"[status.info]Update interval: {refresh_interval} seconds[/status.info]"
             )
             self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
 
-            # Start live monitoring
             with Live(
                 self._generate_workflow_dashboard(current_workflow),
                 refresh_per_second=1 / refresh_interval,
                 console=self.console,
             ) as live:
                 while True:
-                    # Reload all sessions and re-group
                     sessions = FileProcessor.load_all_sessions(base_path, limit=50)
                     workflows = self.session_grouper.group_sessions(sessions)
 
                     if workflows:
-                        # Check if a new workflow started (different main session)
-                        new_workflow = workflows[0]
-                        if new_workflow.workflow_id != current_workflow.workflow_id:
-                            # Check if the new main session is not a sub-agent of our current workflow
-                            if (
-                                new_workflow.main_session.session_id
-                                not in tracked_session_ids
-                            ):
-                                current_workflow = new_workflow
-                                tracked_session_ids = set(
-                                    s.session_id for s in current_workflow.all_sessions
-                                )
-                                self.console.print(
-                                    f"\n[status.warning]New workflow detected: {current_workflow.main_session.session_id}[/status.warning]"
-                                )
-                        else:
-                            # Same workflow, update it
-                            current_workflow = new_workflow
-                            # Check for new sub-agents
-                            new_ids = set(
-                                s.session_id for s in current_workflow.all_sessions
-                            )
-                            new_subs = new_ids - tracked_session_ids
-                            if new_subs:
-                                for sub_id in new_subs:
-                                    self.console.print(
-                                        f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]"
-                                    )
-                                tracked_session_ids = new_ids
+                        new_active = [w for w in workflows if w.end_time is None]
+                        if not new_active:
+                            new_active = workflows[:1]
 
-                    # Update dashboard
-                    live.update(self._generate_workflow_dashboard(current_workflow))
+                        new_workflows_dict = {w.workflow_id: w for w in new_active}
+
+                        new_ids = set(new_workflows_dict.keys()) - set(
+                            active_workflows_dict.keys()
+                        )
+                        for wid in new_ids:
+                            w = new_workflows_dict[wid]
+                            self.console.print(
+                                f"\n[status.warning]New workflow detected: {w.main_session.session_id}[/status.warning]"
+                            )
+                            if w.has_sub_agents:
+                                self.console.print(
+                                    f"[status.info]Tracking {w.session_count} sessions (1 main + {w.sub_agent_count} sub-agents)[/status.info]"
+                                )
+
+                        ended_ids = set(active_workflows_dict.keys()) - set(
+                            new_workflows_dict.keys()
+                        )
+                        for wid in ended_ids:
+                            self.console.print(
+                                f"\n[status.info]Workflow ended: {wid}[/status.info]"
+                            )
+
+                        active_workflows_dict = new_workflows_dict
+                        active_workflows = list(new_workflows_dict.values())
+
+                        tracked_session_ids = set()
+                        for w in active_workflows:
+                            tracked_session_ids.update(
+                                s.session_id for s in w.all_sessions
+                            )
+
+                        if active_workflows:
+                            new_current = self._select_most_recent_file_workflow(
+                                active_workflows
+                            )
+                            if new_current.workflow_id != current_workflow_id:
+                                current_workflow_id = new_current.workflow_id
+                                self.console.print(
+                                    f"\n[status.info]Switched to workflow: {current_workflow_id}[/status.info]"
+                                )
+                            current_workflow = new_current
+
+                    if current_workflow:
+                        new_ids_set = set(
+                            s.session_id for s in current_workflow.all_sessions
+                        )
+                        new_subs = new_ids_set - tracked_session_ids
+                        if new_subs:
+                            for sub_id in new_subs:
+                                self.console.print(
+                                    f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]"
+                                )
+                            tracked_session_ids.update(new_ids_set)
+
+                    if current_workflow:
+                        live.update(self._generate_workflow_dashboard(current_workflow))
                     time.sleep(refresh_interval)
 
         except KeyboardInterrupt:
@@ -503,10 +592,10 @@ class LiveMonitor:
         }
 
     def start_sqlite_workflow_monitoring(self, refresh_interval: int = 5):
-        """Start live monitoring of the most recent workflow from SQLite (v1.2.0+).
+        """Start live monitoring of all active workflows from SQLite (v1.2.0+).
 
-        Similar to file-based workflow monitoring but reads from SQLite database.
-        Shows only the current workflow (main session + sub-agents) with detailed metrics.
+        Tracks all active (ongoing) workflows and displays the one with most recent activity.
+        Shows the current workflow (main session + sub-agents) with detailed metrics.
 
         Args:
             refresh_interval: Update interval in seconds
@@ -520,23 +609,40 @@ class LiveMonitor:
                 )
                 return
 
-            # Load the most recent workflow
-            workflow = SQLiteProcessor.get_most_recent_workflow(db_path)
-            if not workflow:
-                self.console.print(
-                    "[status.error]No sessions found in database.[/status.error]"
-                )
-                return
+            # Load all active workflows
+            active_workflows = SQLiteProcessor.get_all_active_workflows(db_path)
+            if not active_workflows:
+                # Fall back to most recent if no active workflows
+                workflow = SQLiteProcessor.get_most_recent_workflow(db_path)
+                if not workflow:
+                    self.console.print(
+                        "[status.error]No sessions found in database.[/status.error]"
+                    )
+                    return
+                active_workflows = [workflow]
 
-            current_workflow_id = workflow["workflow_id"]
-            tracked_session_ids = set(s.session_id for s in workflow["all_sessions"])
+            # Track active workflows by workflow_id
+            active_workflows_dict: Dict[str, Dict[str, Any]] = {
+                w["workflow_id"]: w for w in active_workflows
+            }
+            tracked_session_ids = set()
+            for w in active_workflows:
+                tracked_session_ids.update(s.session_id for s in w["all_sessions"])
+
+            # Get the workflow to display (most recently active)
+            current_workflow = self._select_most_recent_workflow(active_workflows)
+            current_workflow_id = current_workflow["workflow_id"]
 
             self.console.print(
                 f"[status.success]Starting live monitoring of workflow: {current_workflow_id}[/status.success]"
             )
-            if workflow["has_sub_agents"]:
+            if current_workflow["has_sub_agents"]:
                 self.console.print(
-                    f"[status.info]Tracking {workflow['session_count']} sessions (1 main + {workflow['sub_agent_count']} sub-agents)[/status.info]"
+                    f"[status.info]Tracking {current_workflow['session_count']} sessions (1 main + {current_workflow['sub_agent_count']} sub-agents)[/status.info]"
+                )
+            if len(active_workflows_dict) > 1:
+                self.console.print(
+                    f"[status.info]Monitoring {len(active_workflows_dict)} active workflows[/status.info]"
                 )
             self.console.print(
                 f"[status.info]Update interval: {refresh_interval} seconds[/status.info]"
@@ -545,54 +651,156 @@ class LiveMonitor:
 
             # Start live monitoring
             with Live(
-                self._generate_sqlite_workflow_dashboard(workflow),
+                self._generate_sqlite_workflow_dashboard(current_workflow),
                 refresh_per_second=1 / refresh_interval,
                 console=self.console,
             ) as live:
                 while True:
-                    # Reload workflow from SQLite
-                    new_workflow = SQLiteProcessor.get_most_recent_workflow(db_path)
+                    # Reload all active workflows from SQLite
+                    new_active_workflows = SQLiteProcessor.get_all_active_workflows(
+                        db_path
+                    )
 
-                    if new_workflow:
-                        # Check if a new workflow started (different main session)
-                        if new_workflow["workflow_id"] != current_workflow_id:
-                            # Check if the new main session is not a sub-agent of our current workflow
-                            if new_workflow["workflow_id"] not in tracked_session_ids:
-                                workflow = new_workflow
-                                current_workflow_id = workflow["workflow_id"]
-                                tracked_session_ids = set(
-                                    s.session_id for s in workflow["all_sessions"]
-                                )
-                                self.console.print(
-                                    f"\n[status.warning]New workflow detected: {current_workflow_id}[/status.warning]"
-                                )
-                                if workflow["has_sub_agents"]:
-                                    self.console.print(
-                                        f"[status.info]Now tracking {workflow['session_count']} sessions (1 main + {workflow['sub_agent_count']} sub-agents)[/status.info]"
-                                    )
-                        else:
-                            # Same workflow, update it
-                            workflow = new_workflow
-                            # Check for new sub-agents
-                            new_ids = set(
-                                s.session_id for s in workflow["all_sessions"]
+                    if new_active_workflows:
+                        new_workflows_dict = {
+                            w["workflow_id"]: w for w in new_active_workflows
+                        }
+
+                        # Check for new workflows
+                        new_ids = set(new_workflows_dict.keys()) - set(
+                            active_workflows_dict.keys()
+                        )
+                        for wid in new_ids:
+                            self.console.print(
+                                f"\n[status.warning]New workflow detected: {wid}[/status.warning]"
                             )
-                            new_subs = new_ids - tracked_session_ids
-                            if new_subs:
-                                for sub_id in new_subs:
-                                    self.console.print(
-                                        f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]"
-                                    )
-                                tracked_session_ids = new_ids
+                            w = new_workflows_dict[wid]
+                            if w["has_sub_agents"]:
+                                self.console.print(
+                                    f"[status.info]Tracking {w['session_count']} sessions (1 main + {w['sub_agent_count']} sub-agents)[/status.info]"
+                                )
+
+                        # Check for ended workflows
+                        ended_ids = set(active_workflows_dict.keys()) - set(
+                            new_workflows_dict.keys()
+                        )
+                        for wid in ended_ids:
+                            self.console.print(
+                                f"\n[status.info]Workflow ended: {wid}[/status.info]"
+                            )
+
+                        # Update active workflows
+                        active_workflows_dict = new_workflows_dict
+                        active_workflows = list(new_workflows_dict.values())
+
+                        # Update tracked session ids
+                        tracked_session_ids = set()
+                        for w in active_workflows:
+                            tracked_session_ids.update(
+                                s.session_id for s in w["all_sessions"]
+                            )
+
+                        # Select the workflow to display (most recently active)
+                        if active_workflows:
+                            new_current = self._select_most_recent_workflow(
+                                active_workflows
+                            )
+                            if new_current["workflow_id"] != current_workflow_id:
+                                current_workflow_id = new_current["workflow_id"]
+                                self.console.print(
+                                    f"\n[status.info]Switched to workflow: {current_workflow_id}[/status.info]"
+                                )
+                            current_workflow = new_current
+
+                    # Check for new sub-agents in current workflow
+                    if current_workflow:
+                        new_ids_set = set(
+                            s.session_id for s in current_workflow["all_sessions"]
+                        )
+                        new_subs = new_ids_set - tracked_session_ids
+                        if new_subs:
+                            for sub_id in new_subs:
+                                self.console.print(
+                                    f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]"
+                                )
+                            tracked_session_ids.update(new_ids_set)
 
                     # Update dashboard
-                    live.update(self._generate_sqlite_workflow_dashboard(workflow))
+                    if current_workflow:
+                        live.update(
+                            self._generate_sqlite_workflow_dashboard(current_workflow)
+                        )
                     time.sleep(refresh_interval)
 
         except KeyboardInterrupt:
             self.console.print(
                 "\n[status.warning]Live monitoring stopped.[/status.warning]"
             )
+
+    def _select_most_recent_workflow(
+        self, workflows: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Select the workflow with most recent activity.
+
+        Args:
+            workflows: List of workflow dicts
+
+        Returns:
+            The workflow with the most recent file modification
+        """
+        if not workflows:
+            raise ValueError("No workflows to select from")
+        if len(workflows) == 1:
+            return workflows[0]
+
+        def get_latest_activity(workflow: Dict[str, Any]) -> float:
+            latest = 0.0
+            has_file_activity = False
+            for session in workflow["all_sessions"]:
+                for f in session.files:
+                    if f.time_data and f.time_data.created:
+                        latest = max(latest, f.time_data.created)
+                        has_file_activity = True
+            if not has_file_activity and workflow.get("main_session"):
+                start_time = workflow["main_session"].start_time
+                if start_time:
+                    try:
+                        ts = start_time.timestamp()
+                        latest = float(ts)
+                    except (AttributeError, TypeError, ValueError):
+                        if type(start_time) in (int, float):
+                            latest = float(start_time)
+                        else:
+                            latest = 0.0
+            return latest
+
+        return max(workflows, key=get_latest_activity)
+
+    def _select_most_recent_file_workflow(
+        self, workflows: List[SessionWorkflow]
+    ) -> SessionWorkflow:
+        """Select the file-based workflow with most recent activity.
+
+        Args:
+            workflows: List of SessionWorkflow objects
+
+        Returns:
+            The workflow with the most recent file modification
+        """
+        if not workflows:
+            raise ValueError("No workflows to select from")
+        if len(workflows) == 1:
+            return workflows[0]
+
+        def get_latest_activity(workflow: SessionWorkflow) -> float:
+            latest = 0.0
+            for session in workflow.all_sessions:
+                for f in session.files:
+                    if f.modification_time:
+                        latest = max(latest, f.modification_time.timestamp())
+            return latest
+
+        return max(workflows, key=get_latest_activity)
 
     def _generate_sqlite_workflow_dashboard(self, workflow: Dict[str, Any]):
         """Generate dashboard layout for a SQLite workflow (main + sub-agents).
@@ -730,7 +938,9 @@ class LiveMonitor:
             info["sqlite"] = {"available": False}
 
         # Check for file-based storage (legacy)
-        base_path = base_path or (self.paths_config.messages_dir if self.paths_config else None)
+        base_path = base_path or (
+            self.paths_config.messages_dir if self.paths_config else None
+        )
         if base_path:
             base_path_obj = Path(base_path)
             if base_path_obj.exists() and base_path_obj.is_dir():
