@@ -22,7 +22,7 @@ class TestMultiWorkflowTracking:
         )
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda self, db_path: [active_workflow_a, active_workflow_b],
+            lambda db_path: [active_workflow_a, active_workflow_b],
         )
 
         paths_config = PathsConfig(messages_dir=str(tmp_path))
@@ -44,7 +44,7 @@ class TestMultiWorkflowTracking:
 
         call_count = [0]
 
-        def mock_get_workflows(self, db_path):
+        def mock_get_workflows(db_path):
             call_count[0] += 1
             if call_count[0] == 1:
                 return [ended_workflow, active_workflow]
@@ -98,7 +98,7 @@ class TestMultiWorkflowTracking:
         )
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda self, db_path: [older_workflow, newer_workflow],
+            lambda db_path: [older_workflow, newer_workflow],
         )
 
         paths_config = PathsConfig(messages_dir=str(tmp_path))

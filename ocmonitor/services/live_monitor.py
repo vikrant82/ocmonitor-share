@@ -118,8 +118,7 @@ class LiveMonitor:
         """Initialize tracking of active workflows from database."""
         db_path = SQLiteProcessor.find_database_path()
         if db_path:
-            processor = SQLiteProcessor()
-            workflows = processor.get_all_active_workflows(Path(db_path))
+            workflows = SQLiteProcessor.get_all_active_workflows(db_path)
             for wf in workflows:
                 wf_id = wf["workflow_id"]
                 self._active_workflows[wf_id] = wf
@@ -141,8 +140,7 @@ class LiveMonitor:
 
     def _refresh_active_workflows(self, db_path: str):
         """Refresh active workflows from database (for testing)."""
-        processor = SQLiteProcessor()
-        workflows = processor.get_all_active_workflows(Path(db_path))
+        workflows = SQLiteProcessor.get_all_active_workflows(Path(db_path))
         current_ids = set(self._active_workflows.keys())
         new_ids = {wf["workflow_id"] for wf in workflows}
         ended_ids = current_ids - new_ids
