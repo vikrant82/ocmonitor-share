@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, cast
 
 from rich.console import Console
 from rich.layout import Layout
@@ -21,6 +21,10 @@ from ..utils.data_loader import DataLoader
 from ..utils.file_utils import FileProcessor
 from ..utils.sqlite_utils import SQLiteProcessor
 from .session_grouper import SessionGrouper
+
+
+class NoWorkflowsError(Exception):
+    """Raised when no workflows are available for selection."""
 
 
 class WorkflowWrapper:
@@ -751,7 +755,7 @@ class LiveMonitor:
             The workflow with the most recent file modification
         """
         if not workflows:
-            raise ValueError("No workflows to select from")
+            raise NoWorkflowsError()
         if len(workflows) == 1:
             return workflows[0]
 
@@ -787,7 +791,7 @@ class LiveMonitor:
             The workflow with the most recent file modification
         """
         if not workflows:
-            raise ValueError("No workflows to select from")
+            raise NoWorkflowsError()
         if len(workflows) == 1:
             return workflows[0]
 
@@ -842,7 +846,6 @@ class LiveMonitor:
 
         # Use the existing dashboard UI
         # Note: WorkflowWrapper mimics SessionWorkflow interface for dashboard compatibility
-        from typing import Any, cast
 
         return self.dashboard_ui.create_dashboard_layout(
             session=workflow["main_session"],
