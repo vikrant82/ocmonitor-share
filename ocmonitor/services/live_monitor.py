@@ -767,15 +767,12 @@ class LiveMonitor:
                         has_file_activity = True
             if not has_file_activity and workflow.get("main_session"):
                 start_time = workflow["main_session"].start_time
-                if start_time:
-                    try:
-                        ts = start_time.timestamp()
-                        latest = float(ts)
-                    except (AttributeError, TypeError, ValueError):
-                        if type(start_time) in (int, float):
-                            latest = float(start_time)
-                        else:
-                            latest = 0.0
+                if isinstance(start_time, datetime):
+                    latest = start_time.timestamp()
+                elif isinstance(start_time, (int, float)):
+                    latest = float(start_time)
+                else:
+                    latest = 0.0
             return latest
 
         return max(workflows, key=get_latest_activity)
