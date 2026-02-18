@@ -94,6 +94,7 @@ class LiveMonitor:
         pricing_data: Dict[str, ModelPricing],
         console: Optional[Console] = None,
         paths_config: Optional[PathsConfig] = None,
+        init_from_db: bool = True,
     ):
         """Initialize live monitor.
 
@@ -101,6 +102,7 @@ class LiveMonitor:
             pricing_data: Model pricing information
             console: Rich console for output
             paths_config: Path configuration for resolving default storage paths
+            init_from_db: Whether to initialize active workflows from database
         """
         self.pricing_data = pricing_data
         self.console = console or Console()
@@ -109,7 +111,8 @@ class LiveMonitor:
         self.session_grouper = SessionGrouper()
         self._active_workflows: Dict[str, Any] = {}
         self._displayed_workflow_id: Optional[str] = None
-        self._initialize_active_workflows()
+        if init_from_db:
+            self._initialize_active_workflows()
 
     def _initialize_active_workflows(self):
         """Initialize tracking of active workflows from database."""

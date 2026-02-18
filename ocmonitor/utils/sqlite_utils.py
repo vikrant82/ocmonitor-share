@@ -404,41 +404,44 @@ class SQLiteProcessor:
             if not main_session:
                 return None
 
-            # Get all sub-agents for this parent
-            sub_agent_rows = conn.execute(
-                """
-                SELECT s.*, p.worktree as project_path, p.name as project_name
-                FROM session s
-                LEFT JOIN project p ON s.project_id = p.id
-                WHERE s.parent_id = ?
-                ORDER BY s.time_created ASC
-            """,
-                (main_session.session_id,),
-            ).fetchall()
-
-            # Load sub-agent sessions
-            sub_agents = []
-            for row in sub_agent_rows:
-                sub_session = cls.load_session_data(conn, row)
-                if sub_session:
-                    sub_agents.append(sub_session)
-
-            # Build workflow structure compatible with SessionWorkflow
-            all_sessions = [main_session] + sub_agents
-
-            return {
-                "main_session": main_session,
-                "sub_agents": sub_agents,
-                "all_sessions": all_sessions,
-                "project_name": main_session.project_name,
-                "display_title": main_session.display_title,
-                "session_count": len(all_sessions),
-                "sub_agent_count": len(sub_agents),
-                "has_sub_agents": len(sub_agents) > 0,
-                "workflow_id": main_session.session_id,
-            }
+            return cls._build_workflow_dict(conn, main_session)
         finally:
             conn.close()
+
+    @classmethod
+    def _build_workflow_dict(
+        cls, conn: sqlite3.Connection, main_session: SessionData
+    ) -> Dict[str, Any]:
+        sub_agent_rows = conn.execute(
+            """
+            SELECT s.*, p.worktree as project_path, p.name as project_name
+            FROM session s
+            LEFT JOIN project p ON s.project_id = p.id
+            WHERE s.parent_id = ?
+            ORDER BY s.time_created ASC
+        """,
+            (main_session.session_id,),
+        ).fetchall()
+
+        sub_agents = []
+        for row in sub_agent_rows:
+            sub_session = cls.load_session_data(conn, row)
+            if sub_session:
+                sub_agents.append(sub_session)
+
+        all_sessions = [main_session] + sub_agents
+
+        return {
+            "main_session": main_session,
+            "sub_agents": sub_agents,
+            "all_sessions": all_sessions,
+            "project_name": main_session.project_name,
+            "display_title": main_session.display_title,
+            "session_count": len(all_sessions),
+            "sub_agent_count": len(sub_agents),
+            "has_sub_agents": len(sub_agents) > 0,
+            "workflow_id": main_session.session_id,
+        }
 
     @classmethod
     def get_all_active_workflows(
@@ -470,6 +473,7 @@ class SQLiteProcessor:
                 LEFT JOIN project p ON s.project_id = p.id
                 WHERE s.parent_id IS NULL AND s.time_archived IS NULL
                 ORDER BY s.time_created DESC
+                LIMIT 10
             """).fetchall()
 
             if not parent_rows:
@@ -479,38 +483,7 @@ class SQLiteProcessor:
             for parent_row in parent_rows:
                 session = cls.load_session_data(conn, parent_row)
                 if session and session.files:
-                    sub_agent_rows = conn.execute(
-                        """
-                        SELECT s.*, p.worktree as project_path, p.name as project_name
-                        FROM session s
-                        LEFT JOIN project p ON s.project_id = p.id
-                        WHERE s.parent_id = ?
-                        ORDER BY s.time_created ASC
-                    """,
-                        (session.session_id,),
-                    ).fetchall()
-
-                    sub_agents = []
-                    for row in sub_agent_rows:
-                        sub_session = cls.load_session_data(conn, row)
-                        if sub_session:
-                            sub_agents.append(sub_session)
-
-                    all_sessions = [session] + sub_agents
-
-                    active_workflows.append(
-                        {
-                            "main_session": session,
-                            "sub_agents": sub_agents,
-                            "all_sessions": all_sessions,
-                            "project_name": session.project_name,
-                            "display_title": session.display_title,
-                            "session_count": len(all_sessions),
-                            "sub_agent_count": len(sub_agents),
-                            "has_sub_agents": len(sub_agents) > 0,
-                            "workflow_id": session.session_id,
-                        }
-                    )
+                    active_workflows.append(cls._build_workflow_dict(conn, session))
 
             return active_workflows
         finally:
