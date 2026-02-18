@@ -468,7 +468,7 @@ class SQLiteProcessor:
                 SELECT s.*, p.worktree as project_path, p.name as project_name
                 FROM session s
                 LEFT JOIN project p ON s.project_id = p.id
-                WHERE s.parent_id IS NULL
+                WHERE s.parent_id IS NULL AND s.time_archived IS NULL
                 ORDER BY s.time_created DESC
             """).fetchall()
 
@@ -478,7 +478,7 @@ class SQLiteProcessor:
             active_workflows = []
             for parent_row in parent_rows:
                 session = cls.load_session_data(conn, parent_row)
-                if session and session.files and session.end_time is None:
+                if session and session.files:
                     sub_agent_rows = conn.execute(
                         """
                         SELECT s.*, p.worktree as project_path, p.name as project_name
