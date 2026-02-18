@@ -446,8 +446,8 @@ class SQLiteProcessor:
     ) -> List[Dict[str, Any]]:
         """Get all active workflows (parent sessions that are still ongoing).
 
-        A workflow is considered active if its main session has no end_time
-        (i.e., no files have completion timestamps, meaning the session is still running).
+        A workflow is considered active if its main session has no time_archived
+        (i.e., not yet archived, meaning the session is still running).
 
         Args:
             db_path: Path to database (uses default if not provided)

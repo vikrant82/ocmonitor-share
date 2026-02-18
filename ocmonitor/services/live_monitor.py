@@ -633,6 +633,7 @@ class LiveMonitor:
             tracked_session_ids = set()
             for w in active_workflows:
                 tracked_session_ids.update(s.session_id for s in w["all_sessions"])
+            prev_tracked = tracked_session_ids.copy()
 
             # Get the workflow to display (most recently active)
             current_workflow = self._select_most_recent_workflow(active_workflows)
@@ -699,6 +700,7 @@ class LiveMonitor:
                         active_workflows = list(new_workflows_dict.values())
 
                         # Update tracked session ids
+                        prev_tracked = tracked_session_ids.copy()
                         tracked_session_ids = set()
                         for w in active_workflows:
                             tracked_session_ids.update(
@@ -722,13 +724,12 @@ class LiveMonitor:
                         new_ids_set = set(
                             s.session_id for s in current_workflow["all_sessions"]
                         )
-                        new_subs = new_ids_set - tracked_session_ids
+                        new_subs = new_ids_set - prev_tracked
                         if new_subs:
                             for sub_id in new_subs:
                                 self.console.print(
                                     f"\n[status.info]New sub-agent detected: {sub_id}[/status.info]"
                                 )
-                            tracked_session_ids.update(new_ids_set)
 
                     # Update dashboard
                     if current_workflow:
@@ -764,7 +765,7 @@ class LiveMonitor:
             for session in workflow["all_sessions"]:
                 for f in session.files:
                     if f.time_data and f.time_data.created:
-                        latest = max(latest, f.time_data.created)
+                        latest = max(latest, f.time_data.created / 1000.0)
                         has_file_activity = True
             if not has_file_activity and workflow.get("main_session"):
                 start_time = workflow["main_session"].start_time
