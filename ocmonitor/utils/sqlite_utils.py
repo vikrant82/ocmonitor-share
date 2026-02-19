@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Generator
 from datetime import datetime
@@ -469,8 +470,6 @@ class SQLiteProcessor:
 
         conn = cls._get_connection(db_path)
         try:
-            import time
-
             threshold_ms = int(time.time() * 1000) - (
                 active_threshold_minutes * 60 * 1000
             )
