@@ -711,3 +711,78 @@ class TestLiveMonitorValidation:
 
         assert result["valid"] is False
         assert result["info"]["files"]["available"] is False
+
+
+class TestLiveMonitorToolStatsSourceSelection:
+    """Tests for tool stats source selection in live monitor."""
+
+    def test_file_mode_tool_loading_does_not_fallback_to_sqlite(
+        self, monkeypatch, tmp_path
+    ):
+        """Verify file-mode workflow doesn't pull SQLite tool stats even if SQLite is available."""
+        sessions_dir = tmp_path / "message"
+        sessions_dir.mkdir()
+
+        paths_config = PathsConfig(messages_dir=str(sessions_dir))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        # Mock SQLite as available
+        db_path = tmp_path / "opencode.db"
+        db_path.touch()
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: db_path,
+        )
+
+        # Mock file processor to return sessions
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.FileProcessor.find_session_directories",
+            lambda _: [tmp_path / "session-1"],
+        )
+
+        # Create a mock workflow with session IDs
+        from unittest.mock import MagicMock
+
+        mock_workflow = MagicMock()
+        mock_workflow.all_sessions = [MagicMock(session_id="ses_file_1")]
+
+        # Call with preferred_source="files"
+        tool_stats = monitor._load_tool_stats_for_workflow(
+            mock_workflow, preferred_source="files"
+        )
+
+        # Should return empty list for file mode, not SQLite data
+        assert tool_stats == []
+
+    def test_sqlite_mode_tool_loading_uses_sqlite(self, monkeypatch, tmp_path):
+        """Verify SQLite-mode workflow queries SQLite for tool stats."""
+        monitor = LiveMonitor(pricing_data={})
+
+        # Mock SQLite as available
+        db_path = tmp_path / "opencode.db"
+        db_path.touch()
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: db_path,
+        )
+
+        # Mock the SQLite processor method to track calls
+        from unittest.mock import MagicMock, patch
+
+        mock_stats = [MagicMock(tool_name="bash", total_calls=5)]
+        with patch(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.load_tool_usage_for_sessions",
+            return_value=mock_stats,
+        ) as mock_load:
+            # Create a mock workflow with session IDs
+            mock_workflow = MagicMock()
+            mock_workflow.all_sessions = [MagicMock(session_id="ses_sqlite_1")]
+
+            # Call with preferred_source="sqlite"
+            tool_stats = monitor._load_tool_stats_for_workflow(
+                mock_workflow, preferred_source="sqlite"
+            )
+
+            # Should have called SQLite processor
+            mock_load.assert_called_once()
+            assert tool_stats == mock_stats

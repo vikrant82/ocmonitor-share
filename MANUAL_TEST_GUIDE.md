@@ -6,7 +6,7 @@ This guide will help you manually test all functionality of the new OpenCode Mon
 
 ### 1. **Environment Setup**
 ```bash
-cd ocmonitor
+cd ocmonitor-share
 python3 -m pip install -r requirements.txt
 ```
 

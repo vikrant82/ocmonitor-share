@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Any, Generator
 from datetime import datetime
 
 from ..models.session import SessionData, InteractionFile, TokenUsage, TimeData
+from ..models.tool_usage import ToolUsageStats
 
 
 class SQLiteProcessor:
@@ -635,6 +636,90 @@ class SQLiteProcessor:
             # Get file size
             stats["file_size_bytes"] = db_path.stat().st_size
 
+            return stats
+        finally:
+            conn.close()
+    
+    @classmethod
+    def load_tool_usage_for_sessions(
+        cls,
+        session_ids: List[str],
+        db_path: Optional[Path] = None
+    ) -> List[ToolUsageStats]:
+        """Load tool usage statistics for the given sessions.
+        
+        Queries the `part` table for tool entries with terminal statuses
+        (completed or error) and aggregates counts by tool name.
+        
+        Args:
+            session_ids: List of session IDs to aggregate tool usage for
+            db_path: Path to database (uses default if not provided)
+            
+        Returns:
+            List of ToolUsageStats sorted by total_calls descending
+        """
+        if not session_ids:
+            return []
+        
+        if db_path is None:
+            db_path = cls.find_database_path()
+        
+        if not db_path or not db_path.exists():
+            return []
+        
+        conn = cls._get_connection(db_path)
+        try:
+            # Build placeholders for IN clause
+            placeholders = ','.join('?' * len(session_ids))
+            
+            # Query tool parts with terminal statuses
+            # Use json_valid to protect against malformed JSON
+            # Use json_extract to access nested fields in the data column
+            query = f"""
+                SELECT 
+                    json_extract(data, '$.tool') as tool_name,
+                    json_extract(data, '$.state.status') as status,
+                    COUNT(*) as count
+                FROM part
+                WHERE session_id IN ({placeholders})
+                  AND json_valid(data) = 1
+                  AND json_extract(data, '$.type') = 'tool'
+                  AND json_extract(data, '$.tool') IS NOT NULL
+                  AND json_extract(data, '$.state.status') IN ('completed', 'error')
+                GROUP BY tool_name, status
+            """
+            
+            cursor = conn.execute(query, session_ids)
+            
+            # Aggregate by tool name
+            tool_data: Dict[str, Dict[str, int]] = {}
+            for row in cursor:
+                tool_name = row['tool_name']
+                status = row['status']
+                count = row['count']
+                
+                if tool_name not in tool_data:
+                    tool_data[tool_name] = {'success': 0, 'failure': 0}
+                
+                if status == 'completed':
+                    tool_data[tool_name]['success'] += count
+                elif status == 'error':
+                    tool_data[tool_name]['failure'] += count
+            
+            # Build ToolUsageStats list
+            stats = []
+            for tool_name, counts in tool_data.items():
+                total = counts['success'] + counts['failure']
+                stats.append(ToolUsageStats(
+                    tool_name=tool_name,
+                    total_calls=total,
+                    success_count=counts['success'],
+                    failure_count=counts['failure']
+                ))
+            
+            # Sort by total_calls descending
+            stats.sort(key=lambda s: s.total_calls, reverse=True)
+            
             return stats
         finally:
             conn.close()
