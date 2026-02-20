@@ -126,11 +126,6 @@ class SQLiteProcessor:
             return None
 
         tokens = cls._extract_tokens(data)
-
-        # Filter out interactions with zero token usage
-        if tokens.total == 0:
-            return None
-
         time_data = cls._extract_time_data(data)
         project_path = cls._extract_project_path(data)
         agent = cls._extract_agent(data)
@@ -445,6 +440,94 @@ class SQLiteProcessor:
         }
 
     @classmethod
+    def _find_orphan_subagent_workflows(
+        cls,
+        conn: sqlite3.Connection,
+        threshold_ms: int,
+        loaded_parent_ids: set,
+    ) -> List[Dict[str, Any]]:
+        """Find sub-agent workflows whose parents don't have token data.
+
+        Some parent sessions (e.g., ACP sessions) may have messages but no token
+        usage, causing them to be filtered out by load_session_data(). This method
+        finds sub-agents that should be grouped together under a synthetic workflow.
+
+        Args:
+            conn: Database connection
+            threshold_ms: Activity threshold in milliseconds
+            loaded_parent_ids: Set of parent IDs that were already loaded successfully
+
+        Returns:
+            List of workflow dictionaries for orphan sub-agent groups
+        """
+        if loaded_parent_ids:
+            placeholders = ",".join("?" * len(loaded_parent_ids))
+            query = f"""
+                SELECT s.*, p.worktree as project_path, p.name as project_name
+                FROM session s
+                LEFT JOIN project p ON s.project_id = p.id
+                WHERE s.parent_id IS NOT NULL
+                AND s.parent_id NOT IN ({placeholders})
+                AND EXISTS (
+                    SELECT 1 FROM message m
+                    WHERE m.session_id = s.id AND m.time_created > ?
+                )
+                ORDER BY s.time_created DESC
+            """
+            params = list(loaded_parent_ids) + [threshold_ms]
+        else:
+            query = """
+                SELECT s.*, p.worktree as project_path, p.name as project_name
+                FROM session s
+                LEFT JOIN project p ON s.project_id = p.id
+                WHERE s.parent_id IS NOT NULL
+                AND EXISTS (
+                    SELECT 1 FROM message m
+                    WHERE m.session_id = s.id AND m.time_created > ?
+                )
+                ORDER BY s.time_created DESC
+            """
+            params = [threshold_ms]
+
+        sub_agent_rows = conn.execute(query, params).fetchall()
+
+        sub_agents_by_parent: Dict[str, List[SessionData]] = {}
+        for row in sub_agent_rows:
+            sub_session = cls.load_session_data(conn, row)
+            if sub_session and sub_session.parent_id:
+                parent_id: str = sub_session.parent_id
+                if parent_id not in sub_agents_by_parent:
+                    sub_agents_by_parent[parent_id] = []
+                sub_agents_by_parent[parent_id].append(sub_session)
+
+        orphan_workflows = []
+        for parent_id, sub_agents in sub_agents_by_parent.items():
+            if len(sub_agents) == 0:
+                continue
+
+            sub_agents.sort(key=lambda s: s.start_time or datetime.min)
+            first_sub = sub_agents[0]
+
+            remaining_subs = sub_agents[1:] if len(sub_agents) > 1 else []
+
+            workflow = {
+                "main_session": first_sub,
+                "sub_agents": remaining_subs,
+                "all_sessions": sub_agents,
+                "project_name": first_sub.project_name,
+                "display_title": first_sub.display_title
+                or f"Orphan workflow ({parent_id[:12]}...)",
+                "session_count": len(sub_agents),
+                "sub_agent_count": len(remaining_subs),
+                "has_sub_agents": len(remaining_subs) > 0,
+                "workflow_id": parent_id,
+                "is_orphan": True,
+            }
+            orphan_workflows.append(workflow)
+
+        return orphan_workflows
+
+    @classmethod
     def get_all_active_workflows(
         cls, db_path: Optional[Path] = None, active_threshold_minutes: int = 30
     ) -> List[Dict[str, Any]]:
@@ -453,6 +536,9 @@ class SQLiteProcessor:
         A workflow is considered active if its most recent message is within
         active_threshold_minutes (default 30). This avoids relying on time_archived
         which may not be set reliably when sessions end.
+
+        Also handles orphan sub-agents whose parent sessions don't have token data
+        (e.g., ACP sessions). These are grouped by parent_id and shown as workflows.
 
         Args:
             db_path: Path to database (uses default if not provided)
@@ -490,14 +576,19 @@ class SQLiteProcessor:
                 (threshold_ms,),
             ).fetchall()
 
-            if not parent_rows:
-                return []
-
             active_workflows = []
+            loaded_parent_ids = set()
+
             for parent_row in parent_rows:
                 session = cls.load_session_data(conn, parent_row)
                 if session and session.files:
+                    loaded_parent_ids.add(session.session_id)
                     active_workflows.append(cls._build_workflow_dict(conn, session))
+
+            orphan_workflows = cls._find_orphan_subagent_workflows(
+                conn, threshold_ms, loaded_parent_ids
+            )
+            active_workflows.extend(orphan_workflows)
 
             return active_workflows
         finally:

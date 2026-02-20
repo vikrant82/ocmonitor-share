@@ -298,6 +298,335 @@ class TestMultiWorkflowTracking:
         }, "prev_tracked now tracks workflow-b sessions after stable refresh"
 
 
+class TestParentActivitySelection:
+    def test_selection_uses_parent_activity_only_not_sub_agent(
+        self, monkeypatch, tmp_path
+    ):
+        from ocmonitor.models.session import TokenUsage
+        from ocmonitor.models.session import InteractionFile
+        from ocmonitor.models.session import TimeData
+
+        now = 1700000000
+
+        parent_file = MagicMock(spec=InteractionFile)
+        parent_file.time_data = MagicMock(spec=TimeData)
+        parent_file.time_data.created = (now - 100) * 1000
+        parent_file.tokens = TokenUsage(input=100, output=50)
+
+        parent_session = MagicMock(
+            session_id="parent-a",
+            end_time=None,
+            start_time=now - 200,
+            files=[parent_file],
+        )
+
+        sub_agent_file = MagicMock(spec=InteractionFile)
+        sub_agent_file.time_data = MagicMock(spec=TimeData)
+        sub_agent_file.time_data.created = now * 1000
+        sub_agent_file.tokens = TokenUsage(input=200, output=100)
+
+        sub_agent = MagicMock(
+            session_id="sub-agent-a",
+            end_time=None,
+            start_time=now - 50,
+            files=[sub_agent_file],
+        )
+
+        parent_b_file = MagicMock(spec=InteractionFile)
+        parent_b_file.time_data = MagicMock(spec=TimeData)
+        parent_b_file.time_data.created = (now - 50) * 1000
+        parent_b_file.tokens = TokenUsage(input=50, output=25)
+
+        parent_b = MagicMock(
+            session_id="parent-b",
+            end_time=None,
+            start_time=now - 100,
+            files=[parent_b_file],
+        )
+
+        workflow_a = {
+            "workflow_id": "workflow-a",
+            "main_session": parent_session,
+            "all_sessions": [parent_session, sub_agent],
+            "sub_agents": [sub_agent],
+        }
+
+        workflow_b = {
+            "workflow_id": "workflow-b",
+            "main_session": parent_b,
+            "all_sessions": [parent_b],
+            "sub_agents": [],
+        }
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda db_path: [workflow_a, workflow_b],
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        displayed = monitor._get_displayed_workflow()
+
+        assert displayed["workflow_id"] == "workflow-b", (
+            "Parent B should be displayed because its parent activity (now-50) "
+            "is newer than Parent A's parent activity (now-100), "
+            "even though Parent A's sub-agent has the newest activity (now)"
+        )
+
+    def test_parent_appears_when_dispatching_sub_agent(self, monkeypatch, tmp_path):
+        from ocmonitor.models.session import TokenUsage
+        from ocmonitor.models.session import InteractionFile
+        from ocmonitor.models.session import TimeData
+
+        now = 1700000000
+
+        parent_a_file = MagicMock(spec=InteractionFile)
+        parent_a_file.time_data = MagicMock(spec=TimeData)
+        parent_a_file.time_data.created = now * 1000
+        parent_a_file.tokens = TokenUsage(input=100, output=50)
+
+        parent_a = MagicMock(
+            session_id="parent-a",
+            end_time=None,
+            start_time=now - 100,
+            files=[parent_a_file],
+        )
+
+        sub_agent = MagicMock(
+            session_id="sub-agent-a",
+            end_time=None,
+            start_time=now + 50,
+            files=[],
+        )
+
+        parent_b_file = MagicMock(spec=InteractionFile)
+        parent_b_file.time_data = MagicMock(spec=TimeData)
+        parent_b_file.time_data.created = (now - 50) * 1000
+        parent_b_file.tokens = TokenUsage(input=50, output=25)
+
+        parent_b = MagicMock(
+            session_id="parent-b",
+            end_time=None,
+            start_time=now - 100,
+            files=[parent_b_file],
+        )
+
+        workflow_a = {
+            "workflow_id": "workflow-a",
+            "main_session": parent_a,
+            "all_sessions": [parent_a, sub_agent],
+            "sub_agents": [sub_agent],
+        }
+
+        workflow_b = {
+            "workflow_id": "workflow-b",
+            "main_session": parent_b,
+            "all_sessions": [parent_b],
+            "sub_agents": [],
+        }
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda db_path: [workflow_a, workflow_b],
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        displayed = monitor._get_displayed_workflow()
+
+        assert displayed["workflow_id"] == "workflow-a", (
+            "Parent A should be displayed when it has new activity (dispatching sub-agent), "
+            "even if sub-agent hasn't produced output yet"
+        )
+        assert len(displayed["sub_agents"]) == 1
+
+    def test_workflow_shows_all_sub_agents_regardless_of_activity(
+        self, monkeypatch, tmp_path
+    ):
+        from ocmonitor.models.session import TokenUsage
+        from ocmonitor.models.session import InteractionFile
+        from ocmonitor.models.session import TimeData
+
+        now = 1700000000
+
+        parent_file = MagicMock(spec=InteractionFile)
+        parent_file.time_data = MagicMock(spec=TimeData)
+        parent_file.time_data.created = now * 1000
+        parent_file.tokens = TokenUsage(input=100, output=50)
+
+        parent = MagicMock(
+            session_id="parent",
+            end_time=None,
+            start_time=now - 100,
+            files=[parent_file],
+        )
+
+        sub_agent_ended = MagicMock(
+            session_id="sub-ended",
+            end_time=now - 50,
+            start_time=now - 80,
+            files=[],
+        )
+
+        sub_agent_active = MagicMock(
+            session_id="sub-active",
+            end_time=None,
+            start_time=now - 30,
+            files=[],
+        )
+
+        workflow = {
+            "workflow_id": "workflow-with-subs",
+            "main_session": parent,
+            "all_sessions": [parent, sub_agent_ended, sub_agent_active],
+            "sub_agents": [sub_agent_ended, sub_agent_active],
+        }
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda db_path: [workflow],
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        displayed = monitor._get_displayed_workflow()
+
+        assert displayed["workflow_id"] == "workflow-with-subs"
+        assert len(displayed["sub_agents"]) == 2, (
+            "Both ended and active sub-agents should be shown when parent is displayed"
+        )
+
+
+class TestOrphanSubAgentDetection:
+    def test_single_orphan_group_creates_workflow(self, monkeypatch, tmp_path):
+        from ocmonitor.utils.sqlite_utils import SQLiteProcessor
+
+        orphan_workflow = {
+            "workflow_id": "missing-parent-id",
+            "main_session": MagicMock(
+                session_id="orphan-sub-1", parent_id="missing-parent-id"
+            ),
+            "sub_agents": [
+                MagicMock(session_id="orphan-sub-2", parent_id="missing-parent-id")
+            ],
+            "all_sessions": [
+                MagicMock(session_id="orphan-sub-1"),
+                MagicMock(session_id="orphan-sub-2"),
+            ],
+            "is_orphan": True,
+        }
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda db_path: [orphan_workflow],
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        displayed = monitor._get_displayed_workflow()
+
+        assert displayed["workflow_id"] == "missing-parent-id"
+        assert displayed["is_orphan"] is True
+        assert len(displayed["sub_agents"]) == 1
+
+    def test_multiple_orphan_groups_separate_workflows(self, monkeypatch, tmp_path):
+        orphan_a = {
+            "workflow_id": "parent-a",
+            "main_session": MagicMock(session_id="sub-a1"),
+            "sub_agents": [MagicMock(session_id="sub-a2")],
+            "all_sessions": [MagicMock(), MagicMock()],
+            "is_orphan": True,
+        }
+        orphan_b = {
+            "workflow_id": "parent-b",
+            "main_session": MagicMock(session_id="sub-b1"),
+            "sub_agents": [],
+            "all_sessions": [MagicMock()],
+            "is_orphan": True,
+        }
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda db_path: [orphan_a, orphan_b],
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        tracked = monitor._get_tracked_workflow_ids()
+        assert tracked == {"parent-a", "parent-b"}
+
+    def test_mixed_normal_and_orphan_workflows(self, monkeypatch, tmp_path):
+        from ocmonitor.models.session import TokenUsage
+        from ocmonitor.models.session import InteractionFile
+        from ocmonitor.models.session import TimeData
+
+        now = 1700000000
+
+        normal_file = MagicMock(spec=InteractionFile)
+        normal_file.time_data = MagicMock(spec=TimeData)
+        normal_file.time_data.created = now * 1000
+        normal_file.tokens = TokenUsage(input=100, output=50)
+
+        normal_workflow = {
+            "workflow_id": "normal-parent",
+            "main_session": MagicMock(session_id="normal-parent", files=[normal_file]),
+            "sub_agents": [MagicMock(session_id="normal-sub")],
+            "all_sessions": [MagicMock(), MagicMock()],
+            "is_orphan": False,
+        }
+
+        orphan_workflow = {
+            "workflow_id": "orphan-parent",
+            "main_session": MagicMock(
+                session_id="orphan-sub", files=[], parent_id="orphan-parent"
+            ),
+            "sub_agents": [],
+            "all_sessions": [MagicMock()],
+            "is_orphan": True,
+        }
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: str(tmp_path / "test.db"),
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda db_path: [normal_workflow, orphan_workflow],
+        )
+
+        paths_config = PathsConfig(messages_dir=str(tmp_path))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        tracked = monitor._get_tracked_workflow_ids()
+        assert "normal-parent" in tracked
+        assert "orphan-parent" in tracked
+
+
 class TestLiveMonitorValidation:
     def test_validate_monitoring_setup_uses_default_file_storage_when_path_not_provided(
         self, monkeypatch, tmp_path
