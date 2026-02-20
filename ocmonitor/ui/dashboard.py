@@ -3,7 +3,7 @@
 import os
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 from rich.layout import Layout
@@ -12,9 +12,10 @@ from rich.table import Table
 from rich.text import Text
 
 from ..models.session import SessionData
+from ..models.tool_usage import ToolUsageStats
 from ..models.workflow import SessionWorkflow
-from ..utils.time_utils import TimeUtils
 from ..utils.formatting import ColorFormatter
+from ..utils.time_utils import TimeUtils
 
 
 class DashboardUI:
@@ -294,6 +295,67 @@ class DashboardUI:
             border_style="dashboard.border",
         )
 
+    def create_tool_panel(
+        self, tool_stats: List[ToolUsageStats], max_tools: int = 10
+    ) -> Panel:
+        """Create tool usage panel showing success/failure statistics.
+
+        Args:
+            tool_stats: List of tool usage statistics
+            max_tools: Maximum number of tools to display
+
+        Returns:
+            Panel with tool usage information
+        """
+        if not tool_stats:
+            return Panel(
+                "[metric.label]No tool activity yet[/metric.label]",
+                title=Text("Tools", style="dashboard.title"),
+                title_align="left",
+                border_style="dashboard.border",
+            )
+
+        lines = []
+        for stat in tool_stats[:max_tools]:
+            tool_name = stat.tool_name
+            if len(tool_name) > 12:
+                tool_name = tool_name[:9] + "..."
+
+            success_rate = stat.success_rate
+            bar = self.create_compact_progress_bar(success_rate, 10)
+            color = self.get_tool_color(success_rate)
+
+            lines.append(
+                f"[metric.label]{tool_name:<12}[/metric.label] "
+                f"[metric.value]{stat.total_calls:>4}[/metric.value] "
+                f"[{color}]{bar}[/{color}]"
+            )
+
+        tool_text = "\n".join(lines)
+
+        return Panel(
+            tool_text,
+            title=Text("Tools", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
+        )
+
+    def get_tool_color(self, success_rate: float) -> str:
+        """Get color for tool success rate.
+
+        Args:
+            success_rate: Success rate percentage
+
+        Returns:
+            Color string for styling
+        """
+        if success_rate >= 90:
+            return "status.success"
+        elif success_rate >= 70:
+            return "status.warning"
+        else:
+            return "status.error"
+
     def create_dashboard_layout(
         self,
         session: SessionData,
@@ -303,6 +365,7 @@ class DashboardUI:
         quota: Optional[Decimal] = None,
         context_window: int = 200000,
         workflow: Optional[SessionWorkflow] = None,
+        tool_stats: Optional[List[ToolUsageStats]] = None,
     ) -> Layout:
         """Create the complete dashboard layout."""
         layout = Layout()
@@ -327,12 +390,15 @@ class DashboardUI:
         burn_rate_panel = self.create_burn_rate_panel(burn_rate)
         recent_file_panel = self.create_recent_file_panel(recent_file)
 
+        # Create tool panel
+        tool_panel = self.create_tool_panel(tool_stats or [])
+
         # Setup new 4-section layout structure
         layout.split_column(
             Layout(header, size=3),  # Compact header
             Layout(name="primary", minimum_size=8),  # Main metrics
             Layout(name="secondary", size=6),  # Compact metrics
-            Layout(name="models", minimum_size=4),  # Model breakdown
+            Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
         )
 
         # Primary section: Token usage (60%) and Cost tracking (40%)
@@ -349,8 +415,11 @@ class DashboardUI:
             Layout(recent_file_panel, ratio=1),
         )
 
-        # Models section: Full width for model breakdown
-        layout["models"].update(model_panel)
+        # Models + Tools section: Side by side
+        layout["models_tools"].split_row(
+            Layout(model_panel, ratio=3),
+            Layout(tool_panel, ratio=2),
+        )
 
         return layout
 
@@ -551,4 +620,3 @@ class DashboardUI:
             title_align="left",
             border_style="dashboard.border",
         )
-

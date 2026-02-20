@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from rich.console import Console
 from rich.layout import Layout
@@ -14,6 +14,7 @@ from rich.table import Table
 
 from ..config import ModelPricing, PathsConfig
 from ..models.session import InteractionFile, SessionData, TokenUsage
+from ..models.tool_usage import ToolUsageStats
 from ..models.workflow import SessionWorkflow
 from ..ui.dashboard import DashboardUI
 from ..ui.tables import TableFormatter
@@ -107,6 +108,7 @@ class LiveMonitor:
         self.paths_config = paths_config
         self.dashboard_ui = DashboardUI(console)
         self.session_grouper = SessionGrouper()
+        self.data_loader = DataLoader()
 
     def start_monitoring(self, base_path: str, refresh_interval: int = 5):
         """Start live monitoring of the most recent workflow (main session + sub-agents).
@@ -264,6 +266,9 @@ class LiveMonitor:
             quota = model_pricing.session_quota
             context_window = model_pricing.context_window
 
+        # Load tool usage statistics (file mode - no SQLite fallback)
+        tool_stats = self._load_tool_stats_for_workflow(workflow, preferred_source="files")
+
         # Create a combined session-like view for the dashboard
         # We'll pass workflow info to the dashboard UI
         return self.dashboard_ui.create_dashboard_layout(
@@ -274,6 +279,7 @@ class LiveMonitor:
             quota=quota,
             context_window=context_window,
             workflow=workflow,  # Pass workflow for additional display
+            tool_stats=tool_stats,
         )
 
     def _calculate_workflow_output_rate(self, workflow: SessionWorkflow) -> float:
@@ -367,6 +373,22 @@ class LiveMonitor:
             return total_output_tokens / total_duration_seconds
 
         return 0.0
+
+    def _load_tool_stats_for_workflow(
+        self, workflow: Any, preferred_source: Optional[Literal["sqlite", "files"]] = None
+    ) -> List[ToolUsageStats]:
+        """Load tool usage statistics for a workflow's sessions.
+        
+        Args:
+            workflow: Workflow object (SessionWorkflow or WorkflowWrapper)
+            preferred_source: Override source selection ("sqlite" or "files").
+                Ensures file-mode monitoring doesn't fall back to SQLite.
+            
+        Returns:
+            List of ToolUsageStats sorted by total_calls descending
+        """
+        session_ids = [s.session_id for s in workflow.all_sessions]
+        return self.data_loader.load_tool_usage(session_ids, preferred_source)
 
     def get_session_status(self, base_path: str) -> Dict[str, Any]:
         """Get current status of the most recent session.
@@ -633,6 +655,9 @@ class LiveMonitor:
         # Create a workflow wrapper for the dashboard UI
         workflow_wrapper = WorkflowWrapper(workflow, self.pricing_data)
 
+        # Load tool usage statistics (SQLite mode)
+        tool_stats = self._load_tool_stats_for_workflow(workflow_wrapper, preferred_source="sqlite")
+
         # Use the existing dashboard UI
         # Note: WorkflowWrapper mimics SessionWorkflow interface for dashboard compatibility
         from typing import Any, cast
@@ -645,6 +670,7 @@ class LiveMonitor:
             quota=quota,
             context_window=context_window,
             workflow=cast(Any, workflow_wrapper),
+            tool_stats=tool_stats,
         )
 
     def _calculate_sqlite_workflow_output_rate(self, workflow: Dict[str, Any]) -> float:

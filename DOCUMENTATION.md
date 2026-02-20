@@ -437,6 +437,7 @@ ocmonitor live ~/.local/share/opencode/storage/message --refresh 10
 - 📂 Project name display for better context awareness
 - 📝 Human-readable session titles replacing cryptic session IDs
 - 🎨 Clean, professional styling with optimal space utilization
+- 🔧 **Tool Usage Stats** - Real-time success rates for tools (bash, read, edit, etc.)
 
 [![Live Dashboard Screenshot](screenshots/live_dashboard.png)](screenshots/live_dashboard.png)
 
