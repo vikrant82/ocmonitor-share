@@ -114,6 +114,7 @@ class LiveMonitor:
         self.paths_config = paths_config
         self.dashboard_ui = DashboardUI(console)
         self.session_grouper = SessionGrouper()
+        self.data_loader = DataLoader()
         self._active_workflows: Dict[str, Any] = {}
         self._displayed_workflow_id: Optional[str] = None
         self.prev_tracked: set = set()
