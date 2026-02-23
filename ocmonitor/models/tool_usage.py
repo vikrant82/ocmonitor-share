@@ -49,3 +49,15 @@ class ToolUsageSummary(BaseModel):
         if self.total_calls == 0:
             return 0.0
         return (self.total_success / self.total_calls) * 100.0
+
+
+class ModelToolUsage(BaseModel):
+    """Tool usage statistics grouped by model."""
+    model_name: str
+    tool_stats: List[ToolUsageStats] = []
+
+    @computed_field
+    @property
+    def total_calls(self) -> int:
+        """Total tool calls for this model."""
+        return sum(t.total_calls for t in self.tool_stats)

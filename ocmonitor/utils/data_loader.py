@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Any, Generator, Literal
 from datetime import datetime
 
 from ..models.session import SessionData
-from ..models.tool_usage import ToolUsageStats
+from ..models.tool_usage import ToolUsageStats, ModelToolUsage
 from .sqlite_utils import SQLiteProcessor
 from .file_utils import FileProcessor
 
@@ -291,6 +291,55 @@ class DataLoader:
         
         if source == "sqlite":
             return SQLiteProcessor.load_tool_usage_for_sessions(
+                session_ids, self._resolved_db_path
+            )
+        
+        return []
+
+    def load_tool_usage_by_model(
+        self,
+        session_ids: List[str],
+        preferred_source: Optional[Literal["sqlite", "files"]] = None,
+    ) -> List[ModelToolUsage]:
+        """Load tool usage statistics grouped by model for the given sessions.
+        
+        For SQLite source, queries the `part` table joined with `message` to get model info.
+        For file-based source, returns empty list (not supported).
+        
+        Args:
+            session_ids: List of session IDs to aggregate tool usage for
+            preferred_source: Override source selection ("sqlite" or "files").
+                If "files", returns [] even if SQLite is available.
+                If "sqlite", queries SQLite if available, else returns [].
+                If None, uses auto-detected source.
+            
+        Returns:
+            List of ModelToolUsage sorted by total_calls descending
+        """
+        if not session_ids:
+            return []
+        
+        if preferred_source == "files":
+            self._last_source = "files"
+            return []
+        
+        if preferred_source == "sqlite":
+            if self.sqlite_available:
+                self._last_source = "sqlite"
+                return SQLiteProcessor.load_tool_usage_by_model_for_sessions(
+                    session_ids, self._resolved_db_path
+                )
+            self._last_source = None
+            return []
+        
+        try:
+            source = self._determine_source()
+            self._last_source = source
+        except DataSourceError:
+            return []
+        
+        if source == "sqlite":
+            return SQLiteProcessor.load_tool_usage_by_model_for_sessions(
                 session_ids, self._resolved_db_path
             )
         

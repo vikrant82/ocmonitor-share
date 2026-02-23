@@ -12,7 +12,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..models.session import SessionData
-from ..models.tool_usage import ToolUsageStats
+from ..models.tool_usage import ToolUsageStats, ModelToolUsage
 from ..models.workflow import SessionWorkflow
 from ..utils.formatting import ColorFormatter
 from ..utils.time_utils import TimeUtils
@@ -134,10 +134,16 @@ class DashboardUI:
         )
 
     def create_model_panel(
-        self, session: SessionData, pricing_data: Dict[str, Any]
+        self,
+        session: SessionData,
+        pricing_data: Dict[str, Any],
+        per_model_output_rates: Optional[Dict[str, float]] = None,
+        per_model_context: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Panel:
         """Create model usage panel."""
         model_breakdown = session.get_model_breakdown(pricing_data)
+        per_model_output_rates = per_model_output_rates or {}
+        per_model_context = per_model_context or {}
 
         if not model_breakdown:
             return Panel(
@@ -148,11 +154,22 @@ class DashboardUI:
 
         model_lines = []
         for model, stats in model_breakdown.items():
-            model_name = model[:25] + "..." if len(model) > 28 else model
+            model_name = model[:20] + "..." if len(model) > 23 else model
+            
+            # Get context usage for this model
+            context_info = per_model_context.get(model, {})
+            context_pct = context_info.get("usage_percentage", 0.0)
+            context_bar = self.create_compact_progress_bar(context_pct, 8)
+            
+            # Get output rate for this model
+            output_rate = per_model_output_rates.get(model, 0.0)
+            rate_str = f" - {output_rate:.1f} tok/s" if output_rate > 0 else ""
+            
             model_lines.append(
-                f"[metric.label]{model_name}[/metric.label]  "
-                f"[metric.value]{stats['tokens'].total:,}[/metric.value] [metric.tokens]tokens[/metric.tokens]  "
-                f"[metric.cost]${stats['cost']:.2f}[/metric.cost]"
+                f"[metric.label]{model_name}[/metric.label]  -  "
+                f"[metric.value]{stats['tokens'].total:,}[/metric.value] [metric.tokens]tok[/metric.tokens]  "
+                f"[metric.cost]${stats['cost']:.2f}[/metric.cost]  -  "
+                f"context {context_bar}{rate_str}"
             )
 
         model_text = "\n".join(model_lines)
@@ -356,19 +373,200 @@ class DashboardUI:
         else:
             return "status.error"
 
+    def create_model_tool_panel(
+        self,
+        model_tool_usage: ModelToolUsage,
+        max_tools: int = 15,
+        model_tokens: Optional[int] = None,
+        model_cost: Optional[Decimal] = None,
+        context_pct: Optional[float] = None,
+        output_rate: Optional[float] = None,
+    ) -> Panel:
+        """Create a panel showing tool usage for a single model.
+
+        Args:
+            model_tool_usage: ModelToolUsage containing model name and tool stats
+            max_tools: Maximum number of tools to display
+            model_tokens: Optional token count for this model to display in header
+            model_cost: Optional cost for this model to display in header
+            context_pct: Optional context usage percentage for this model
+            output_rate: Optional output rate (tok/sec) for this model
+
+        Returns:
+            Panel with tool usage information for this model
+        """
+        model_name = model_tool_usage.model_name
+        if len(model_name) > 20:
+            model_name = model_name[:17] + "..."
+
+        tool_stats = model_tool_usage.tool_stats[:max_tools]
+
+        if not tool_stats:
+            return Panel(
+                "[metric.label]No tool activity[/metric.label]",
+                title=Text(model_name, style="dashboard.title"),
+                title_align="left",
+                border_style="dashboard.border",
+            )
+
+        lines = []
+
+        if model_tokens is not None:
+            cost_str = f" [metric.cost]${model_cost:.2f}[/metric.cost]" if model_cost is not None else ""
+            
+            # Add context and output rate info
+            extra_info = []
+            if context_pct is not None:
+                context_bar = self.create_compact_progress_bar(context_pct, 8)
+                extra_info.append(f"context {context_bar}")
+            if output_rate is not None and output_rate > 0:
+                extra_info.append(f"{output_rate:.1f} tok/s")
+            
+            extra_str = "  " + "  ".join(extra_info) if extra_info else ""
+            
+            lines.append(
+                f"[metric.value]{model_tokens:,}[/metric.value] [metric.tokens]tokens[/metric.tokens]{cost_str}{extra_str}"
+            )
+            lines.append("[dashboard.border]────────────────────────[/dashboard.border]")
+
+        for stat in tool_stats:
+            tool_name = stat.tool_name
+            if len(tool_name) > 12:
+                tool_name = tool_name[:9] + "..."
+
+            success_rate = stat.success_rate
+            bar = self.create_compact_progress_bar(success_rate, 8)
+            color = self.get_tool_color(success_rate)
+
+            lines.append(
+                f"[metric.label]{tool_name:<12}[/metric.label] "
+                f"[metric.value]{stat.total_calls:>3}[/metric.value] "
+                f"[{color}]{bar}[/{color}]"
+            )
+
+        tool_text = "\n".join(lines)
+
+        return Panel(
+            tool_text,
+            title=Text(model_name, style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
+        )
+
+    def create_tool_grid_panel(
+        self,
+        tool_stats_by_model: List[ModelToolUsage],
+        model_breakdown: Optional[Dict[str, Dict[str, Any]]] = None,
+        per_model_output_rates: Optional[Dict[str, float]] = None,
+        per_model_context: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Layout:
+        """Create a 2-column grid layout for per-model tool panels.
+
+        Args:
+            tool_stats_by_model: List of ModelToolUsage (one per model)
+            model_breakdown: Optional dict mapping model names to token/cost data
+            per_model_output_rates: Optional dict mapping model to output rate
+            per_model_context: Optional dict mapping model to context info
+
+        Returns:
+            Layout containing the grid of model tool panels
+        """
+        if not tool_stats_by_model:
+            return Layout(
+                Panel(
+                    "[metric.label]No tool activity yet[/metric.label]",
+                    title=Text("Tools", style="dashboard.title"),
+                    title_align="left",
+                    border_style="dashboard.border",
+                )
+            )
+
+        if model_breakdown is None:
+            model_breakdown = {}
+        per_model_output_rates = per_model_output_rates or {}
+        per_model_context = per_model_context or {}
+
+        def get_model_info(model_name: str):
+            if model_name in model_breakdown:
+                stats = model_breakdown[model_name]
+                tokens = stats.get("tokens", {}).total if hasattr(stats.get("tokens", {}), "total") else stats.get("tokens", 0)
+                cost = stats.get("cost")
+            else:
+                tokens, cost = None, None
+            
+            context_info = per_model_context.get(model_name, {})
+            context_pct = context_info.get("usage_percentage")
+            output_rate = per_model_output_rates.get(model_name, 0.0)
+            
+            return tokens, cost, context_pct, output_rate
+
+        left_models = []
+        right_models = []
+        for i, model_usage in enumerate(tool_stats_by_model):
+            if i % 2 == 0:
+                left_models.append(model_usage)
+            else:
+                right_models.append(model_usage)
+
+        left_panels = []
+        for model_usage in left_models:
+            model_tokens, model_cost, context_pct, output_rate = get_model_info(model_usage.model_name)
+            left_panels.append(self.create_model_tool_panel(
+                model_usage, model_tokens=model_tokens, model_cost=model_cost,
+                context_pct=context_pct, output_rate=output_rate
+            ))
+
+        right_panels = []
+        for model_usage in right_models:
+            model_tokens, model_cost, context_pct, output_rate = get_model_info(model_usage.model_name)
+            right_panels.append(self.create_model_tool_panel(
+                model_usage, model_tokens=model_tokens, model_cost=model_cost,
+                context_pct=context_pct, output_rate=output_rate
+            ))
+
+        left_column = Layout()
+        if left_panels:
+            left_column.split_column(*[Layout(p, ratio=1) for p in left_panels])
+
+        right_column = Layout()
+        if right_panels:
+            right_column.split_column(*[Layout(p, ratio=1) for p in right_panels])
+
+        grid_layout = Layout()
+        if left_panels and right_panels:
+            grid_layout.split_row(left_column, right_column)
+        elif left_panels:
+            grid_layout.split_column(left_column)
+        elif right_panels:
+            grid_layout.split_column(right_column)
+
+        outer_panel = Panel(
+            grid_layout,
+            title=Text("Tools", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
+        )
+
+        return Layout(outer_panel)
+
     def create_dashboard_layout(
         self,
         session: SessionData,
         recent_file: Optional[Any],
         pricing_data: Dict[str, Any],
-        burn_rate: float,
         quota: Optional[Decimal] = None,
-        context_window: int = 200000,
+        per_model_output_rates: Optional[Dict[str, float]] = None,
+        per_model_context: Optional[Dict[str, Dict[str, Any]]] = None,
         workflow: Optional[SessionWorkflow] = None,
         tool_stats: Optional[List[ToolUsageStats]] = None,
+        tool_stats_by_model: Optional[List[ModelToolUsage]] = None,
     ) -> Layout:
         """Create the complete dashboard layout."""
         layout = Layout()
+
+        # Default empty dicts if not provided
+        per_model_output_rates = per_model_output_rates or {}
+        per_model_context = per_model_context or {}
 
         # Use workflow data if available, otherwise use session data
         if workflow and workflow.has_sub_agents:
@@ -376,22 +574,61 @@ class DashboardUI:
             header = self.create_header(session, workflow)
             token_panel = self.create_workflow_token_panel(workflow, recent_file)
             cost_panel = self.create_workflow_cost_panel(workflow, pricing_data, quota)
-            model_panel = self.create_workflow_model_panel(workflow, pricing_data)
+            model_panel = self.create_workflow_model_panel(
+                workflow, pricing_data, per_model_output_rates, per_model_context
+            )
             session_time_panel = self.create_workflow_time_panel(workflow)
         else:
             # Create panels using single session data
             header = self.create_header(session)
             token_panel = self.create_token_panel(session, recent_file)
             cost_panel = self.create_cost_panel(session, pricing_data, quota)
-            model_panel = self.create_model_panel(session, pricing_data)
+            model_panel = self.create_model_panel(
+                session, pricing_data, per_model_output_rates, per_model_context
+            )
             session_time_panel = self.create_session_time_panel(session)
 
-        context_panel = self.create_context_panel(recent_file, context_window)
-        burn_rate_panel = self.create_burn_rate_panel(burn_rate)
         recent_file_panel = self.create_recent_file_panel(recent_file)
 
-        # Create tool panel
-        tool_panel = self.create_tool_panel(tool_stats or [])
+        # Determine which tool display to use based on model count
+        by_model = tool_stats_by_model or []
+        use_grid = len(by_model) > 1
+
+        # Build model breakdown data for passing to tool grid panels
+        model_breakdown: Optional[Dict[str, Dict[str, Any]]] = None
+        if use_grid:
+            if workflow and workflow.has_sub_agents:
+                from collections import defaultdict
+                model_breakdown = defaultdict(lambda: {"tokens": 0, "cost": Decimal("0.0")})
+                for sess in workflow.all_sessions:
+                    sess_breakdown = sess.get_model_breakdown(pricing_data)
+                    for model, stats in sess_breakdown.items():
+                        model_breakdown[model]["tokens"] += stats["tokens"].total
+                        model_breakdown[model]["cost"] += stats["cost"]
+                model_breakdown = dict(model_breakdown)
+            else:
+                model_breakdown = session.get_model_breakdown(pricing_data)
+
+        # Initialize variables
+        tool_grid_panel: Optional[Layout] = None
+        tool_panel: Optional[Panel] = None
+        model_ratio = 3
+        tool_ratio = 2
+
+        if use_grid:
+            tool_grid_panel = self.create_tool_grid_panel(
+                by_model,
+                model_breakdown=model_breakdown,
+                per_model_output_rates=per_model_output_rates,
+                per_model_context=per_model_context,
+            )
+            model_ratio = 2
+            tool_ratio = 3
+        else:
+            flat_tool_stats = tool_stats or []
+            if by_model and not tool_stats:
+                flat_tool_stats = by_model[0].tool_stats
+            tool_panel = self.create_tool_panel(flat_tool_stats)
 
         # Setup new 4-section layout structure
         layout.split_column(
@@ -407,19 +644,22 @@ class DashboardUI:
             Layout(cost_panel, ratio=2),  # 40% for cost data
         )
 
-        # Secondary section: Four compact panels
+        # Secondary section: Two compact panels (Session Time + Recent File)
         layout["secondary"].split_row(
-            Layout(context_panel, ratio=1),
-            Layout(burn_rate_panel, ratio=1),
             Layout(session_time_panel, ratio=1),
             Layout(recent_file_panel, ratio=1),
         )
 
-        # Models + Tools section: Side by side
-        layout["models_tools"].split_row(
-            Layout(model_panel, ratio=3),
-            Layout(tool_panel, ratio=2),
-        )
+        # Models + Tools section: Full width to tools when using grid (model info embedded in tool panels)
+        if use_grid:
+            assert tool_grid_panel is not None
+            layout["models_tools"].split_column(tool_grid_panel)
+        else:
+            assert tool_panel is not None
+            layout["models_tools"].split_row(
+                Layout(model_panel, ratio=model_ratio),
+                Layout(tool_panel, ratio=tool_ratio),
+            )
 
         return layout
 
@@ -539,10 +779,17 @@ class DashboardUI:
         )
 
     def create_workflow_model_panel(
-        self, workflow: SessionWorkflow, pricing_data: Dict[str, Any]
+        self,
+        workflow: SessionWorkflow,
+        pricing_data: Dict[str, Any],
+        per_model_output_rates: Optional[Dict[str, float]] = None,
+        per_model_context: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Panel:
         """Create model usage panel for workflow."""
         from collections import defaultdict
+
+        per_model_output_rates = per_model_output_rates or {}
+        per_model_context = per_model_context or {}
 
         # Aggregate model stats across all sessions
         model_data: Dict[str, Dict[str, Any]] = defaultdict(
@@ -566,11 +813,22 @@ class DashboardUI:
         for model, stats in sorted(
             model_data.items(), key=lambda x: x[1]["cost"], reverse=True
         ):
-            model_name = model[:25] + "..." if len(model) > 28 else model
+            model_name = model[:20] + "..." if len(model) > 23 else model
+            
+            # Get context usage for this model
+            context_info = per_model_context.get(model, {})
+            context_pct = context_info.get("usage_percentage", 0.0)
+            context_bar = self.create_compact_progress_bar(context_pct, 8)
+            
+            # Get output rate for this model
+            output_rate = per_model_output_rates.get(model, 0.0)
+            rate_str = f" - {output_rate:.1f} tok/s" if output_rate > 0 else ""
+            
             model_lines.append(
-                f"[metric.label]{model_name}[/metric.label]  "
-                f"[metric.value]{stats['tokens']:,}[/metric.value] [metric.tokens]tokens[/metric.tokens]  "
-                f"[metric.cost]${stats['cost']:.2f}[/metric.cost]"
+                f"[metric.label]{model_name}[/metric.label]  -  "
+                f"[metric.value]{stats['tokens']:,}[/metric.value] [metric.tokens]tok[/metric.tokens]  "
+                f"[metric.cost]${stats['cost']:.2f}[/metric.cost]  -  "
+                f"context {context_bar}{rate_str}"
             )
 
         model_text = "\n".join(model_lines)

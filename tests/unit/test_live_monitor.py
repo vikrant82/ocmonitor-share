@@ -786,3 +786,57 @@ class TestLiveMonitorToolStatsSourceSelection:
             # Should have called SQLite processor
             mock_load.assert_called_once()
             assert tool_stats == mock_stats
+
+    def test_file_mode_tool_by_model_returns_empty(self, monkeypatch, tmp_path):
+        """Verify file-mode workflow returns empty for tool by model loading."""
+        sessions_dir = tmp_path / "message"
+        sessions_dir.mkdir()
+
+        paths_config = PathsConfig(messages_dir=str(sessions_dir))
+        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+
+        db_path = tmp_path / "opencode.db"
+        db_path.touch()
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: db_path,
+        )
+
+        from unittest.mock import MagicMock
+
+        mock_workflow = MagicMock()
+        mock_workflow.all_sessions = [MagicMock(session_id="ses_file_1")]
+
+        tool_stats = monitor._load_tool_stats_by_model_for_workflow(
+            mock_workflow, preferred_source="files"
+        )
+
+        assert tool_stats == []
+
+    def test_sqlite_mode_tool_by_model_calls_sqlite(self, monkeypatch, tmp_path):
+        """Verify SQLite-mode workflow queries SQLite for tool by model stats."""
+        monitor = LiveMonitor(pricing_data={})
+
+        db_path = tmp_path / "opencode.db"
+        db_path.touch()
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: db_path,
+        )
+
+        from unittest.mock import MagicMock, patch
+
+        mock_stats = [MagicMock(model_name="claude-3-5-sonnet", tool_stats=[])]
+        with patch(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.load_tool_usage_by_model_for_sessions",
+            return_value=mock_stats,
+        ) as mock_load:
+            mock_workflow = MagicMock()
+            mock_workflow.all_sessions = [MagicMock(session_id="ses_sqlite_1")]
+
+            tool_stats = monitor._load_tool_stats_by_model_for_workflow(
+                mock_workflow, preferred_source="sqlite"
+            )
+
+            mock_load.assert_called_once()
+            assert tool_stats == mock_stats

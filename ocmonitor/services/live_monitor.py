@@ -14,7 +14,7 @@ from rich.table import Table
 
 from ..config import ModelPricing, PathsConfig
 from ..models.session import InteractionFile, SessionData, TokenUsage
-from ..models.tool_usage import ToolUsageStats
+from ..models.tool_usage import ToolUsageStats, ModelToolUsage
 from ..models.workflow import SessionWorkflow
 from ..ui.dashboard import DashboardUI
 from ..ui.tables import TableFormatter
@@ -285,31 +285,115 @@ class LiveMonitor:
         Returns:
             Rich layout for the dashboard
         """
-        # Get the most recent file
+        # Get the most recent file (excluding zero-token files)
         recent_file = None
-        if session.files:
+        if session.non_zero_token_files:
+            recent_file = max(session.non_zero_token_files, key=lambda f: f.modification_time)
+        elif session.files:
             recent_file = max(session.files, key=lambda f: f.modification_time)
 
-        # Calculate output rate (tokens per second over last 5 minutes)
-        output_rate = self._calculate_output_rate(session)
-
-        # Get model pricing for quota and context window
+        # Get model pricing for quota
         quota = None
-        context_window = 200000  # Default
-
         if recent_file and recent_file.model_id in self.pricing_data:
-            model_pricing = self.pricing_data[recent_file.model_id]
-            quota = model_pricing.session_quota
-            context_window = model_pricing.context_window
+            quota = self.pricing_data[recent_file.model_id].session_quota
+
+        # Calculate per-model output rates for this session
+        per_model_output_rates = self._calculate_session_output_rates(session)
+        per_model_context = self._get_session_context_usage(session)
 
         return self.dashboard_ui.create_dashboard_layout(
             session=session,
             recent_file=recent_file,
             pricing_data=self.pricing_data,
-            burn_rate=output_rate,
             quota=quota,
-            context_window=context_window,
+            per_model_output_rates=per_model_output_rates,
+            per_model_context=per_model_context,
         )
+
+    def _calculate_session_output_rates(self, session: SessionData) -> Dict[str, float]:
+        """Calculate output token rate per model for a single session.
+
+        For each model, uses the most recent interaction to calculate rate.
+        This shows the last available rate even if the model was used >5 min ago.
+
+        Args:
+            session: Session to analyze
+
+        Returns:
+            Dict mapping model_id to output tokens per second
+        """
+        if not session.files:
+            return {}
+
+        model_most_recent: Dict[str, InteractionFile] = {}
+        for f in session.non_zero_token_files:
+            if f.model_id not in model_most_recent:
+                model_most_recent[f.model_id] = f
+            elif f.modification_time > model_most_recent[f.model_id].modification_time:
+                model_most_recent[f.model_id] = f
+
+        result = {}
+        for model_id, recent_file in model_most_recent.items():
+            if recent_file.tokens.output > 0 and recent_file.time_data and recent_file.time_data.duration_ms:
+                duration_seconds = recent_file.time_data.duration_ms / 1000
+                if duration_seconds > 0:
+                    result[model_id] = recent_file.tokens.output / duration_seconds
+                else:
+                    result[model_id] = 0.0
+            else:
+                result[model_id] = 0.0
+
+        return result
+
+    def _get_session_context_usage(
+        self, session: SessionData
+    ) -> Dict[str, Dict[str, Any]]:
+        """Get context window usage for each model in a single session.
+
+        For each model, finds the most recent interaction and calculates context usage.
+
+        Args:
+            session: Session to analyze
+
+        Returns:
+            Dict mapping model_id to context usage info (context_size, context_window, usage_percentage)
+        """
+        if not session.files:
+            return {}
+
+        model_most_recent: Dict[str, InteractionFile] = {}
+        for f in session.non_zero_token_files:
+            if f.model_id not in model_most_recent:
+                model_most_recent[f.model_id] = f
+            elif f.modification_time > model_most_recent[f.model_id].modification_time:
+                model_most_recent[f.model_id] = f
+
+        result = {}
+        default_context_window = 200000
+
+        for model_id, recent_file in model_most_recent.items():
+            if model_id in self.pricing_data:
+                context_window = self.pricing_data[model_id].context_window
+            else:
+                context_window = default_context_window
+
+            context_size = (
+                recent_file.tokens.input
+                + recent_file.tokens.cache_read
+                + recent_file.tokens.cache_write
+            )
+
+            usage_pct = (
+                (context_size / context_window) * 100 if context_window > 0 else 0
+            )
+
+            result[model_id] = {
+                "context_size": context_size,
+                "context_window": context_window,
+                "usage_percentage": min(100.0, usage_pct),
+            }
+
+        return result
 
     def _generate_workflow_dashboard(self, workflow: SessionWorkflow):
         """Generate dashboard layout for a workflow (main + sub-agents).
@@ -323,27 +407,27 @@ class LiveMonitor:
         # Get all files from all sessions in the workflow
         all_files: List[InteractionFile] = []
         for session in workflow.all_sessions:
-            all_files.extend(session.files)
+            all_files.extend(session.non_zero_token_files)
 
         # Get the most recent file across all sessions
         recent_file = None
         if all_files:
             recent_file = max(all_files, key=lambda f: f.modification_time)
 
-        # Calculate output rate across entire workflow
-        output_rate = self._calculate_workflow_output_rate(workflow)
+        # Calculate per-model output rates
+        per_model_output_rates = self._calculate_per_model_output_rates(workflow)
 
-        # Get model pricing for quota and context window
+        # Calculate per-model context usage
+        per_model_context = self._get_per_model_context_usage(workflow)
+
+        # Get model pricing for quota
         quota = None
-        context_window = 200000  # Default
-
         if recent_file and recent_file.model_id in self.pricing_data:
-            model_pricing = self.pricing_data[recent_file.model_id]
-            quota = model_pricing.session_quota
-            context_window = model_pricing.context_window
+            quota = self.pricing_data[recent_file.model_id].session_quota
 
         # Load tool usage statistics (file mode - no SQLite fallback)
         tool_stats = self._load_tool_stats_for_workflow(workflow, preferred_source="files")
+        tool_stats_by_model = self._load_tool_stats_by_model_for_workflow(workflow, preferred_source="files")
 
         # Create a combined session-like view for the dashboard
         # We'll pass workflow info to the dashboard UI
@@ -351,60 +435,108 @@ class LiveMonitor:
             session=workflow.main_session,
             recent_file=recent_file,
             pricing_data=self.pricing_data,
-            burn_rate=output_rate,
             quota=quota,
-            context_window=context_window,
+            per_model_output_rates=per_model_output_rates,
+            per_model_context=per_model_context,
             workflow=workflow,  # Pass workflow for additional display
             tool_stats=tool_stats,
+            tool_stats_by_model=tool_stats_by_model,
         )
 
-    def _calculate_workflow_output_rate(self, workflow: SessionWorkflow) -> float:
-        """Calculate output token rate across entire workflow.
+    def _calculate_per_model_output_rates(
+        self, workflow: SessionWorkflow
+    ) -> Dict[str, float]:
+        """Calculate output token rate per model across workflow.
+
+        For each model, uses the most recent interaction to calculate rate.
+        This shows the last available rate even if the model was used >5 min ago.
 
         Args:
             workflow: Workflow containing all sessions
 
         Returns:
-            Output tokens per second over the last 5 minutes
+            Dict mapping model_id to output tokens per second
         """
-        # Get all files from all sessions
         all_files: List[InteractionFile] = []
         for session in workflow.all_sessions:
-            all_files.extend(session.files)
+            all_files.extend(session.non_zero_token_files)
 
         if not all_files:
-            return 0.0
+            return {}
 
-        # Calculate the cutoff time (5 minutes ago)
-        cutoff_time = datetime.now() - timedelta(minutes=5)
+        model_most_recent: Dict[str, InteractionFile] = {}
+        for f in all_files:
+            if f.model_id not in model_most_recent:
+                model_most_recent[f.model_id] = f
+            elif f.modification_time > model_most_recent[f.model_id].modification_time:
+                model_most_recent[f.model_id] = f
 
-        # Filter interactions from the last 5 minutes
-        recent_interactions = [
-            f for f in all_files if f.modification_time >= cutoff_time
-        ]
+        result = {}
+        for model_id, recent_file in model_most_recent.items():
+            if recent_file.tokens.output > 0 and recent_file.time_data and recent_file.time_data.duration_ms:
+                duration_seconds = recent_file.time_data.duration_ms / 1000
+                if duration_seconds > 0:
+                    result[model_id] = recent_file.tokens.output / duration_seconds
+                else:
+                    result[model_id] = 0.0
+            else:
+                result[model_id] = 0.0
 
-        if not recent_interactions:
-            return 0.0
+        return result
 
-        # Sum output tokens from recent interactions
-        total_output_tokens = sum(f.tokens.output for f in recent_interactions)
+    def _get_per_model_context_usage(
+        self, workflow: SessionWorkflow
+    ) -> Dict[str, Dict[str, Any]]:
+        """Get context window usage for each model in workflow.
 
-        if total_output_tokens == 0:
-            return 0.0
+        For each model, finds the most recent interaction and calculates context usage.
 
-        # Sum active processing time (duration_ms) from recent interactions
-        total_duration_ms = 0
-        for f in recent_interactions:
-            if f.time_data and f.time_data.duration_ms:
-                total_duration_ms += f.time_data.duration_ms
+        Args:
+            workflow: Workflow containing all sessions
 
-        # Convert to seconds
-        total_duration_seconds = total_duration_ms / 1000
+        Returns:
+            Dict mapping model_id to context usage info (context_size, context_window, usage_percentage)
+        """
+        all_files: List[InteractionFile] = []
+        for session in workflow.all_sessions:
+            all_files.extend(session.non_zero_token_files)
 
-        if total_duration_seconds > 0:
-            return total_output_tokens / total_duration_seconds
+        if not all_files:
+            return {}
 
-        return 0.0
+        model_most_recent: Dict[str, InteractionFile] = {}
+        for f in all_files:
+            if f.model_id not in model_most_recent:
+                model_most_recent[f.model_id] = f
+            elif f.modification_time > model_most_recent[f.model_id].modification_time:
+                model_most_recent[f.model_id] = f
+
+        result = {}
+        default_context_window = 200000
+
+        for model_id, recent_file in model_most_recent.items():
+            if model_id in self.pricing_data:
+                context_window = self.pricing_data[model_id].context_window
+            else:
+                context_window = default_context_window
+
+            context_size = (
+                recent_file.tokens.input
+                + recent_file.tokens.cache_read
+                + recent_file.tokens.cache_write
+            )
+
+            usage_pct = (
+                (context_size / context_window) * 100 if context_window > 0 else 0
+            )
+
+            result[model_id] = {
+                "context_size": context_size,
+                "context_window": context_window,
+                "usage_percentage": min(100.0, usage_pct),
+            }
+
+        return result
 
     def _calculate_output_rate(self, session: SessionData) -> float:
         """Calculate output token rate over the last 5 minutes of activity.
@@ -465,6 +597,22 @@ class LiveMonitor:
         """
         session_ids = [s.session_id for s in workflow.all_sessions]
         return self.data_loader.load_tool_usage(session_ids, preferred_source)
+
+    def _load_tool_stats_by_model_for_workflow(
+        self, workflow: Any, preferred_source: Optional[Literal["sqlite", "files"]] = None
+    ) -> List[ModelToolUsage]:
+        """Load tool usage statistics grouped by model for a workflow's sessions.
+        
+        Args:
+            workflow: Workflow object (SessionWorkflow or WorkflowWrapper)
+            preferred_source: Override source selection ("sqlite" or "files").
+                Ensures file-mode monitoring doesn't fall back to SQLite.
+            
+        Returns:
+            List of ModelToolUsage sorted by total_calls descending
+        """
+        session_ids = [s.session_id for s in workflow.all_sessions]
+        return self.data_loader.load_tool_usage_by_model(session_ids, preferred_source)
 
     def get_session_status(self, base_path: str) -> Dict[str, Any]:
         """Get current status of the most recent session.
@@ -797,7 +945,7 @@ class LiveMonitor:
         # Get all files from all sessions in the workflow
         all_files = []
         for session in workflow["all_sessions"]:
-            all_files.extend(session.files)
+            all_files.extend(session.non_zero_token_files)
 
         # Get the most recent file across all sessions
         recent_file = None
@@ -809,23 +957,23 @@ class LiveMonitor:
                 ),
             )
 
-        # Calculate output rate across entire workflow
-        output_rate = self._calculate_sqlite_workflow_output_rate(workflow)
+        # Calculate per-model output rates for SQLite workflow
+        per_model_output_rates = self._calculate_sqlite_per_model_output_rates(workflow)
 
-        # Get model pricing for quota and context window
+        # Calculate per-model context usage for SQLite workflow
+        per_model_context = self._get_sqlite_per_model_context_usage(workflow)
+
+        # Get model pricing for quota
         quota = None
-        context_window = 200000  # Default
-
         if recent_file and recent_file.model_id in self.pricing_data:
-            model_pricing = self.pricing_data[recent_file.model_id]
-            quota = model_pricing.session_quota
-            context_window = model_pricing.context_window
+            quota = self.pricing_data[recent_file.model_id].session_quota
 
         # Create a workflow wrapper for the dashboard UI
         workflow_wrapper = WorkflowWrapper(workflow, self.pricing_data)
 
         # Load tool usage statistics (SQLite mode)
         tool_stats = self._load_tool_stats_for_workflow(workflow_wrapper, preferred_source="sqlite")
+        tool_stats_by_model = self._load_tool_stats_by_model_for_workflow(workflow_wrapper, preferred_source="sqlite")
 
         # Use the existing dashboard UI
         # Note: WorkflowWrapper mimics SessionWorkflow interface for dashboard compatibility
@@ -834,63 +982,120 @@ class LiveMonitor:
             session=workflow["main_session"],
             recent_file=recent_file,
             pricing_data=self.pricing_data,
-            burn_rate=output_rate,
             quota=quota,
-            context_window=context_window,
+            per_model_output_rates=per_model_output_rates,
+            per_model_context=per_model_context,
             workflow=cast(Any, workflow_wrapper),
             tool_stats=tool_stats,
+            tool_stats_by_model=tool_stats_by_model,
         )
 
-    def _calculate_sqlite_workflow_output_rate(self, workflow: Dict[str, Any]) -> float:
-        """Calculate output token rate across SQLite workflow.
+    def _calculate_sqlite_per_model_output_rates(
+        self, workflow: Dict[str, Any]
+    ) -> Dict[str, float]:
+        """Calculate output token rate per model for SQLite workflow.
+
+        For each model, uses the most recent interaction to calculate rate.
+        This shows the last available rate even if the model was used >5 min ago.
 
         Args:
-            workflow: Workflow containing all sessions
+            workflow: Workflow dict from SQLite
 
         Returns:
-            Output tokens per second over the last 5 minutes
+            Dict mapping model_id to output tokens per second
         """
-        # Get all files from all sessions
         all_files = []
         for session in workflow["all_sessions"]:
-            all_files.extend(session.files)
+            all_files.extend(session.non_zero_token_files)
 
         if not all_files:
-            return 0.0
+            return {}
 
-        # Calculate the cutoff time (5 minutes ago)
-        cutoff_time = datetime.now() - timedelta(minutes=5)
-
-        # Filter interactions from the last 5 minutes
-        recent_interactions = []
+        model_most_recent: Dict[str, Any] = {}
         for f in all_files:
-            if f.time_data and f.time_data.created:
-                file_time = datetime.fromtimestamp(f.time_data.created / 1000)
-                if file_time >= cutoff_time:
-                    recent_interactions.append(f)
+            if f.model_id not in model_most_recent:
+                model_most_recent[f.model_id] = f
+            elif f.time_data and f.time_data.created:
+                existing = model_most_recent[f.model_id]
+                existing_time = existing.time_data.created if existing.time_data and existing.time_data.created else 0
+                if f.time_data.created > existing_time:
+                    model_most_recent[f.model_id] = f
 
-        if not recent_interactions:
-            return 0.0
+        result = {}
+        for model_id, recent_file in model_most_recent.items():
+            if recent_file.tokens.output > 0 and recent_file.time_data and recent_file.time_data.duration_ms:
+                duration_seconds = recent_file.time_data.duration_ms / 1000
+                if duration_seconds > 0:
+                    result[model_id] = recent_file.tokens.output / duration_seconds
+                else:
+                    result[model_id] = 0.0
+            else:
+                result[model_id] = 0.0
 
-        # Sum output tokens from recent interactions
-        total_output_tokens = sum(f.tokens.output for f in recent_interactions)
+        return result
 
-        if total_output_tokens == 0:
-            return 0.0
+        for f in all_files:
+            if f.model_id not in result:
+                result[f.model_id] = 0.0
 
-        # Sum active processing time (duration_ms) from recent interactions
-        total_duration_ms = 0
-        for f in recent_interactions:
-            if f.time_data and f.time_data.duration_ms:
-                total_duration_ms += f.time_data.duration_ms
+        return result
 
-        # Convert to seconds
-        total_duration_seconds = total_duration_ms / 1000
+    def _get_sqlite_per_model_context_usage(
+        self, workflow: Dict[str, Any]
+    ) -> Dict[str, Dict[str, Any]]:
+        """Get context window usage for each model in SQLite workflow.
 
-        if total_duration_seconds > 0:
-            return total_output_tokens / total_duration_seconds
+        For each model, finds the most recent interaction and calculates context usage.
 
-        return 0.0
+        Args:
+            workflow: Workflow dict from SQLite
+
+        Returns:
+            Dict mapping model_id to context usage info
+        """
+        all_files = []
+        for session in workflow["all_sessions"]:
+            all_files.extend(session.non_zero_token_files)
+
+        if not all_files:
+            return {}
+
+        model_most_recent: Dict[str, Any] = {}
+        for f in all_files:
+            if f.model_id not in model_most_recent:
+                model_most_recent[f.model_id] = f
+            elif f.time_data and f.time_data.created:
+                existing = model_most_recent[f.model_id]
+                existing_time = existing.time_data.created if existing.time_data and existing.time_data.created else 0
+                if f.time_data.created > existing_time:
+                    model_most_recent[f.model_id] = f
+
+        result = {}
+        default_context_window = 200000
+
+        for model_id, recent_file in model_most_recent.items():
+            if model_id in self.pricing_data:
+                context_window = self.pricing_data[model_id].context_window
+            else:
+                context_window = default_context_window
+
+            context_size = (
+                recent_file.tokens.input
+                + recent_file.tokens.cache_read
+                + recent_file.tokens.cache_write
+            )
+
+            usage_pct = (
+                (context_size / context_window) * 100 if context_window > 0 else 0
+            )
+
+            result[model_id] = {
+                "context_size": context_size,
+                "context_window": context_window,
+                "usage_percentage": min(100.0, usage_pct),
+            }
+
+        return result
 
     def validate_monitoring_setup(
         self, base_path: Optional[str] = None
