@@ -107,6 +107,7 @@ class LiveMonitor:
         self.paths_config = paths_config
         self.dashboard_ui = DashboardUI(console)
         self.session_grouper = SessionGrouper()
+        self.data_loader = DataLoader()
 
     def start_monitoring(self, base_path: str, refresh_interval: int = 5):
         """Start live monitoring of the most recent workflow (main session + sub-agents).
