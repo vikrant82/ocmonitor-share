@@ -92,13 +92,20 @@ class InteractionFile(BaseModel):
 
     def calculate_cost(self, pricing_data: Dict[str, Any]) -> Decimal:
         """Calculate cost for this interaction with flexible model name matching.
-        
+
+        Uses OpenCode's stored cost when available. Falls back to local
+        pricing calculation.
+
         Args:
             pricing_data: Dictionary of model pricing information
-            
+
         Returns:
             Calculated cost in USD
         """
+        stored_cost = self.raw_data.get('cost')
+        if stored_cost:
+            return Decimal(str(stored_cost))
+
         pricing = None
         
         # First try exact match
