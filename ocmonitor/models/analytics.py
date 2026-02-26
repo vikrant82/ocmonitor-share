@@ -1,5 +1,6 @@
 """Analytics data models for OpenCode Monitor."""
 
+import statistics
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional, Set
 from decimal import Decimal
@@ -128,17 +129,17 @@ class ModelUsageStats(BaseModel):
     total_interactions: int = Field(default=0)
     total_cost: Decimal = Field(default=Decimal('0.0'))
     total_duration_ms: int = Field(default=0, description="Total processing time in milliseconds")
+    interaction_rates: List[float] = Field(default_factory=list, description="Per-interaction output rates for eligible interactions")
     first_used: Optional[datetime] = Field(default=None)
     last_used: Optional[datetime] = Field(default=None)
 
     @computed_field
     @property
-    def avg_output_rate(self) -> float:
-        """Calculate average output tokens per second."""
-        if self.total_duration_ms <= 0 or self.total_tokens.output == 0:
+    def p50_output_rate(self) -> float:
+        """Calculate median (p50) output tokens per second from eligible interactions."""
+        if not self.interaction_rates:
             return 0.0
-        duration_seconds = self.total_duration_ms / 1000
-        return self.total_tokens.output / duration_seconds
+        return statistics.median(self.interaction_rates)
 
 
 class ModelBreakdownReport(BaseModel):
@@ -311,6 +312,7 @@ class TimeframeAnalyzer:
                 self.interactions = 0
                 self.cost = Decimal('0.0')
                 self.duration_ms = 0
+                self.interaction_rates: List[float] = []
                 self.first_used: Optional[datetime] = None
                 self.last_used: Optional[datetime] = None
         
@@ -332,6 +334,10 @@ class TimeframeAnalyzer:
                     # Track processing duration
                     if file.time_data and file.time_data.duration_ms:
                         model_stats.duration_ms += file.time_data.duration_ms
+                    # Collect per-interaction rates for eligible files
+                    if file.is_rate_eligible:
+                        rate = file.tokens.output / (file.time_data.duration_ms / 1000)
+                        model_stats.interaction_rates.append(rate)
 
                 # Track sessions
                 model_stats.sessions.add(session.session_id)
@@ -355,6 +361,7 @@ class TimeframeAnalyzer:
                 total_interactions=stats.interactions,
                 total_cost=stats.cost,
                 total_duration_ms=stats.duration_ms,
+                interaction_rates=stats.interaction_rates,
                 first_used=stats.first_used,
                 last_used=stats.last_used
             ))

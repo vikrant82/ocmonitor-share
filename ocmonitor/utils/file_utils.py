@@ -247,6 +247,9 @@ class FileProcessor:
             # Extract agent type (e.g., 'explore', 'plan', 'build')
             agent = data.get('agent')
 
+            # Extract finish reason (e.g., 'stop', 'tool-calls')
+            finish_reason = data.get('finish')
+
             return InteractionFile(
                 file_path=file_path,
                 session_id=session_id,
@@ -255,6 +258,7 @@ class FileProcessor:
                 time_data=time_data,
                 project_path=project_path,
                 agent=agent,
+                finish_reason=finish_reason,
                 raw_data=data
             )
 

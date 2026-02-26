@@ -21,6 +21,7 @@ from ..ui.tables import TableFormatter
 from ..utils.data_loader import DataLoader
 from ..utils.file_utils import FileProcessor
 from ..utils.sqlite_utils import SQLiteProcessor
+from ..utils.time_utils import compute_p50_output_rate
 from .session_grouper import SessionGrouper
 
 
@@ -311,37 +312,28 @@ class LiveMonitor:
         )
 
     def _calculate_session_output_rates(self, session: SessionData) -> Dict[str, float]:
-        """Calculate output token rate per model for a single session.
+        """Calculate p50 output token rate per model for a single session.
 
-        For each model, uses the most recent interaction to calculate rate.
-        This shows the last available rate even if the model was used >5 min ago.
+        For each model, collects eligible interactions and computes p50 rate.
 
         Args:
             session: Session to analyze
 
         Returns:
-            Dict mapping model_id to output tokens per second
+            Dict mapping model_id to p50 output tokens per second
         """
         if not session.files:
             return {}
 
-        model_most_recent: Dict[str, InteractionFile] = {}
+        model_files: Dict[str, List[InteractionFile]] = {}
         for f in session.non_zero_token_files:
-            if f.model_id not in model_most_recent:
-                model_most_recent[f.model_id] = f
-            elif f.modification_time > model_most_recent[f.model_id].modification_time:
-                model_most_recent[f.model_id] = f
+            if f.model_id not in model_files:
+                model_files[f.model_id] = []
+            model_files[f.model_id].append(f)
 
         result = {}
-        for model_id, recent_file in model_most_recent.items():
-            if recent_file.tokens.output > 0 and recent_file.time_data and recent_file.time_data.duration_ms:
-                duration_seconds = recent_file.time_data.duration_ms / 1000
-                if duration_seconds > 0:
-                    result[model_id] = recent_file.tokens.output / duration_seconds
-                else:
-                    result[model_id] = 0.0
-            else:
-                result[model_id] = 0.0
+        for model_id, files in model_files.items():
+            result[model_id] = compute_p50_output_rate(files)
 
         return result
 
@@ -446,41 +438,29 @@ class LiveMonitor:
     def _calculate_per_model_output_rates(
         self, workflow: SessionWorkflow
     ) -> Dict[str, float]:
-        """Calculate output token rate per model across workflow.
+        """Calculate p50 output token rate per model across workflow.
 
-        For each model, uses the most recent interaction to calculate rate.
-        This shows the last available rate even if the model was used >5 min ago.
+        For each model, collects eligible interactions and computes p50 rate.
 
         Args:
             workflow: Workflow containing all sessions
 
         Returns:
-            Dict mapping model_id to output tokens per second
+            Dict mapping model_id to p50 output tokens per second
         """
-        all_files: List[InteractionFile] = []
+        model_files: Dict[str, List[InteractionFile]] = {}
         for session in workflow.all_sessions:
-            all_files.extend(session.non_zero_token_files)
+            for f in session.non_zero_token_files:
+                if f.model_id not in model_files:
+                    model_files[f.model_id] = []
+                model_files[f.model_id].append(f)
 
-        if not all_files:
+        if not model_files:
             return {}
 
-        model_most_recent: Dict[str, InteractionFile] = {}
-        for f in all_files:
-            if f.model_id not in model_most_recent:
-                model_most_recent[f.model_id] = f
-            elif f.modification_time > model_most_recent[f.model_id].modification_time:
-                model_most_recent[f.model_id] = f
-
         result = {}
-        for model_id, recent_file in model_most_recent.items():
-            if recent_file.tokens.output > 0 and recent_file.time_data and recent_file.time_data.duration_ms:
-                duration_seconds = recent_file.time_data.duration_ms / 1000
-                if duration_seconds > 0:
-                    result[model_id] = recent_file.tokens.output / duration_seconds
-                else:
-                    result[model_id] = 0.0
-            else:
-                result[model_id] = 0.0
+        for model_id, files in model_files.items():
+            result[model_id] = compute_p50_output_rate(files)
 
         return result
 
@@ -539,13 +519,13 @@ class LiveMonitor:
         return result
 
     def _calculate_output_rate(self, session: SessionData) -> float:
-        """Calculate output token rate over the last 5 minutes of activity.
+        """Calculate p50 output token rate over the last 5 minutes of activity.
 
         Args:
             session: SessionData object containing all interactions
 
         Returns:
-            Output tokens per second over the last 5 minutes
+            P50 output tokens per second over the last 5 minutes
         """
         if not session.files:
             return 0.0
@@ -561,20 +541,21 @@ class LiveMonitor:
         if not recent_interactions:
             return 0.0
 
-        # Sum output tokens from recent interactions
-        total_output_tokens = sum(f.tokens.output for f in recent_interactions)
+        # Compute p50 from eligible interactions in the window
+        rate = compute_p50_output_rate(recent_interactions)
+        if rate > 0:
+            return rate
 
-        # If no output tokens, return 0
+        # Fallback: aggregate mean for the window if no eligible interactions
+        total_output_tokens = sum(f.tokens.output for f in recent_interactions)
         if total_output_tokens == 0:
             return 0.0
 
-        # Sum active processing time (duration_ms) from recent interactions
         total_duration_ms = 0
         for f in recent_interactions:
             if f.time_data and f.time_data.duration_ms:
                 total_duration_ms += f.time_data.duration_ms
 
-        # Convert to seconds
         total_duration_seconds = total_duration_ms / 1000
 
         if total_duration_seconds > 0:
@@ -993,50 +974,29 @@ class LiveMonitor:
     def _calculate_sqlite_per_model_output_rates(
         self, workflow: Dict[str, Any]
     ) -> Dict[str, float]:
-        """Calculate output token rate per model for SQLite workflow.
+        """Calculate p50 output token rate per model for SQLite workflow.
 
-        For each model, uses the most recent interaction to calculate rate.
-        This shows the last available rate even if the model was used >5 min ago.
+        For each model, collects eligible interactions and computes p50 rate.
 
         Args:
             workflow: Workflow dict from SQLite
 
         Returns:
-            Dict mapping model_id to output tokens per second
+            Dict mapping model_id to p50 output tokens per second
         """
-        all_files = []
+        model_files: Dict[str, List[InteractionFile]] = {}
         for session in workflow["all_sessions"]:
-            all_files.extend(session.non_zero_token_files)
+            for f in session.non_zero_token_files:
+                if f.model_id not in model_files:
+                    model_files[f.model_id] = []
+                model_files[f.model_id].append(f)
 
-        if not all_files:
+        if not model_files:
             return {}
 
-        model_most_recent: Dict[str, Any] = {}
-        for f in all_files:
-            if f.model_id not in model_most_recent:
-                model_most_recent[f.model_id] = f
-            elif f.time_data and f.time_data.created:
-                existing = model_most_recent[f.model_id]
-                existing_time = existing.time_data.created if existing.time_data and existing.time_data.created else 0
-                if f.time_data.created > existing_time:
-                    model_most_recent[f.model_id] = f
-
         result = {}
-        for model_id, recent_file in model_most_recent.items():
-            if recent_file.tokens.output > 0 and recent_file.time_data and recent_file.time_data.duration_ms:
-                duration_seconds = recent_file.time_data.duration_ms / 1000
-                if duration_seconds > 0:
-                    result[model_id] = recent_file.tokens.output / duration_seconds
-                else:
-                    result[model_id] = 0.0
-            else:
-                result[model_id] = 0.0
-
-        return result
-
-        for f in all_files:
-            if f.model_id not in result:
-                result[f.model_id] = 0.0
+        for model_id, files in model_files.items():
+            result[model_id] = compute_p50_output_rate(files)
 
         return result
 

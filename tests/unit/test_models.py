@@ -167,15 +167,16 @@ class TestCalculateCost:
         )
         assert interaction.calculate_cost(pricing_data) == Decimal("0.0173")
 
-    def test_zero_stored_cost_returned_directly(self, tmp_path, pricing_data):
-        """A stored cost of exactly 0 is returned as Decimal('0'), not treated as absent."""
+    def test_zero_stored_cost_falls_back_to_local_pricing(self, tmp_path, pricing_data):
+        """A stored cost of 0 is treated as 'not computed' and falls back to local pricing."""
         interaction = self._make_interaction(
             tmp_path,
             raw_data={"cost": 0},
             model_id="known-model",
             input=1000000,
         )
-        assert interaction.calculate_cost(pricing_data) == Decimal("0")
+        # 1M input tokens at $1.00/1M = $1.00 (from models.json, not stored cost)
+        assert interaction.calculate_cost(pricing_data) == Decimal("1.0")
 
     def test_falls_back_to_local_pricing_when_no_stored_cost(self, tmp_path, pricing_data):
         """When raw_data has no cost, local pricing calculation is used."""

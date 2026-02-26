@@ -131,6 +131,7 @@ class SQLiteProcessor:
         project_path = cls._extract_project_path(data)
         agent = cls._extract_agent(data)
         model_id = cls._extract_model_name(data)
+        finish_reason = data.get("finish")
 
         return InteractionFile(
             file_path=Path("sqlite") / session_id,  # Placeholder path
@@ -140,6 +141,7 @@ class SQLiteProcessor:
             time_data=time_data,
             project_path=project_path,
             agent=agent,
+            finish_reason=finish_reason,
             raw_data=data,
         )
 

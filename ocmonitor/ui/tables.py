@@ -9,7 +9,7 @@ from rich.panel import Panel
 
 from ..models.session import SessionData, TokenUsage
 from ..models.analytics import DailyUsage, ModelUsageStats
-from ..utils.time_utils import TimeUtils
+from ..utils.time_utils import TimeUtils, compute_p50_output_rate
 from ..utils.formatting import ColorFormatter
 
 
@@ -70,8 +70,7 @@ class TableFormatter:
         total_interactions = 0
         total_tokens = TokenUsage()
         total_cost = Decimal('0.0')
-        total_duration_ms = 0
-        total_output_tokens = 0
+        all_interaction_rates: list[float] = []
 
         for session in sorted_sessions:
             session_cost = session.calculate_total_cost(pricing_data)
@@ -111,13 +110,12 @@ class TableFormatter:
                 # Get cost color
                 cost_color = self.get_cost_color(stats['cost'])
 
-                # Calculate speed (output tokens per second)
-                duration_ms = stats.get('duration_ms', 0)
-                output_tokens = stats['tokens'].output
-                total_duration_ms += duration_ms
-                total_output_tokens += output_tokens
-                if duration_ms > 0 and output_tokens > 0:
-                    speed = output_tokens / (duration_ms / 1000)
+                # Calculate speed (p50 output tokens per second)
+                rates = stats.get('interaction_rates', [])
+                all_interaction_rates.extend(rates)
+                if rates:
+                    import statistics
+                    speed = statistics.median(rates)
                     speed_text = f"{speed:.1f} t/s"
                 else:
                     speed_text = "-"
@@ -137,9 +135,10 @@ class TableFormatter:
 
         # Add separator and totals
         table.add_section()
-        # Calculate aggregate speed for totals
-        if total_duration_ms > 0 and total_output_tokens > 0:
-            total_speed = total_output_tokens / (total_duration_ms / 1000)
+        # Calculate p50 speed for totals
+        if all_interaction_rates:
+            import statistics
+            total_speed = statistics.median(all_interaction_rates)
             total_speed_text = f"{total_speed:.1f} t/s"
         else:
             total_speed_text = "-"
@@ -319,7 +318,7 @@ class TableFormatter:
             cost_color = self.get_cost_color(model.total_cost)
 
             # Format speed
-            speed = model.avg_output_rate
+            speed = model.p50_output_rate
             if speed == 0:
                 speed_text = "-"
             else:

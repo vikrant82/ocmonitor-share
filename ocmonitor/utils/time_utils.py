@@ -1,7 +1,11 @@
 """Time utility functions for OpenCode Monitor."""
 
+import statistics
 from datetime import datetime, date, timedelta
-from typing import Optional, Tuple
+from typing import List, Optional, TYPE_CHECKING, Tuple
+
+if TYPE_CHECKING:
+    from ..models.session import InteractionFile
 
 WEEKDAY_MAP = {
     'monday': 0,
@@ -321,3 +325,22 @@ class TimeUtils:
             return start_date.strftime('%Y-%m-%d')
         else:
             return f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
+
+
+def compute_p50_output_rate(files: List["InteractionFile"]) -> float:
+    """Compute median (p50) output rate from eligible interactions.
+
+    Args:
+        files: List of InteractionFile objects to consider
+
+    Returns:
+        Median output tokens per second, or 0.0 if no eligible interactions
+    """
+    rates = []
+    for f in files:
+        if f.is_rate_eligible:
+            duration_s = f.time_data.duration_ms / 1000
+            rates.append(f.tokens.output / duration_s)
+    if not rates:
+        return 0.0
+    return statistics.median(rates)
