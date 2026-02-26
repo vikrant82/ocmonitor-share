@@ -103,7 +103,7 @@ class InteractionFile(BaseModel):
             Calculated cost in USD
         """
         stored_cost = self.raw_data.get('cost')
-        if stored_cost:
+        if stored_cost is not None:
             return Decimal(str(stored_cost))
 
         pricing = None
