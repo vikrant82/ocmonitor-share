@@ -748,9 +748,10 @@ When enabled, OpenCode Monitor will:
 
 Models are resolved in this order (highest to lowest priority):
 
-1. **User override file** (`~/.config/ocmonitor/models.json`) - Your personal overrides
-2. **Project/local `models.json`** - Project-specific pricing
-3. **models.dev remote fallback** - Community pricing (fill-only, never overwrites)
+1. **OpenCode's pre-computed cost** - Used directly when present in session data
+2. **User override file** (`~/.config/ocmonitor/models.json`) - Your personal overrides
+3. **Project/local `models.json`** - Project-specific pricing
+4. **models.dev remote fallback** - Community pricing (fill-only, never overwrites)
 
 ### Enabling Remote Fallback
 
