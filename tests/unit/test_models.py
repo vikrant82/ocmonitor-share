@@ -6,6 +6,7 @@ from decimal import Decimal
 from datetime import datetime
 
 from ocmonitor.models.session import TokenUsage, TimeData, InteractionFile, SessionData
+from ocmonitor.config import ModelPricing
 
 
 class TestTokenUsage:
@@ -118,6 +119,73 @@ class TestInteractionFile:
             project_path=None
         )
         assert interaction.project_name == "Unknown"
+
+
+class TestCalculateCost:
+    """Tests for InteractionFile.calculate_cost."""
+
+    @pytest.fixture
+    def pricing_data(self):
+        return {
+            "known-model": ModelPricing(
+                input=Decimal("1.0"),
+                output=Decimal("2.0"),
+                cacheWrite=Decimal("1.5"),
+                cacheRead=Decimal("0.1"),
+                contextWindow=128000,
+                sessionQuota=Decimal("5.0"),
+            )
+        }
+
+    def _make_interaction(self, tmp_path, raw_data=None, model_id="known-model", **tokens):
+        f = tmp_path / "inter_0001.json"
+        f.write_text("{}")
+        return InteractionFile(
+            file_path=f,
+            session_id="ses_test",
+            model_id=model_id,
+            tokens=TokenUsage(**tokens) if tokens else TokenUsage(),
+            raw_data=raw_data or {},
+        )
+
+    def test_uses_stored_cost_when_present(self, tmp_path, pricing_data):
+        """OpenCode's pre-computed cost in raw_data is returned directly."""
+        interaction = self._make_interaction(
+            tmp_path,
+            raw_data={"cost": 0.042},
+            input=1000000, output=1000000,
+        )
+        assert interaction.calculate_cost(pricing_data) == Decimal("0.042")
+
+    def test_stored_cost_used_for_model_not_in_local_pricing(self, tmp_path, pricing_data):
+        """Models not in local pricing (e.g. OpenRouter) use stored cost instead of returning $0.00."""
+        interaction = self._make_interaction(
+            tmp_path,
+            raw_data={"cost": 0.0173},
+            model_id="openrouter/anthropic/claude-opus-4.6",
+            input=5000, output=2000,
+        )
+        assert interaction.calculate_cost(pricing_data) == Decimal("0.0173")
+
+    def test_zero_stored_cost_returned_directly(self, tmp_path, pricing_data):
+        """A stored cost of exactly 0 is returned as Decimal('0'), not treated as absent."""
+        interaction = self._make_interaction(
+            tmp_path,
+            raw_data={"cost": 0},
+            model_id="known-model",
+            input=1000000,
+        )
+        assert interaction.calculate_cost(pricing_data) == Decimal("0")
+
+    def test_falls_back_to_local_pricing_when_no_stored_cost(self, tmp_path, pricing_data):
+        """When raw_data has no cost, local pricing calculation is used."""
+        interaction = self._make_interaction(
+            tmp_path,
+            model_id="known-model",
+            input=1000000,
+        )
+        # 1M input tokens at $1.00/1M = $1.00
+        assert interaction.calculate_cost(pricing_data) == Decimal("1.0")
 
 
 class TestSessionData:

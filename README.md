@@ -329,9 +329,10 @@ ocmonitor --no-remote sessions
 ```
 
 **Pricing Precedence (highest to lowest):**
-1. User override file (`~/.config/ocmonitor/models.json`)
-2. Project/local `models.json`
-3. models.dev remote fallback (fill-only)
+1. OpenCode's pre-computed cost (from session data, when available)
+2. User override file (`~/.config/ocmonitor/models.json`)
+3. Project/local `models.json`
+4. models.dev remote fallback (fill-only)
 
 ## 🛠️ Development
 
