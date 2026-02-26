@@ -1,0 +1,146 @@
+
+**Plan**
+
+1. Define tool usage models (without creating import cycles)
+- Add a new file: `ocmonitor/models/tool_usage.py`
+- Create:
+  - `ToolUsageStats`:
+    - `tool_name: str`
+    - `total_calls: int = 0`
+    - `success_count: int = 0`
+    - `failure_count: int = 0`
+    - computed `success_rate: float`
+  - `ToolUsageSummary` (optional but recommended):
+    - `tool_stats: List[ToolUsageStats]`
+    - `total_calls`, `total_success`, `total_failures` computed fields
+- Do **not** add tool fields to `SessionData` yet (keeps core session model clean and avoids `analytics <-> session` coupling issues).
+
+2. Add tool scanner utility optimized for live refresh
+- New file: `ocmonitor/utils/tool_scanner.py`
+- Responsibilities:
+  - Resolve storage root via existing config/path logic (not hardcoded `~/.local/...`).
+  - For a session:
+    1) read `storage/message/<session_id>/msg_*.json`
+    2) map to `messageID`s
+    3) read `storage/part/<message_id>/prt_*.json`
+    4) process only entries where `type == "tool"`.
+  - Parse status from `state.status`:
+    - `completed` => success
+    - `error` => failure
+    - unknown/missing => ignore or count as failure (recommend: ignore unknown for now, log defensively)
+  - Return aggregated `List[ToolUsageStats]`, sorted by `total_calls DESC`.
+- Add lightweight in-memory cache for live mode:
+  - Track processed part IDs per session (or message)
+  - Incrementally update counts each refresh instead of full rescan
+
+3. Integrate tool scanning into live monitor service
+- Update `ocmonitor/services/live_monitor.py`
+- In `_generate_dashboard(...)`:
+  - fetch tool stats for `session.session_id`
+- In `_generate_workflow_dashboard(...)`:
+  - fetch and aggregate stats for all workflow session IDs
+- Pass `tool_stats` into dashboard renderer as a new argument
+- Keep existing refresh loop unchanged except scanner/cache usage.
+
+4. Add Tools panel to dashboard UI (and keep Recent panel)
+- Update `ocmonitor/ui/dashboard.py`
+- Add:
+  - `create_tool_panel(tool_stats: List[ToolUsageStats]) -> Panel`
+- Panel format (compact):
+  - `tool_name  calls  [bar]  success%`
+  - colors:
+    - green `>= 90%`
+    - yellow `70-89%`
+    - red `< 70%`
+- Empty state:
+  - `"No tool activity yet"`
+- Show top N tools (recommend N=6) to avoid overflow.
+
+5. Update layout per your screenshot request
+- Keep secondary row unchanged (Context, Output Rate, Session Time, Recent).
+- Change bottom section from single full-width Models panel to two side-by-side panels:
+  - left: `Models`
+  - right: `Tools`
+- Implementation detail in `create_dashboard_layout(...)`:
+  - `layout["models"].split_row(Layout(model_panel, ratio=3), Layout(tool_panel, ratio=2))`
+  - ratio can be tuned after first render; start with 3:2.
+- This places Tools exactly in the green-marked area (next to Models).
+
+6. Tests
+- Add unit tests for scanner in `tests/unit/test_tool_scanner.py`:
+  - parses tool parts
+  - aggregates success/failure correctly
+  - handles missing/malformed fields safely
+  - session with no tool calls returns empty list
+- Add/extend dashboard tests (or snapshot-like assertions if available):
+  - Tools panel renders with data
+  - empty-state rendering
+- Add light live monitor test coverage for tool stats pass-through (if feasible).
+
+7. Validation checklist after implementation
+- Run:
+  - `pytest tests/unit/test_tool_scanner.py`
+  - `pytest tests/unit/test_models.py tests/unit/test_file_utils.py`
+  - `pytest tests/integration/test_cli.py` (if stable in your environment)
+- Manual run:
+  - `ocmonitor live`
+  - verify Recent panel remains
+  - verify Tools panel appears beside Models and updates over refreshes
+  - verify no noticeable refresh slowdown.
+
+Revised Plan (SQLite-native)
+1) Add tool usage models
+- Create ocmonitor/models/tool_usage.py:
+  - ToolUsageStats: tool_name, total_calls, success_count, failure_count, computed success_rate
+  - ToolUsageSummary optional (nice-to-have)
+- Keep SessionData unchanged (no coupling).
+2) Add SQLite tool aggregation in sqlite_utils.py
+- Add method(s) in ocmonitor/utils/sqlite_utils.py:
+  - load_tool_usage_for_sessions(session_ids: List[str], db_path: Optional[Path] = None) -> List[ToolUsageStats]
+- Query part directly:
+  - filter json_extract(data, '$.type') = 'tool'
+  - filter terminal statuses only: IN ('completed','error')
+  - group by json_extract(data, '$.tool')
+  - compute totals + success/failure counts
+  - sort by total_calls DESC
+- This avoids message/part filesystem traversal entirely for modern OpenCode.
+3) Route through data_loader.py
+- Add DataLoader.load_tool_usage(session_ids: List[str]) -> List[ToolUsageStats] in ocmonitor/utils/data_loader.py.
+- Behavior:
+  - if source is sqlite: call SQLiteProcessor method above
+  - if source is files: return [] for now (live panel shows empty state)
+- This keeps one source-selection path and matches current architecture.
+4) Integrate in live monitor
+- Update ocmonitor/services/live_monitor.py:
+  - fetch tool stats for workflow session IDs in:
+    - _generate_workflow_dashboard(...)
+    - _generate_sqlite_workflow_dashboard(...)
+  - pass tool_stats into dashboard renderer
+- Keep refresh loop unchanged.
+5) Add Tools panel + layout change
+- Update ocmonitor/ui/dashboard.py:
+  - add create_tool_panel(tool_stats, max_tools=6)
+  - compact rows: tool  calls  [bar]  success%
+  - color by success rate (green/yellow/red)
+  - empty: No tool activity yet
+- Update create_dashboard_layout(...) signature to accept tool_stats
+- Bottom row change:
+  - from full-width Models
+  - to side-by-side: Models (ratio 3) + Tools (ratio 2)
+6) Tests
+- Add unit tests for SQLite aggregation (new file, e.g. tests/unit/test_sqlite_tool_usage.py):
+  - completed/error counting
+  - running excluded
+  - malformed/missing fields handled safely
+  - empty sessions return empty list
+- Extend tests/unit/test_live_monitor.py:
+  - tool stats are passed through to dashboard layout
+- Add light UI test for tools panel rendering and empty state.
+7) Validation
+- Run:
+  - pytest tests/unit/test_sqlite_tool_usage.py
+  - pytest tests/unit/test_live_monitor.py
+  - pytest tests/unit/test_models.py tests/unit/test_file_utils.py
+- Manual:
+  - ocmonitor live
+  - confirm Tools panel appears next to Models and updates in refreshes.

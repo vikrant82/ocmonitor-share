@@ -841,7 +841,7 @@ class ReportGenerator:
                     'interactions': model.total_interactions,
                     'tokens': model.total_tokens.model_dump(),
                     'cost': float(model.total_cost),
-                    'avg_output_rate': model.avg_output_rate,
+                    'p50_output_rate': model.p50_output_rate,
                     'first_used': model.first_used.isoformat() if model.first_used else None,
                     'last_used': model.last_used.isoformat() if model.last_used else None
                 }
@@ -961,7 +961,7 @@ class ReportGenerator:
                 'cache_read_tokens': model.total_tokens.cache_read,
                 'total_tokens': model.total_tokens.total,
                 'cost': float(model.total_cost),
-                'avg_output_rate': model.avg_output_rate,
+                'p50_output_rate': model.p50_output_rate,
                 'first_used': model.first_used.isoformat() if model.first_used else None,
                 'last_used': model.last_used.isoformat() if model.last_used else None
             }

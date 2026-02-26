@@ -35,6 +35,7 @@ Transform your OpenCode usage data into beautiful, actionable insights with comp
 - **🚥 Color Coding** - Green/yellow/red status indicators based on usage thresholds
 - **📱 Live Dashboard** - Real-time monitoring with project names and session titles
 - **⏰ Session Time Tracking** - 5-hour session progress bar with color-coded time alerts
+- **🔧 Tool Usage Panel** - Track tool success rates (bash, read, edit, etc.) in live dashboard
 
 ### 📤 Data Export & Integration
 - **📋 CSV Export** - Spreadsheet-compatible exports with metadata
@@ -235,6 +236,7 @@ ocmonitor live ~/.local/share/opencode/storage/message --refresh 10
 - 📂 Project name display for better context
 - 📝 Human-readable session titles instead of cryptic IDs
 - 🔗 **Workflow Tracking** - Automatically tracks entire workflow including sub-agents (explore, etc.)
+- 🔧 **Tool Usage Stats** - Shows success rates for tools (bash, read, edit, etc.) with color-coded progress bars
 
 [![Live Dashboard Screenshot](screenshots/live_dashboard.png)](screenshots/live_dashboard.png)
 
@@ -327,9 +329,10 @@ ocmonitor --no-remote sessions
 ```
 
 **Pricing Precedence (highest to lowest):**
-1. User override file (`~/.config/ocmonitor/models.json`)
-2. Project/local `models.json`
-3. models.dev remote fallback (fill-only)
+1. OpenCode's pre-computed cost (from session data, when available)
+2. User override file (`~/.config/ocmonitor/models.json`)
+3. Project/local `models.json`
+4. models.dev remote fallback (fill-only)
 
 ## 🛠️ Development
 

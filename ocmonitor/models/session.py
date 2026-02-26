@@ -60,6 +60,7 @@ class InteractionFile(BaseModel):
     time_data: Optional[TimeData] = Field(default=None)
     project_path: Optional[str] = Field(default=None, description="Project working directory from OpenCode")
     agent: Optional[str] = Field(default=None, description="Agent type (explore, plan, build, etc.)")
+    finish_reason: Optional[str] = Field(default=None, description="Finish reason (stop, tool-calls, etc.)")
     raw_data: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -90,15 +91,33 @@ class InteractionFile(BaseModel):
             return "Unknown"
         return Path(self.project_path).name if self.project_path else "Unknown"
 
+    @property
+    def is_rate_eligible(self) -> bool:
+        """Whether this interaction should be included in output rate calculations.
+        Excludes tool-call-only interactions with low output tokens."""
+        if self.finish_reason == "tool-calls" and self.tokens.output < 100:
+            return False
+        return (self.tokens.output > 0
+                and self.time_data is not None
+                and self.time_data.duration_ms is not None
+                and self.time_data.duration_ms > 0)
+
     def calculate_cost(self, pricing_data: Dict[str, Any]) -> Decimal:
         """Calculate cost for this interaction with flexible model name matching.
-        
+
+        Uses OpenCode's stored cost when available. Falls back to local
+        pricing calculation.
+
         Args:
             pricing_data: Dictionary of model pricing information
-            
+
         Returns:
             Calculated cost in USD
         """
+        stored_cost = self.raw_data.get('cost')
+        if stored_cost is not None and stored_cost > 0:
+            return Decimal(str(stored_cost))
+
         pricing = None
         
         # First try exact match
@@ -241,6 +260,7 @@ class SessionData(BaseModel):
             model_tokens = TokenUsage()
             model_cost = Decimal('0.0')
             model_duration_ms = 0
+            interaction_rates: list[float] = []
 
             for file in model_files:
                 model_tokens.input += file.tokens.input
@@ -250,12 +270,16 @@ class SessionData(BaseModel):
                 model_cost += file.calculate_cost(pricing_data)
                 if file.time_data and file.time_data.duration_ms:
                     model_duration_ms += file.time_data.duration_ms
+                if file.is_rate_eligible:
+                    rate = file.tokens.output / (file.time_data.duration_ms / 1000)
+                    interaction_rates.append(rate)
 
             breakdown[model] = {
                 'files': len(model_files),
                 'tokens': model_tokens,
                 'cost': model_cost,
-                'duration_ms': model_duration_ms
+                'duration_ms': model_duration_ms,
+                'interaction_rates': interaction_rates,
             }
 
         return breakdown

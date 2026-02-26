@@ -5,6 +5,39 @@ All notable changes to OpenCode Monitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-02-20
+
+### 🔧 Tool Usage Tracking
+
+Real-time tool success/failure metrics in the live dashboard.
+
+#### Added
+- **Tool Usage Panel** - Shows success rates for tools (bash, read, edit, etc.) in live dashboard
+- **ToolUsageStats Model** - Tracks tool_name, total_calls, success_count, failure_count, success_rate
+- **SQLite Tool Aggregation** - Queries `part` table for tool entries with terminal statuses
+
+#### Files Added
+- `ocmonitor/models/tool_usage.py` - Tool usage statistics models
+- `tests/unit/test_sqlite_tool_usage.py` - Unit tests for tool aggregation
+
+#### Files Modified
+- `ocmonitor/utils/sqlite_utils.py` - Added `load_tool_usage_for_sessions()` method
+- `ocmonitor/utils/data_loader.py` - Added `load_tool_usage()` method
+- `ocmonitor/services/live_monitor.py` - Integrated tool stats into dashboard generation
+- `ocmonitor/ui/dashboard.py` - Added Tools panel, modified layout (Models + Tools side-by-side)
+
+#### Features
+- 📊 **Success Rate Tracking** - Shows completed vs error counts per tool
+- 🎨 **Color-Coded Progress Bars** - Green (≥90%), yellow (70-89%), red (<70%)
+- 📋 **Top 6 Tools** - Shows most-used tools by call count
+- 🚫 **Status Filtering** - Only counts `completed` and `error` statuses; excludes `running`
+
+#### Layout Change
+- Bottom section changed from full-width Models panel to side-by-side: `Models (60%)` | `Tools (40%)`
+
+#### Tests
+- 9 unit tests for tool usage aggregation and model
+
 ## [0.9.2] - 2026-02-17
 
 ### 🌐 Remote Pricing Fallback
@@ -196,6 +229,7 @@ ocmonitor export <type>    # Data export functionality
 
 ## Version History Summary
 
+- **v0.9.3** - Tool usage tracking in live dashboard
 - **v0.9.2** - Remote pricing fallback from models.dev
 - **v0.9.1** - SQLite database support for OpenCode v1.2.0+
 - **v0.9.0** - Pre-release version for community feedback and testing before stable v1.0.0
