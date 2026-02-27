@@ -70,10 +70,10 @@ class SQLiteProcessor:
         cache_data = tokens_data.get("cache", {})
 
         return TokenUsage(
-            input=tokens_data.get("input", 0),
-            output=tokens_data.get("output", 0),
-            cache_write=cache_data.get("write", 0),
-            cache_read=cache_data.get("read", 0),
+            input=max(0, tokens_data.get('input', 0)),
+            output=max(0, tokens_data.get('output', 0)),
+            cache_write=max(0, cache_data.get('write', 0)),
+            cache_read=max(0, cache_data.get('read', 0))
         )
 
     @staticmethod
