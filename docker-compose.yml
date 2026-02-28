@@ -1,0 +1,20 @@
+services:
+  ocmonitor:
+    build:
+      context: .
+      args:
+        HOST_UID: "${UID:-1000}"
+    image: ocmonitor
+    tty: true
+    stdin_open: true
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      - HOME=/app
+      - TERM=xterm-256color
+    volumes:
+      # OpenCode data
+      - ${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}:/app/.local/share/opencode
+
+      # ocmonitor config + cache
+      - ${OCMONITOR_CONFIG_DIR:-$HOME/.config/ocmonitor}:/app/.config/ocmonitor
+      - ${OCMONITOR_CACHE_DIR:-$HOME/.cache/ocmonitor}:/app/.cache/ocmonitor

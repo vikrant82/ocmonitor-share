@@ -107,6 +107,21 @@ python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 ```
 
+**Option 5: Dockerized Installation**
+```bash
+docker compose build
+```
+
+Usage example:
+```bash
+docker compose run --rm ocmonitor sessions
+```
+
+If your host OpenCode data is not in `~/.local/share/opencode`, set `OPENCODE_DATA_DIR` before running:
+```bash
+OPENCODE_DATA_DIR=/your/path/to/opencode/data/dir docker compose run --rm ocmonitor sessions
+```
+
 ### Basic Usage
 
 ```bash
