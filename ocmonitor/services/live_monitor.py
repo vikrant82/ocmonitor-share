@@ -214,8 +214,10 @@ class LiveMonitor:
             self._displayed_workflow_id = None
         self.data_loader = DataLoader()
 
-    def _get_file_active_workflows(self, base_path: str) -> List[SessionWorkflow]:
-        """Load active file-based workflows, falling back to most recent."""
+    def _get_file_active_workflows(
+        self, base_path: str, allow_fallback: bool = True
+    ) -> List[SessionWorkflow]:
+        """Load active file-based workflows, optionally falling back to most recent."""
         sessions = FileProcessor.load_all_sessions(base_path, limit=50)
         if not sessions:
             return []
@@ -225,10 +227,14 @@ class LiveMonitor:
             return []
 
         active_workflows = [w for w in workflows if w.end_time is None]
-        return active_workflows or workflows[:1]
+        if active_workflows:
+            return active_workflows
+        return workflows[:1] if allow_fallback else []
 
-    def _get_sqlite_active_workflows(self) -> List[Dict[str, Any]]:
-        """Load active SQLite workflows, falling back to most recent."""
+    def _get_sqlite_active_workflows(
+        self, allow_fallback: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Load active SQLite workflows, optionally falling back to most recent."""
         db_path = SQLiteProcessor.find_database_path()
         if not db_path:
             return []
@@ -236,6 +242,9 @@ class LiveMonitor:
         active_workflows = SQLiteProcessor.get_all_active_workflows(db_path)
         if active_workflows:
             return active_workflows
+
+        if not allow_fallback:
+            return []
 
         workflow = SQLiteProcessor.get_most_recent_workflow(db_path)
         return [workflow] if workflow else []
@@ -508,7 +517,9 @@ class LiveMonitor:
         """
         input_listener: Optional[_InputListener] = None
         try:
-            active_workflows = self._get_file_active_workflows(base_path)
+            active_workflows = self._get_file_active_workflows(
+                base_path, allow_fallback=not bool(selected_session_id)
+            )
             if not active_workflows:
                 self.console.print(
                     f"[status.error]No sessions found in {base_path}[/status.error]"
@@ -568,7 +579,9 @@ class LiveMonitor:
                 console=self.console,
             ) as live:
                 while True:
-                    active_workflows = self._get_file_active_workflows(base_path)
+                    active_workflows = self._get_file_active_workflows(
+                        base_path, allow_fallback=not bool(selected_session_id)
+                    )
                     descriptors = self._describe_file_workflows(active_workflows)
 
                     if interactive_switch and input_listener:
@@ -1118,7 +1131,9 @@ class LiveMonitor:
                 )
                 return
 
-            active_workflows = self._get_sqlite_active_workflows()
+            active_workflows = self._get_sqlite_active_workflows(
+                allow_fallback=not bool(selected_session_id)
+            )
             if not active_workflows:
                 self.console.print(
                     "[status.error]No sessions found in database.[/status.error]"
@@ -1181,7 +1196,9 @@ class LiveMonitor:
                 console=self.console,
             ) as live:
                 while True:
-                    active_workflows = self._get_sqlite_active_workflows()
+                    active_workflows = self._get_sqlite_active_workflows(
+                        allow_fallback=not bool(selected_session_id)
+                    )
                     descriptors = self._describe_sqlite_workflows(active_workflows)
 
                     if interactive_switch and input_listener:

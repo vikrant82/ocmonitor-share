@@ -856,6 +856,58 @@ class TestLiveMonitorSelection:
         assert should_quit is False
         assert new_id == "wf-2"
 
+        new_id, should_quit = monitor._handle_live_switch_command(
+            "p", descriptors, "wf-2"
+        )
+        assert should_quit is False
+        assert new_id == "wf-1"
+
+        new_id, should_quit = monitor._handle_live_switch_command(
+            "3", descriptors, "wf-1"
+        )
+        assert should_quit is False
+        assert new_id == "wf-3"
+
+    def test_file_loader_disables_fallback_in_pinned_mode(self, monkeypatch, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+
+        ended_workflow = SimpleNamespace(workflow_id="wf-ended", end_time=1)
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.FileProcessor.load_all_sessions",
+            lambda base_path, limit=50: [SimpleNamespace(session_id="ses_1")],
+        )
+        monkeypatch.setattr(
+            monitor.session_grouper,
+            "group_sessions",
+            lambda sessions: [ended_workflow],
+        )
+
+        result = monitor._get_file_active_workflows(
+            str(tmp_path), allow_fallback=False
+        )
+        assert result == []
+
+    def test_sqlite_loader_disables_fallback_in_pinned_mode(self, monkeypatch, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+
+        db_path = tmp_path / "opencode.db"
+        db_path.touch()
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: db_path,
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda _: [],
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_most_recent_workflow",
+            lambda _: {"workflow_id": "wf-ended"},
+        )
+
+        result = monitor._get_sqlite_active_workflows(allow_fallback=False)
+        assert result == []
+
     def test_handle_live_switch_command_show_does_not_switch(self):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
         monitor._print_workflow_picker_table = MagicMock()

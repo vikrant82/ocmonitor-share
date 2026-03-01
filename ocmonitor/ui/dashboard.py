@@ -762,8 +762,9 @@ class DashboardUI:
             tool_panel = self.create_tool_panel(flat_tool_stats)
 
         # 3-section layout: Header, Metrics (3-column), Models+Tools
+        header_size = 4 if controls_hint else 3
         layout.split_column(
-            Layout(header, size=3),  # Compact header
+            Layout(header, size=header_size),  # Compact header
             Layout(name="metrics", size=12),  # Tokens + Status + Recent (single row)
             Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
         )

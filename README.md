@@ -251,6 +251,7 @@ ocmonitor live ~/.local/share/opencode/storage/message --interactive-switch
 ```
 
 If `--session-id` is pinned and the selected workflow is no longer active, live monitoring stops with a clear message.
+When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--session-id` takes precedence and `--pick` is ignored.
 
 **Features:**
 - 🔄 Auto-refreshing display with professional UI design
