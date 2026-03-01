@@ -1,9 +1,12 @@
 """Live monitoring service for OpenCode Monitor."""
 
+import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any, Dict, List, Literal, Optional, Set, cast
 
 from rich.console import Console
@@ -27,6 +30,42 @@ from .session_grouper import SessionGrouper
 
 class NoWorkflowsError(Exception):
     """Raised when no workflows are available for selection."""
+
+
+class _InputListener:
+    """Background stdin listener for optional live keyboard commands."""
+
+    def __init__(self):
+        self._queue: Queue[str] = Queue()
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        """Start background line reader."""
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
+
+    def _read_loop(self) -> None:
+        while not self._stop_event.is_set():
+            line = sys.stdin.readline()
+            if line == "":
+                break
+            cmd = line.strip().lower()
+            if cmd:
+                self._queue.put(cmd)
+
+    def get_nowait(self) -> Optional[str]:
+        """Get one pending command if present."""
+        try:
+            return self._queue.get_nowait()
+        except Empty:
+            return None
+
+    def stop(self) -> None:
+        """Request listener shutdown."""
+        self._stop_event.set()
 
 
 class WorkflowWrapper:
@@ -175,7 +214,273 @@ class LiveMonitor:
             self._displayed_workflow_id = None
         self.data_loader = DataLoader()
 
-    def start_monitoring(self, base_path: str, refresh_interval: int = 5):
+    def _get_file_active_workflows(self, base_path: str) -> List[SessionWorkflow]:
+        """Load active file-based workflows, falling back to most recent."""
+        sessions = FileProcessor.load_all_sessions(base_path, limit=50)
+        if not sessions:
+            return []
+
+        workflows = self.session_grouper.group_sessions(sessions)
+        if not workflows:
+            return []
+
+        active_workflows = [w for w in workflows if w.end_time is None]
+        return active_workflows or workflows[:1]
+
+    def _get_sqlite_active_workflows(self) -> List[Dict[str, Any]]:
+        """Load active SQLite workflows, falling back to most recent."""
+        db_path = SQLiteProcessor.find_database_path()
+        if not db_path:
+            return []
+
+        active_workflows = SQLiteProcessor.get_all_active_workflows(db_path)
+        if active_workflows:
+            return active_workflows
+
+        workflow = SQLiteProcessor.get_most_recent_workflow(db_path)
+        return [workflow] if workflow else []
+
+    def _get_latest_sqlite_activity_ts(self, workflow: Dict[str, Any]) -> float:
+        """Get latest parent-session activity timestamp for SQLite workflow."""
+        latest = 0.0
+        main_session = workflow.get("main_session")
+        if main_session:
+            for f in main_session.files:
+                if f.time_data and f.time_data.created:
+                    latest = max(latest, f.time_data.created / 1000.0)
+        if latest == 0.0 and main_session and isinstance(main_session.start_time, datetime):
+            latest = main_session.start_time.timestamp()
+        return latest
+
+    def _get_latest_file_activity_ts(self, workflow: SessionWorkflow) -> float:
+        """Get latest parent-session activity timestamp for file workflow."""
+        latest = 0.0
+        main = workflow.main_session
+        if main:
+            for f in main.files:
+                if f.modification_time:
+                    latest = max(latest, f.modification_time.timestamp())
+        return latest
+
+    def _workflow_matches_selected_sqlite(
+        self, workflow: Dict[str, Any], selected_session_id: str
+    ) -> bool:
+        """Check whether a SQLite workflow matches selected main/sub-agent ID."""
+        if workflow.get("workflow_id") == selected_session_id:
+            return True
+        main_session = workflow.get("main_session")
+        if main_session and main_session.session_id == selected_session_id:
+            return True
+        return any(
+            session.session_id == selected_session_id
+            for session in workflow.get("all_sessions", [])
+        )
+
+    def _workflow_matches_selected_file(
+        self, workflow: SessionWorkflow, selected_session_id: str
+    ) -> bool:
+        """Check whether a file workflow matches selected main/sub-agent ID."""
+        if workflow.workflow_id == selected_session_id:
+            return True
+        if workflow.main_session.session_id == selected_session_id:
+            return True
+        return any(
+            session.session_id == selected_session_id for session in workflow.all_sessions
+        )
+
+    def _resolve_selected_sqlite_workflow(
+        self, workflows: List[Dict[str, Any]], selected_session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve selected ID to an available SQLite workflow."""
+        for workflow in workflows:
+            if self._workflow_matches_selected_sqlite(workflow, selected_session_id):
+                return workflow
+        return None
+
+    def _resolve_selected_file_workflow(
+        self, workflows: List[SessionWorkflow], selected_session_id: str
+    ) -> Optional[SessionWorkflow]:
+        """Resolve selected ID to an available file workflow."""
+        for workflow in workflows:
+            if self._workflow_matches_selected_file(workflow, selected_session_id):
+                return workflow
+        return None
+
+    def _format_relative_time(self, timestamp: float) -> str:
+        """Format timestamp as compact relative time."""
+        if timestamp <= 0:
+            return "unknown"
+        elapsed = max(0, int(time.time() - timestamp))
+        if elapsed < 60:
+            return f"{elapsed}s ago"
+        if elapsed < 3600:
+            return f"{elapsed // 60}m ago"
+        if elapsed < 86400:
+            return f"{elapsed // 3600}h ago"
+        return f"{elapsed // 86400}d ago"
+
+    def _describe_sqlite_workflows(
+        self, workflows: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Build human-readable descriptors for SQLite workflow selection."""
+        descriptors = []
+        for workflow in workflows:
+            descriptors.append(
+                {
+                    "workflow_id": workflow["workflow_id"],
+                    "display_title": workflow.get("display_title")
+                    or workflow["main_session"].display_title,
+                    "project_name": workflow.get("project_name")
+                    or workflow["main_session"].project_name,
+                    "session_count": workflow.get("session_count", 1),
+                    "sub_agent_count": workflow.get("sub_agent_count", 0),
+                    "last_activity_ts": self._get_latest_sqlite_activity_ts(workflow),
+                }
+            )
+        descriptors.sort(key=lambda d: d["last_activity_ts"], reverse=True)
+        return descriptors
+
+    def _describe_file_workflows(
+        self, workflows: List[SessionWorkflow]
+    ) -> List[Dict[str, Any]]:
+        """Build human-readable descriptors for file workflow selection."""
+        descriptors = []
+        for workflow in workflows:
+            descriptors.append(
+                {
+                    "workflow_id": workflow.workflow_id,
+                    "display_title": workflow.display_title,
+                    "project_name": workflow.project_name,
+                    "session_count": workflow.session_count,
+                    "sub_agent_count": workflow.sub_agent_count,
+                    "last_activity_ts": self._get_latest_file_activity_ts(workflow),
+                }
+            )
+        descriptors.sort(key=lambda d: d["last_activity_ts"], reverse=True)
+        return descriptors
+
+    def _print_workflow_picker_table(
+        self, descriptors: List[Dict[str, Any]], title: str
+    ) -> None:
+        """Render selection table for workflows."""
+        table = Table(title=title, show_header=True)
+        table.add_column("#", justify="right", style="metric.value")
+        table.add_column("Session", style="table.row.main")
+        table.add_column("Project", style="dashboard.project")
+        table.add_column("Workflow", style="dashboard.info")
+        table.add_column("Last Activity", style="table.row.time")
+        table.add_column("ID", style="dim")
+
+        for idx, descriptor in enumerate(descriptors, start=1):
+            workflow_size = (
+                f"{descriptor['session_count']} sessions "
+                f"(1 main + {descriptor['sub_agent_count']} sub)"
+            )
+            table.add_row(
+                str(idx),
+                str(descriptor["display_title"]),
+                str(descriptor["project_name"]),
+                workflow_size,
+                self._format_relative_time(descriptor["last_activity_ts"]),
+                str(descriptor["workflow_id"]),
+            )
+        self.console.print(table)
+
+    def _prompt_for_workflow_selection(
+        self, descriptors: List[Dict[str, Any]], title: str
+    ) -> Optional[str]:
+        """Prompt user to choose workflow number from descriptors."""
+        if not descriptors:
+            self.console.print("[status.error]No workflows available for selection.[/status.error]")
+            return None
+
+        while True:
+            self._print_workflow_picker_table(descriptors, title)
+            choice = self.console.input(
+                "[metric.label]Select workflow number (blank to cancel): [/metric.label]"
+            ).strip()
+
+            if not choice:
+                return None
+            if not choice.isdigit():
+                self.console.print("[status.warning]Please enter a valid number.[/status.warning]")
+                continue
+
+            selected_idx = int(choice)
+            if selected_idx < 1 or selected_idx > len(descriptors):
+                self.console.print("[status.warning]Selection out of range.[/status.warning]")
+                continue
+            return str(descriptors[selected_idx - 1]["workflow_id"])
+
+    def pick_sqlite_workflow(self) -> Optional[str]:
+        """Interactive SQLite workflow picker."""
+        workflows = self._get_sqlite_active_workflows()
+        descriptors = self._describe_sqlite_workflows(workflows)
+        return self._prompt_for_workflow_selection(
+            descriptors, "Select Workflow (SQLite Live Monitor)"
+        )
+
+    def pick_file_workflow(self, base_path: str) -> Optional[str]:
+        """Interactive file workflow picker."""
+        workflows = self._get_file_active_workflows(base_path)
+        descriptors = self._describe_file_workflows(workflows)
+        return self._prompt_for_workflow_selection(
+            descriptors, "Select Workflow (File Live Monitor)"
+        )
+
+    def _controls_hint(self, interactive_switch: bool) -> Optional[str]:
+        """Return optional controls hint shown in dashboard header."""
+        if not interactive_switch:
+            return None
+        return "Controls: type n/p/s/<number>/q then press Enter"
+
+    def _handle_live_switch_command(
+        self,
+        command: str,
+        descriptors: List[Dict[str, Any]],
+        current_workflow_id: str,
+    ) -> tuple[Optional[str], bool]:
+        """Process one interactive switch command.
+
+        Returns:
+            Tuple of (new_workflow_id_or_none, should_quit)
+        """
+        if command == "q":
+            return None, True
+
+        if not descriptors:
+            return current_workflow_id, False
+
+        workflow_ids = [str(d["workflow_id"]) for d in descriptors]
+        if current_workflow_id in workflow_ids:
+            current_idx = workflow_ids.index(current_workflow_id)
+        else:
+            current_idx = 0
+
+        if command == "s":
+            self._print_workflow_picker_table(descriptors, "Live Workflow Switcher")
+            return current_workflow_id, False
+        if command == "n":
+            return workflow_ids[(current_idx + 1) % len(workflow_ids)], False
+        if command == "p":
+            return workflow_ids[(current_idx - 1) % len(workflow_ids)], False
+        if command.isdigit():
+            idx = int(command) - 1
+            if 0 <= idx < len(workflow_ids):
+                return workflow_ids[idx], False
+            self.console.print("[status.warning]Selection out of range.[/status.warning]")
+            return current_workflow_id, False
+
+        self.console.print("[status.warning]Unknown command. Use n/p/s/<number>/q.[/status.warning]")
+        return current_workflow_id, False
+
+    def start_monitoring(
+        self,
+        base_path: str,
+        refresh_interval: int = 5,
+        selected_session_id: Optional[str] = None,
+        interactive_switch: bool = False,
+    ):
         """Start live monitoring of all active workflows (main session + sub-agents).
 
         Tracks all active (ongoing) workflows and displays the one with most recent activity.
@@ -183,99 +488,135 @@ class LiveMonitor:
         Args:
             base_path: Path to directory containing sessions
             refresh_interval: Update interval in seconds
+            selected_session_id: Optional workflow/main/sub-agent ID to pin
+            interactive_switch: Enable command-driven live workflow switching
         """
+        input_listener: Optional[_InputListener] = None
         try:
-            sessions = FileProcessor.load_all_sessions(base_path, limit=50)
-            if not sessions:
+            active_workflows = self._get_file_active_workflows(base_path)
+            if not active_workflows:
                 self.console.print(
                     f"[status.error]No sessions found in {base_path}[/status.error]"
                 )
                 return
 
-            workflows = self.session_grouper.group_sessions(sessions)
-            if not workflows:
-                self.console.print(f"[status.error]No workflows found[/status.error]")
-                return
+            if selected_session_id:
+                current_workflow = self._resolve_selected_file_workflow(
+                    active_workflows, selected_session_id
+                )
+                if not current_workflow:
+                    self.console.print(
+                        f"[status.error]Selected session/workflow '{selected_session_id}' is not available.[/status.error]"
+                    )
+                    return
+            else:
+                current_workflow = self._select_most_recent_file_workflow(active_workflows)
 
-            active_workflows = [w for w in workflows if w.end_time is None]
-            if not active_workflows:
-                active_workflows = workflows[:1]
-
-            active_workflows_dict: Dict[str, SessionWorkflow] = {
-                w.workflow_id: w for w in active_workflows
-            }
-            self.prev_tracked = set()
-            for w in active_workflows:
-                self.prev_tracked.update(s.session_id for s in w.all_sessions)
-            prev_workflow_ids = set(active_workflows_dict.keys())
-
-            current_workflow = self._select_most_recent_file_workflow(active_workflows)
             current_workflow_id = current_workflow.workflow_id
+            self.prev_tracked = set(s.session_id for s in current_workflow.all_sessions)
 
             self.console.print(
                 f"[status.success]Starting live monitoring of workflow: {current_workflow.main_session.session_id}[/status.success]"
             )
+            if selected_session_id:
+                self.console.print(
+                    f"[status.info]Pinned mode: tracking selected ID [metric.value]{selected_session_id}[/metric.value][/status.info]"
+                )
+            else:
+                self.console.print(
+                    "[status.info]Auto mode: showing most recently active workflow[/status.info]"
+                )
             if current_workflow.has_sub_agents:
                 self.console.print(
                     f"[status.info]Tracking {current_workflow.session_count} sessions (1 main + {current_workflow.sub_agent_count} sub-agents)[/status.info]"
                 )
-            if len(active_workflows_dict) > 1:
+            if len(active_workflows) > 1:
                 self.console.print(
-                    f"[status.info]Monitoring {len(active_workflows_dict)} active workflows[/status.info]"
+                    f"[status.info]Monitoring {len(active_workflows)} active workflows[/status.info]"
                 )
             self.console.print(
                 f"[status.info]Update interval: {refresh_interval} seconds[/status.info]"
             )
+            if interactive_switch:
+                input_listener = _InputListener()
+                input_listener.start()
+                self.console.print(
+                    "[status.info]Interactive switching enabled: n/p/s/<number>/q + Enter[/status.info]"
+                )
             self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
 
             with Live(
-                self._generate_workflow_dashboard(current_workflow),
+                self._generate_workflow_dashboard(
+                    current_workflow, self._controls_hint(interactive_switch)
+                ),
                 refresh_per_second=1 / refresh_interval,
                 console=self.console,
             ) as live:
                 while True:
-                    sessions = FileProcessor.load_all_sessions(base_path, limit=50)
-                    workflows = self.session_grouper.group_sessions(sessions)
+                    active_workflows = self._get_file_active_workflows(base_path)
+                    descriptors = self._describe_file_workflows(active_workflows)
 
-                    if workflows:
-                        new_active = [w for w in workflows if w.end_time is None]
-                        if not new_active:
-                            new_active = workflows[:1]
-
-                        new_workflows_dict = {w.workflow_id: w for w in new_active}
-
-                        active_workflows_dict = new_workflows_dict
-
-                    else:
-                        active_workflows_dict = {}
-
-                    if active_workflows_dict:
-                        active_workflows = list(active_workflows_dict.values())
-                        prev_workflow_ids = set(active_workflows_dict.keys())
-
-                        if active_workflows:
-                            new_current = self._select_most_recent_file_workflow(
-                                active_workflows
+                    if interactive_switch and input_listener:
+                        command = input_listener.get_nowait()
+                        if command:
+                            new_id, should_quit = self._handle_live_switch_command(
+                                command, descriptors, current_workflow_id
                             )
-                            if new_current.workflow_id != current_workflow_id:
-                                current_workflow_id = new_current.workflow_id
+                            if should_quit:
+                                self.console.print(
+                                    "\n[status.warning]Live monitoring stopped.[/status.warning]"
+                                )
+                                break
+                            if new_id and new_id != selected_session_id:
+                                selected_session_id = new_id
                                 self.prev_tracked = set()
-                            current_workflow = new_current
+                                self.console.print(
+                                    f"[status.info]Switched to workflow [metric.value]{new_id}[/metric.value][/status.info]"
+                                )
 
-                    if current_workflow:
-                        new_ids_set = set(
-                            s.session_id for s in current_workflow.all_sessions
+                    if not active_workflows:
+                        self.console.print(
+                            "[status.warning]No workflows available to monitor.[/status.warning]"
                         )
-                        self.prev_tracked |= new_ids_set
+                        break
 
-                    if current_workflow:
-                        live.update(self._generate_workflow_dashboard(current_workflow))
+                    if selected_session_id:
+                        new_current = self._resolve_selected_file_workflow(
+                            active_workflows, selected_session_id
+                        )
+                        if not new_current:
+                            self.console.print(
+                                f"[status.warning]Selected session/workflow '{selected_session_id}' is no longer active. Stopping monitor.[/status.warning]"
+                            )
+                            break
+                    else:
+                        new_current = self._select_most_recent_file_workflow(
+                            active_workflows
+                        )
+
+                    if new_current.workflow_id != current_workflow_id:
+                        current_workflow_id = new_current.workflow_id
+                        self.prev_tracked = set()
+                    current_workflow = new_current
+
+                    self.prev_tracked |= set(
+                        s.session_id for s in current_workflow.all_sessions
+                    )
+
+                    live.update(
+                        self._generate_workflow_dashboard(
+                            current_workflow, self._controls_hint(interactive_switch)
+                        )
+                    )
                     time.sleep(refresh_interval)
 
         except KeyboardInterrupt:
             self.console.print(
                 "\n[status.warning]Live monitoring stopped.[/status.warning]"
             )
+        finally:
+            if input_listener:
+                input_listener.stop()
 
     def _generate_dashboard(self, session: SessionData):
         """Generate dashboard layout for the session.
@@ -387,7 +728,9 @@ class LiveMonitor:
 
         return result
 
-    def _generate_workflow_dashboard(self, workflow: SessionWorkflow):
+    def _generate_workflow_dashboard(
+        self, workflow: SessionWorkflow, controls_hint: Optional[str] = None
+    ):
         """Generate dashboard layout for a workflow (main + sub-agents).
 
         Args:
@@ -433,6 +776,7 @@ class LiveMonitor:
             workflow=workflow,  # Pass workflow for additional display
             tool_stats=tool_stats,
             tool_stats_by_model=tool_stats_by_model,
+            controls_hint=controls_hint,
         )
 
     def _calculate_per_model_output_rates(
@@ -729,7 +1073,12 @@ class LiveMonitor:
             "usage_percentage": min(100.0, usage_percentage),
         }
 
-    def start_sqlite_workflow_monitoring(self, refresh_interval: int = 5):
+    def start_sqlite_workflow_monitoring(
+        self,
+        refresh_interval: int = 5,
+        selected_session_id: Optional[str] = None,
+        interactive_switch: bool = False,
+    ):
         """Start live monitoring of all active workflows from SQLite (v1.2.0+).
 
         Tracks all active (ongoing) workflows and displays the one with most recent activity.
@@ -737,7 +1086,10 @@ class LiveMonitor:
 
         Args:
             refresh_interval: Update interval in seconds
+            selected_session_id: Optional workflow/main/sub-agent ID to pin
+            interactive_switch: Enable command-driven live workflow switching
         """
+        input_listener: Optional[_InputListener] = None
         try:
             # Check if SQLite is available
             db_path = SQLiteProcessor.find_database_path()
@@ -747,108 +1099,132 @@ class LiveMonitor:
                 )
                 return
 
-            # Load all active workflows
-            active_workflows = SQLiteProcessor.get_all_active_workflows(db_path)
+            active_workflows = self._get_sqlite_active_workflows()
             if not active_workflows:
-                # Fall back to most recent if no active workflows
-                workflow = SQLiteProcessor.get_most_recent_workflow(db_path)
-                if not workflow:
+                self.console.print(
+                    "[status.error]No sessions found in database.[/status.error]"
+                )
+                return
+
+            if selected_session_id:
+                current_workflow = self._resolve_selected_sqlite_workflow(
+                    active_workflows, selected_session_id
+                )
+                if not current_workflow:
                     self.console.print(
-                        "[status.error]No sessions found in database.[/status.error]"
+                        f"[status.error]Selected session/workflow '{selected_session_id}' is not available.[/status.error]"
                     )
                     return
-                active_workflows = [workflow]
+            else:
+                current_workflow = self._select_most_recent_workflow(active_workflows)
 
-            # Track active workflows by workflow_id
-            active_workflows_dict: Dict[str, Dict[str, Any]] = {
-                w["workflow_id"]: w for w in active_workflows
-            }
-            tracked_session_ids = set()
-            for w in active_workflows:
-                tracked_session_ids.update(s.session_id for s in w["all_sessions"])
-            self.prev_tracked = tracked_session_ids.copy()
-            prev_workflow_ids = set(active_workflows_dict.keys())
-
-            # Get the workflow to display (most recently active)
-            current_workflow = self._select_most_recent_workflow(active_workflows)
             current_workflow_id = current_workflow["workflow_id"]
+            self.prev_tracked = set(
+                s.session_id for s in current_workflow["all_sessions"]
+            )
 
             self.console.print(
                 f"[status.success]Starting live monitoring of workflow: {current_workflow_id}[/status.success]"
             )
+            if selected_session_id:
+                self.console.print(
+                    f"[status.info]Pinned mode: tracking selected ID [metric.value]{selected_session_id}[/metric.value][/status.info]"
+                )
+            else:
+                self.console.print(
+                    "[status.info]Auto mode: showing most recently active workflow[/status.info]"
+                )
             if current_workflow["has_sub_agents"]:
                 self.console.print(
                     f"[status.info]Tracking {current_workflow['session_count']} sessions (1 main + {current_workflow['sub_agent_count']} sub-agents)[/status.info]"
                 )
-            if len(active_workflows_dict) > 1:
+            if len(active_workflows) > 1:
                 self.console.print(
-                    f"[status.info]Monitoring {len(active_workflows_dict)} active workflows[/status.info]"
+                    f"[status.info]Monitoring {len(active_workflows)} active workflows[/status.info]"
                 )
             self.console.print(
                 f"[status.info]Update interval: {refresh_interval} seconds[/status.info]"
             )
+            if interactive_switch:
+                input_listener = _InputListener()
+                input_listener.start()
+                self.console.print(
+                    "[status.info]Interactive switching enabled: n/p/s/<number>/q + Enter[/status.info]"
+                )
             self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
 
             # Start live monitoring
             with Live(
-                self._generate_sqlite_workflow_dashboard(current_workflow),
+                self._generate_sqlite_workflow_dashboard(
+                    current_workflow, self._controls_hint(interactive_switch)
+                ),
                 refresh_per_second=1 / refresh_interval,
                 console=self.console,
             ) as live:
                 while True:
-                    # Reload all active workflows from SQLite
-                    new_active_workflows = SQLiteProcessor.get_all_active_workflows(
-                        db_path
+                    active_workflows = self._get_sqlite_active_workflows()
+                    descriptors = self._describe_sqlite_workflows(active_workflows)
+
+                    if interactive_switch and input_listener:
+                        command = input_listener.get_nowait()
+                        if command:
+                            new_id, should_quit = self._handle_live_switch_command(
+                                command, descriptors, current_workflow_id
+                            )
+                            if should_quit:
+                                self.console.print(
+                                    "\n[status.warning]Live monitoring stopped.[/status.warning]"
+                                )
+                                break
+                            if new_id and new_id != selected_session_id:
+                                selected_session_id = new_id
+                                self.prev_tracked = set()
+                                self.console.print(
+                                    f"[status.info]Switched to workflow [metric.value]{new_id}[/metric.value][/status.info]"
+                                )
+
+                    if not active_workflows:
+                        self.console.print(
+                            "[status.warning]No workflows available to monitor.[/status.warning]"
+                        )
+                        break
+
+                    if selected_session_id:
+                        new_current = self._resolve_selected_sqlite_workflow(
+                            active_workflows, selected_session_id
+                        )
+                        if not new_current:
+                            self.console.print(
+                                f"[status.warning]Selected session/workflow '{selected_session_id}' is no longer active. Stopping monitor.[/status.warning]"
+                            )
+                            break
+                    else:
+                        new_current = self._select_most_recent_workflow(
+                            active_workflows
+                        )
+
+                    if new_current["workflow_id"] != current_workflow_id:
+                        current_workflow_id = new_current["workflow_id"]
+                        self.prev_tracked = set()
+                    current_workflow = new_current
+                    self.prev_tracked |= set(
+                        s.session_id for s in current_workflow["all_sessions"]
                     )
 
-                    if new_active_workflows:
-                        new_workflows_dict = {
-                            w["workflow_id"]: w for w in new_active_workflows
-                        }
-
-                        # Update active workflows
-                        active_workflows_dict = new_workflows_dict
-                        active_workflows = list(new_workflows_dict.values())
-
-                        self.prev_tracked = tracked_session_ids.copy()
-                        tracked_session_ids = set()
-                        for w in active_workflows:
-                            tracked_session_ids.update(
-                                s.session_id for s in w["all_sessions"]
-                            )
-
-                        if active_workflows:
-                            new_current = self._select_most_recent_workflow(
-                                active_workflows
-                            )
-                            if new_current["workflow_id"] != current_workflow_id:
-                                current_workflow_id = new_current["workflow_id"]
-                                self.prev_tracked = set()
-                            current_workflow = new_current
-
-                    else:
-                        active_workflows_dict = {}
-
-                    if active_workflows_dict:
-                        prev_workflow_ids = set(active_workflows_dict.keys())
-
-                    if current_workflow:
-                        new_ids_set = set(
-                            s.session_id for s in current_workflow["all_sessions"]
+                    live.update(
+                        self._generate_sqlite_workflow_dashboard(
+                            current_workflow, self._controls_hint(interactive_switch)
                         )
-                        self.prev_tracked |= new_ids_set
-
-                    # Update dashboard
-                    if current_workflow:
-                        live.update(
-                            self._generate_sqlite_workflow_dashboard(current_workflow)
-                        )
+                    )
                     time.sleep(refresh_interval)
 
         except KeyboardInterrupt:
             self.console.print(
                 "\n[status.warning]Live monitoring stopped.[/status.warning]"
             )
+        finally:
+            if input_listener:
+                input_listener.stop()
 
     def _select_most_recent_workflow(
         self, workflows: List[Dict[str, Any]]
@@ -914,7 +1290,9 @@ class LiveMonitor:
 
         return max(workflows, key=get_latest_parent_activity)
 
-    def _generate_sqlite_workflow_dashboard(self, workflow: Dict[str, Any]):
+    def _generate_sqlite_workflow_dashboard(
+        self, workflow: Dict[str, Any], controls_hint: Optional[str] = None
+    ):
         """Generate dashboard layout for a SQLite workflow (main + sub-agents).
 
         Args:
@@ -969,6 +1347,7 @@ class LiveMonitor:
             workflow=cast(Any, workflow_wrapper),
             tool_stats=tool_stats,
             tool_stats_by_model=tool_stats_by_model,
+            controls_hint=controls_hint,
         )
 
     def _calculate_sqlite_per_model_output_rates(

@@ -1,4 +1,5 @@
 import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from ocmonitor.config import PathsConfig
 from ocmonitor.services.live_monitor import LiveMonitor
@@ -787,6 +788,105 @@ class TestLiveMonitorToolStatsSourceSelection:
             mock_load.assert_called_once()
             assert tool_stats == mock_stats
 
+
+class TestLiveMonitorSelection:
+    def test_resolve_selected_sqlite_workflow_by_sub_agent_id(self):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+
+        workflow_a = {
+            "workflow_id": "workflow-a",
+            "main_session": MagicMock(session_id="main-a"),
+            "all_sessions": [MagicMock(session_id="main-a"), MagicMock(session_id="sub-a1")],
+            "display_title": "Workflow A",
+            "project_name": "proj-a",
+            "session_count": 2,
+            "sub_agent_count": 1,
+        }
+        workflow_b = {
+            "workflow_id": "workflow-b",
+            "main_session": MagicMock(session_id="main-b"),
+            "all_sessions": [MagicMock(session_id="main-b")],
+            "display_title": "Workflow B",
+            "project_name": "proj-b",
+            "session_count": 1,
+            "sub_agent_count": 0,
+        }
+
+        resolved = monitor._resolve_selected_sqlite_workflow(
+            [workflow_a, workflow_b], "sub-a1"
+        )
+
+        assert resolved is workflow_a
+
+    def test_resolve_selected_file_workflow_by_sub_agent_id(self):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+
+        workflow_a = SimpleNamespace(
+            workflow_id="workflow-a",
+            main_session=SimpleNamespace(session_id="main-a"),
+            all_sessions=[
+                SimpleNamespace(session_id="main-a"),
+                SimpleNamespace(session_id="sub-a1"),
+            ],
+        )
+        workflow_b = SimpleNamespace(
+            workflow_id="workflow-b",
+            main_session=SimpleNamespace(session_id="main-b"),
+            all_sessions=[SimpleNamespace(session_id="main-b")],
+        )
+
+        resolved = monitor._resolve_selected_file_workflow(
+            [workflow_a, workflow_b], "sub-a1"
+        )
+
+        assert resolved is workflow_a
+
+    def test_handle_live_switch_command_next_previous_and_number(self):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+
+        descriptors = [
+            {"workflow_id": "wf-1"},
+            {"workflow_id": "wf-2"},
+            {"workflow_id": "wf-3"},
+        ]
+
+        new_id, should_quit = monitor._handle_live_switch_command(
+            "n", descriptors, "wf-1"
+        )
+        assert should_quit is False
+        assert new_id == "wf-2"
+
+        new_id, should_quit = monitor._handle_live_switch_command(
+            "p", descriptors, "wf-1"
+        )
+        assert should_quit is False
+        assert new_id == "wf-3"
+
+        new_id, should_quit = monitor._handle_live_switch_command(
+            "2", descriptors, "wf-1"
+        )
+        assert should_quit is False
+        assert new_id == "wf-2"
+
+    def test_prompt_for_workflow_selection_accepts_number(self, monkeypatch):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        monkeypatch.setattr(
+            monitor, "_print_workflow_picker_table", lambda descriptors, title: None
+        )
+        monkeypatch.setattr(monitor.console, "input", lambda _: "2")
+
+        selected = monitor._prompt_for_workflow_selection(
+            [
+                {"workflow_id": "wf-1"},
+                {"workflow_id": "wf-2"},
+            ],
+            "Select Workflow",
+        )
+
+        assert selected == "wf-2"
+
+
+class TestLiveMonitorToolStatsByModelSourceSelection:
     def test_file_mode_tool_by_model_returns_empty(self, monkeypatch, tmp_path):
         """Verify file-mode workflow returns empty for tool by model loading."""
         sessions_dir = tmp_path / "message"

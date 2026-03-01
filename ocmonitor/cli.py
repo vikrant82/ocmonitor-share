@@ -231,6 +231,21 @@ def sessions(
 )
 @click.option("--no-color", is_flag=True, help="Disable colored output")
 @click.option(
+    "--pick",
+    is_flag=True,
+    help="Interactively choose a session/workflow before starting",
+)
+@click.option(
+    "--session-id",
+    type=str,
+    help="Track a specific session/workflow ID (main or sub-agent)",
+)
+@click.option(
+    "--interactive-switch",
+    is_flag=True,
+    help="Enable in-dashboard workflow switching controls (experimental)",
+)
+@click.option(
     "--source", "-s",
     type=click.Choice(["auto", "sqlite", "files"]),
     default="auto",
@@ -242,7 +257,10 @@ def live(
     path: Optional[str],
     interval: Optional[int],
     no_color: bool,
-    source: str
+    pick: bool,
+    session_id: Optional[str],
+    interactive_switch: bool,
+    source: str,
 ):
     """Start live dashboard for monitoring the current workflow.
 
@@ -285,16 +303,37 @@ def live(
         use_files = (source == "files") or (source == "auto" and not sqlite_available and files_available)
 
         if use_sqlite and sqlite_available:
+            selected_session_id = session_id
+            if pick and not selected_session_id:
+                selected_session_id = live_monitor.pick_sqlite_workflow()
+                if not selected_session_id:
+                    console.print("[status.warning]No workflow selected. Exiting.[/status.warning]")
+                    return
             # Use SQLite workflow monitoring (v1.2.0+)
-            live_monitor.start_sqlite_workflow_monitoring(interval)
+            live_monitor.start_sqlite_workflow_monitoring(
+                interval,
+                selected_session_id=selected_session_id,
+                interactive_switch=interactive_switch,
+            )
         elif use_files and files_available:
             # Use file-based workflow monitoring (legacy)
             if not path:
                 path = config.paths.messages_dir
+            selected_session_id = session_id
+            if pick and not selected_session_id:
+                selected_session_id = live_monitor.pick_file_workflow(path)
+                if not selected_session_id:
+                    console.print("[status.warning]No workflow selected. Exiting.[/status.warning]")
+                    return
             console.print("[status.success]Starting workflow live dashboard (legacy file mode)[/status.success]")
             console.print(f"[status.info]Monitoring: {path}[/status.info]")
             console.print(f"[status.info]Update interval: {interval}s[/status.info]")
-            live_monitor.start_monitoring(path, interval)
+            live_monitor.start_monitoring(
+                path,
+                interval,
+                selected_session_id=selected_session_id,
+                interactive_switch=interactive_switch,
+            )
         else:
             console.print("[status.error]No data source available. Please check OpenCode installation.[/status.error]")
             ctx.exit(1)

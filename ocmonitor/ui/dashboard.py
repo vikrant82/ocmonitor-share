@@ -30,7 +30,10 @@ class DashboardUI:
         self.console = console or Console()
 
     def create_header(
-        self, session: SessionData, workflow: Optional[SessionWorkflow] = None
+        self,
+        session: SessionData,
+        workflow: Optional[SessionWorkflow] = None,
+        controls_hint: Optional[str] = None,
     ) -> Panel:
         """Create header panel with session info."""
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -53,6 +56,9 @@ class DashboardUI:
                 f"[metric.label]Updated:[/metric.label] [metric.value]{current_time}[/metric.value]  "
                 f"[metric.label]Interactions:[/metric.label] [metric.value]{session.interaction_count}[/metric.value]"
             )
+
+        if controls_hint:
+            header_text = f"{header_text}\n[dim]{controls_hint}[/dim]"
 
         return Panel(
             header_text,
@@ -686,6 +692,7 @@ class DashboardUI:
         workflow: Optional[SessionWorkflow] = None,
         tool_stats: Optional[List[ToolUsageStats]] = None,
         tool_stats_by_model: Optional[List[ModelToolUsage]] = None,
+        controls_hint: Optional[str] = None,
     ) -> Layout:
         """Create the complete dashboard layout."""
         layout = Layout()
@@ -697,7 +704,7 @@ class DashboardUI:
         # Use workflow data if available, otherwise use session data
         if workflow and workflow.has_sub_agents:
             # Create panels using workflow totals
-            header = self.create_header(session, workflow)
+            header = self.create_header(session, workflow, controls_hint)
             token_panel = self.create_workflow_token_panel(workflow, recent_file)
             status_panel = self.create_workflow_status_panel(workflow, pricing_data, quota)
             model_panel = self.create_workflow_model_panel(
@@ -705,7 +712,7 @@ class DashboardUI:
             )
         else:
             # Create panels using single session data
-            header = self.create_header(session)
+            header = self.create_header(session, controls_hint=controls_hint)
             token_panel = self.create_token_panel(session, recent_file)
             status_panel = self.create_status_panel(session, pricing_data, quota)
             model_panel = self.create_model_panel(
