@@ -449,7 +449,7 @@ class LiveMonitor:
             return None, True
 
         if not descriptors:
-            return current_workflow_id, False
+            return None, False
 
         workflow_ids = [str(d["workflow_id"]) for d in descriptors]
         if current_workflow_id in workflow_ids:
@@ -459,7 +459,7 @@ class LiveMonitor:
 
         if command == "s":
             self._print_workflow_picker_table(descriptors, "Live Workflow Switcher")
-            return current_workflow_id, False
+            return None, False
         if command == "n":
             return workflow_ids[(current_idx + 1) % len(workflow_ids)], False
         if command == "p":
@@ -469,10 +469,25 @@ class LiveMonitor:
             if 0 <= idx < len(workflow_ids):
                 return workflow_ids[idx], False
             self.console.print("[status.warning]Selection out of range.[/status.warning]")
-            return current_workflow_id, False
+            return None, False
 
         self.console.print("[status.warning]Unknown command. Use n/p/s/<number>/q.[/status.warning]")
-        return current_workflow_id, False
+        return None, False
+
+    def _apply_switch_command_selection(
+        self,
+        selected_session_id: Optional[str],
+        current_workflow_id: str,
+        new_id: Optional[str],
+    ) -> tuple[Optional[str], bool]:
+        """Apply switch command result to selected target.
+
+        Returns:
+            Tuple of (updated_selected_session_id, switched)
+        """
+        if not new_id or new_id == current_workflow_id:
+            return selected_session_id, False
+        return new_id, True
 
     def start_monitoring(
         self,
@@ -567,11 +582,15 @@ class LiveMonitor:
                                     "\n[status.warning]Live monitoring stopped.[/status.warning]"
                                 )
                                 break
-                            if new_id and new_id != selected_session_id:
-                                selected_session_id = new_id
+                            selected_session_id, switched = self._apply_switch_command_selection(
+                                selected_session_id,
+                                current_workflow_id,
+                                new_id,
+                            )
+                            if switched and selected_session_id:
                                 self.prev_tracked = set()
                                 self.console.print(
-                                    f"[status.info]Switched to workflow [metric.value]{new_id}[/metric.value][/status.info]"
+                                    f"[status.info]Switched to workflow [metric.value]{selected_session_id}[/metric.value][/status.info]"
                                 )
 
                     if not active_workflows:
@@ -1176,11 +1195,15 @@ class LiveMonitor:
                                     "\n[status.warning]Live monitoring stopped.[/status.warning]"
                                 )
                                 break
-                            if new_id and new_id != selected_session_id:
-                                selected_session_id = new_id
+                            selected_session_id, switched = self._apply_switch_command_selection(
+                                selected_session_id,
+                                current_workflow_id,
+                                new_id,
+                            )
+                            if switched and selected_session_id:
                                 self.prev_tracked = set()
                                 self.console.print(
-                                    f"[status.info]Switched to workflow [metric.value]{new_id}[/metric.value][/status.info]"
+                                    f"[status.info]Switched to workflow [metric.value]{selected_session_id}[/metric.value][/status.info]"
                                 )
 
                     if not active_workflows:

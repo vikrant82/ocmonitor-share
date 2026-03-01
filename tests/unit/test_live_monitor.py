@@ -856,17 +856,62 @@ class TestLiveMonitorSelection:
         assert should_quit is False
         assert new_id == "wf-2"
 
-        new_id, should_quit = monitor._handle_live_switch_command(
-            "p", descriptors, "wf-1"
-        )
-        assert should_quit is False
-        assert new_id == "wf-3"
+    def test_handle_live_switch_command_show_does_not_switch(self):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        monitor._print_workflow_picker_table = MagicMock()
 
         new_id, should_quit = monitor._handle_live_switch_command(
-            "2", descriptors, "wf-1"
+            "s", [{"workflow_id": "wf-1"}], "wf-1"
         )
+
         assert should_quit is False
-        assert new_id == "wf-2"
+        assert new_id is None
+        monitor._print_workflow_picker_table.assert_called_once()
+
+    def test_handle_live_switch_command_invalid_number_does_not_switch(self):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        monitor.console.print = MagicMock()
+
+        new_id, should_quit = monitor._handle_live_switch_command(
+            "9", [{"workflow_id": "wf-1"}], "wf-1"
+        )
+
+        assert should_quit is False
+        assert new_id is None
+        monitor.console.print.assert_called()
+
+    def test_handle_live_switch_command_unknown_does_not_switch(self):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        monitor.console.print = MagicMock()
+
+        new_id, should_quit = monitor._handle_live_switch_command(
+            "x", [{"workflow_id": "wf-1"}], "wf-1"
+        )
+
+        assert should_quit is False
+        assert new_id is None
+        monitor.console.print.assert_called()
+
+    def test_apply_switch_command_selection_only_switches_on_new_id(self):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+
+        selected, switched = monitor._apply_switch_command_selection(
+            None, "wf-1", None
+        )
+        assert switched is False
+        assert selected is None
+
+        selected, switched = monitor._apply_switch_command_selection(
+            None, "wf-1", "wf-1"
+        )
+        assert switched is False
+        assert selected is None
+
+        selected, switched = monitor._apply_switch_command_selection(
+            None, "wf-1", "wf-2"
+        )
+        assert switched is True
+        assert selected == "wf-2"
 
     def test_prompt_for_workflow_selection_accepts_number(self, monkeypatch):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
