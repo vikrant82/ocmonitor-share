@@ -125,6 +125,7 @@ class LiveMonitor:
         self._stdin_fd: Optional[int] = None
         self._stdin_termios_state: Optional[Any] = None
         self._input_buffer: str = ""
+        self._live_status_line: Optional[str] = None
         if init_from_db:
             self._initialize_active_workflows()
 
@@ -408,9 +409,12 @@ class LiveMonitor:
         """Return optional controls hint shown in dashboard header."""
         if not interactive_switch:
             return None
-        return (
+        base_hint = (
             "Workflow switching keys: n=next, p=prev, l=list, 1..9=jump, q=quit."
         )
+        if self._live_status_line:
+            return f"{base_hint}  Status: {self._live_status_line}"
+        return base_hint
 
     def _handle_live_switch_command(
         self,
@@ -424,6 +428,7 @@ class LiveMonitor:
             Tuple of (new_workflow_id_or_none, should_quit)
         """
         if command in {"q", "quit", "exit"}:
+            self._live_status_line = "Quitting live monitor."
             return None, True
 
         if not descriptors:
@@ -441,23 +446,30 @@ class LiveMonitor:
         if command in {"n", "next"}:
             if len(workflow_ids) == 1:
                 self.console.print("[status.info]Only one active workflow available.[/status.info]")
+                self._live_status_line = "Only one active workflow available."
                 return None, False
+            self._live_status_line = "Switching to next workflow."
             return workflow_ids[(current_idx + 1) % len(workflow_ids)], False
         if command in {"p", "prev", "previous"}:
             if len(workflow_ids) == 1:
                 self.console.print("[status.info]Only one active workflow available.[/status.info]")
+                self._live_status_line = "Only one active workflow available."
                 return None, False
+            self._live_status_line = "Switching to previous workflow."
             return workflow_ids[(current_idx - 1) % len(workflow_ids)], False
         if command.isdigit():
             idx = int(command) - 1
             if 0 <= idx < len(workflow_ids):
+                self._live_status_line = f"Jumping to workflow #{idx + 1}."
                 return workflow_ids[idx], False
             self.console.print("[status.warning]Selection out of range.[/status.warning]")
+            self._live_status_line = "Selection out of range."
             return None, False
 
         self.console.print(
             "[status.warning]Unknown command. Use next/prev/list/<number>/quit (or n/p/l/q).[/status.warning]"
         )
+        self._live_status_line = "Unknown command."
         return None, False
 
     def _apply_switch_command_selection(
@@ -583,6 +595,32 @@ class LiveMonitor:
             self._stdin_termios_state = None
             self._input_buffer = ""
 
+    def _pick_workflow_during_live(
+        self,
+        live: Live,
+        descriptors: List[Dict[str, Any]],
+        title: str,
+        interactive_switch: bool,
+    ) -> Optional[str]:
+        """Pause live view, run picker prompt, then resume live view."""
+        if not descriptors:
+            self.console.print("[status.warning]No workflows available to pick.[/status.warning]")
+            return None
+
+        raw_mode_was_enabled = self._stdin_fd is not None
+        if raw_mode_was_enabled:
+            self._disable_raw_input_mode()
+
+        selected_id: Optional[str] = None
+        try:
+            live.stop()
+            selected_id = self._prompt_for_workflow_selection(descriptors, title)
+        finally:
+            live.start(refresh=True)
+            if interactive_switch and raw_mode_was_enabled:
+                self._enable_raw_input_mode()
+        return selected_id
+
     def start_monitoring(
         self,
         base_path: str,
@@ -649,6 +687,7 @@ class LiveMonitor:
             )
             if interactive_switch:
                 raw_mode_enabled = self._enable_raw_input_mode()
+                self._live_status_line = "Ready."
                 self.console.print(
                     "[status.info]Interactive switching enabled: press n/p/l/1..9/q[/status.info]"
                 )
@@ -656,6 +695,7 @@ class LiveMonitor:
                     self.console.print(
                         "[status.warning]Raw key mode unavailable; fallback requires Enter.[/status.warning]"
                     )
+                    self._live_status_line = "Raw-key mode unavailable; commands require Enter."
             self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
 
             with Live(
@@ -671,6 +711,55 @@ class LiveMonitor:
                     if interactive_switch:
                         command = self._poll_live_switch_command()
                         if command:
+                            if command in {"l", "list", "s", "show"}:
+                                selected_from_picker = self._pick_workflow_during_live(
+                                    live,
+                                    descriptors,
+                                    "Live Workflow Switcher",
+                                    interactive_switch,
+                                )
+                                if selected_from_picker:
+                                    selected_session_id, switched = self._apply_switch_command_selection(
+                                        selected_session_id,
+                                        current_workflow_id,
+                                        selected_from_picker,
+                                    )
+                                    if switched and selected_session_id:
+                                        self.prev_tracked = set()
+                                        self._live_status_line = (
+                                            f"Switched to workflow {selected_session_id}."
+                                        )
+                                        self.console.print(
+                                            f"[status.info]Switched to workflow [metric.value]{selected_session_id}[/metric.value][/status.info]"
+                                        )
+                                        immediate_current = self._resolve_selected_file_workflow(
+                                            active_workflows, selected_session_id
+                                        )
+                                        if immediate_current:
+                                            if (
+                                                immediate_current.workflow_id
+                                                != current_workflow_id
+                                            ):
+                                                current_workflow_id = (
+                                                    immediate_current.workflow_id
+                                                )
+                                                self.prev_tracked = set()
+                                            current_workflow = immediate_current
+                                            self.prev_tracked |= set(
+                                                s.session_id
+                                                for s in current_workflow.all_sessions
+                                            )
+                                            live.update(
+                                                self._generate_workflow_dashboard(
+                                                    current_workflow,
+                                                    self._controls_hint(interactive_switch),
+                                                )
+                                            )
+                                            next_refresh_at = (
+                                                time.time() + refresh_interval
+                                            )
+                                continue
+
                             new_id, should_quit = self._handle_live_switch_command(
                                 command, descriptors, current_workflow_id
                             )
@@ -686,6 +775,9 @@ class LiveMonitor:
                             )
                             if switched and selected_session_id:
                                 self.prev_tracked = set()
+                                self._live_status_line = (
+                                    f"Switched to workflow {selected_session_id}."
+                                )
                                 self.console.print(
                                     f"[status.info]Switched to workflow [metric.value]{selected_session_id}[/metric.value][/status.info]"
                                 )
@@ -1298,6 +1390,7 @@ class LiveMonitor:
             )
             if interactive_switch:
                 raw_mode_enabled = self._enable_raw_input_mode()
+                self._live_status_line = "Ready."
                 self.console.print(
                     "[status.info]Interactive switching enabled: press n/p/l/1..9/q[/status.info]"
                 )
@@ -1305,6 +1398,7 @@ class LiveMonitor:
                     self.console.print(
                         "[status.warning]Raw key mode unavailable; fallback requires Enter.[/status.warning]"
                     )
+                    self._live_status_line = "Raw-key mode unavailable; commands require Enter."
             self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
 
             # Start live monitoring
@@ -1321,6 +1415,57 @@ class LiveMonitor:
                     if interactive_switch:
                         command = self._poll_live_switch_command()
                         if command:
+                            if command in {"l", "list", "s", "show"}:
+                                selected_from_picker = self._pick_workflow_during_live(
+                                    live,
+                                    descriptors,
+                                    "Live Workflow Switcher",
+                                    interactive_switch,
+                                )
+                                if selected_from_picker:
+                                    selected_session_id, switched = self._apply_switch_command_selection(
+                                        selected_session_id,
+                                        current_workflow_id,
+                                        selected_from_picker,
+                                    )
+                                    if switched and selected_session_id:
+                                        self.prev_tracked = set()
+                                        self._live_status_line = (
+                                            f"Switched to workflow {selected_session_id}."
+                                        )
+                                        self.console.print(
+                                            f"[status.info]Switched to workflow [metric.value]{selected_session_id}[/metric.value][/status.info]"
+                                        )
+                                        immediate_current = (
+                                            self._resolve_selected_sqlite_workflow(
+                                                active_workflows, selected_session_id
+                                            )
+                                        )
+                                        if immediate_current:
+                                            if (
+                                                immediate_current["workflow_id"]
+                                                != current_workflow_id
+                                            ):
+                                                current_workflow_id = (
+                                                    immediate_current["workflow_id"]
+                                                )
+                                                self.prev_tracked = set()
+                                            current_workflow = immediate_current
+                                            self.prev_tracked |= set(
+                                                s.session_id
+                                                for s in current_workflow["all_sessions"]
+                                            )
+                                            live.update(
+                                                self._generate_sqlite_workflow_dashboard(
+                                                    current_workflow,
+                                                    self._controls_hint(interactive_switch),
+                                                )
+                                            )
+                                            next_refresh_at = (
+                                                time.time() + refresh_interval
+                                            )
+                                continue
+
                             new_id, should_quit = self._handle_live_switch_command(
                                 command, descriptors, current_workflow_id
                             )
@@ -1336,6 +1481,9 @@ class LiveMonitor:
                             )
                             if switched and selected_session_id:
                                 self.prev_tracked = set()
+                                self._live_status_line = (
+                                    f"Switched to workflow {selected_session_id}."
+                                )
                                 self.console.print(
                                     f"[status.info]Switched to workflow [metric.value]{selected_session_id}[/metric.value][/status.info]"
                                 )
