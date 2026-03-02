@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, cast
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple, cast
 
 from rich.console import Console
 from rich.layout import Layout
@@ -421,7 +421,7 @@ class LiveMonitor:
         command: str,
         descriptors: List[Dict[str, Any]],
         current_workflow_id: str,
-    ) -> tuple[Optional[str], bool]:
+    ) -> Tuple[Optional[str], bool]:
         """Process one interactive switch command.
 
         Returns:
@@ -477,7 +477,7 @@ class LiveMonitor:
         selected_session_id: Optional[str],
         current_workflow_id: str,
         new_id: Optional[str],
-    ) -> tuple[Optional[str], bool]:
+    ) -> Tuple[Optional[str], bool]:
         """Apply switch command result to selected target.
 
         Returns:
@@ -572,7 +572,11 @@ class LiveMonitor:
             self._stdin_termios_state = state
             self._input_buffer = ""
             return True
-        except Exception:
+        except (OSError, termios.error, ValueError) as exc:
+            print(
+                f"Warning: failed to enable raw input mode in _enable_raw_input_mode: {exc}",
+                file=sys.stderr,
+            )
             self._stdin_fd = None
             self._stdin_termios_state = None
             self._input_buffer = ""
@@ -588,8 +592,11 @@ class LiveMonitor:
             termios.tcsetattr(
                 self._stdin_fd, termios.TCSANOW, self._stdin_termios_state
             )
-        except Exception:
-            pass
+        except (OSError, termios.error, ValueError) as exc:
+            print(
+                f"Warning: failed to restore terminal mode in _disable_raw_input_mode: {exc}",
+                file=sys.stderr,
+            )
         finally:
             self._stdin_fd = None
             self._stdin_termios_state = None
