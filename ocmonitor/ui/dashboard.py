@@ -57,12 +57,19 @@ class DashboardUI:
                 f"[metric.label]Interactions:[/metric.label] [metric.value]{session.interaction_count}[/metric.value]"
             )
 
-        if controls_hint:
-            header_text = f"{header_text}\n[dim]{controls_hint}[/dim]"
-
         return Panel(
             header_text,
             title=Text("Dashboard", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
+        )
+
+    def create_controls_panel(self, controls_hint: str) -> Panel:
+        """Create dedicated controls panel for live keybind hints."""
+        controls_text = f"[dim]{controls_hint}[/dim]"
+        return Panel(
+            controls_text,
+            title=Text("Controls", style="dashboard.title"),
             title_align="left",
             border_style="dashboard.border",
         )
@@ -704,7 +711,7 @@ class DashboardUI:
         # Use workflow data if available, otherwise use session data
         if workflow and workflow.has_sub_agents:
             # Create panels using workflow totals
-            header = self.create_header(session, workflow, controls_hint)
+            header = self.create_header(session, workflow)
             token_panel = self.create_workflow_token_panel(workflow, recent_file)
             status_panel = self.create_workflow_status_panel(workflow, pricing_data, quota)
             model_panel = self.create_workflow_model_panel(
@@ -712,7 +719,7 @@ class DashboardUI:
             )
         else:
             # Create panels using single session data
-            header = self.create_header(session, controls_hint=controls_hint)
+            header = self.create_header(session)
             token_panel = self.create_token_panel(session, recent_file)
             status_panel = self.create_status_panel(session, pricing_data, quota)
             model_panel = self.create_model_panel(
@@ -761,13 +768,21 @@ class DashboardUI:
                 flat_tool_stats = by_model[0].tool_stats
             tool_panel = self.create_tool_panel(flat_tool_stats)
 
-        # 3-section layout: Header, Metrics (3-column), Models+Tools
-        header_size = 4 if controls_hint else 3
-        layout.split_column(
-            Layout(header, size=header_size),  # Compact header
-            Layout(name="metrics", size=12),  # Tokens + Status + Recent (single row)
-            Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
-        )
+        # 3-4 section layout: Header, Metrics, Models+Tools, optional Controls (bottom)
+        if controls_hint:
+            controls_panel = self.create_controls_panel(controls_hint)
+            layout.split_column(
+                Layout(header, size=3),  # Compact header
+                Layout(name="metrics", size=12),  # Tokens + Status + Recent (single row)
+                Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
+                Layout(controls_panel, size=3),  # Persistent keybind visibility
+            )
+        else:
+            layout.split_column(
+                Layout(header, size=3),  # Compact header
+                Layout(name="metrics", size=12),  # Tokens + Status + Recent (single row)
+                Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
+            )
 
         # Metrics section: 3-column layout (Tokens 50% | Status 25% | Recent 25%)
         layout["metrics"].split_row(

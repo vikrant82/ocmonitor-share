@@ -211,6 +211,7 @@ class TestLiveCommand:
         assert result.exit_code == 0
         assert captured["base_path"] == str(mock_sessions_dir)
         assert captured["kwargs"]["selected_session_id"] == "picked-workflow"
+        assert captured["kwargs"]["interactive_switch"] is True
 
     def test_live_session_id_takes_precedence_over_pick(self, mock_sessions_dir):
         runner = CliRunner()
@@ -249,6 +250,7 @@ class TestLiveCommand:
 
         assert result.exit_code == 0
         assert captured["kwargs"]["selected_session_id"] == "explicit-session"
+        assert captured["kwargs"]["interactive_switch"] is True
 
 
 class TestCLIHelp:

@@ -241,6 +241,7 @@ ocmonitor live ~/.local/share/opencode/storage/message
 ocmonitor live ~/.local/share/opencode/storage/message --interval 10
 
 # Pick a workflow by readable title before launching
+# (also enables interactive switching controls by default)
 ocmonitor live ~/.local/share/opencode/storage/message --pick
 
 # Pin live monitor to a specific workflow/session ID

@@ -233,7 +233,7 @@ def sessions(
 @click.option(
     "--pick",
     is_flag=True,
-    help="Interactively choose a session/workflow before starting",
+    help="Interactively choose a session/workflow before starting (also enables live switching)",
 )
 @click.option(
     "--session-id",
@@ -282,6 +282,7 @@ def live(
 
     try:
         live_monitor = ctx.obj["live_monitor"]
+        interactive_switch = interactive_switch or pick
 
         # Validate monitoring setup
         validation = live_monitor.validate_monitoring_setup(path if path else None)
