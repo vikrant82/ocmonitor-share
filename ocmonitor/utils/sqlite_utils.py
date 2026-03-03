@@ -29,21 +29,43 @@ class SQLiteProcessor:
         Returns:
             Path to database file if found, None otherwise
         """
-        if custom_path and custom_path.exists():
-            return custom_path
-
-        if SQLiteProcessor.DEFAULT_DB_PATH.exists():
-            return SQLiteProcessor.DEFAULT_DB_PATH
-
-        # Check Windows location
         import os
 
+        candidates: List[Path] = []
+
+        # 1) Explicit custom path (highest priority)
+        if custom_path:
+            candidates.append(Path(custom_path))
+
+        # 2) Environment override
+        env_db_path = os.environ.get("OCMONITOR_DATABASE_FILE")
+        if env_db_path:
+            candidates.append(Path(os.path.expanduser(os.path.expandvars(env_db_path))))
+
+        # 3) Config path (if available)
+        try:
+            from ..config import config_manager
+
+            configured_db_path = config_manager.config.paths.database_file
+            if configured_db_path:
+                candidates.append(
+                    Path(os.path.expanduser(os.path.expandvars(configured_db_path)))
+                )
+        except Exception:
+            # Config is optional for path discovery; continue with defaults
+            pass
+
+        # 4) Built-in platform defaults
+        candidates.append(SQLiteProcessor.DEFAULT_DB_PATH)
+
         if os.name == "nt":
-            windows_path = (
+            candidates.append(
                 Path(os.environ.get("APPDATA", "")) / "opencode" / "opencode.db"
             )
-            if windows_path.exists():
-                return windows_path
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
 
         return None
 

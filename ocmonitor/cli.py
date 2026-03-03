@@ -798,6 +798,7 @@ def config_show(ctx: click.Context):
         console.print("[table.title]📋 Current Configuration:[/table.title]")
         console.print()
         console.print("[table.header]📁 Paths:[/table.header]")
+        console.print(f"  [metric.label]Database file:[/metric.label] [metric.value]{config.paths.database_file}[/metric.value]")
         console.print(f"  [metric.label]Messages directory:[/metric.label] [metric.value]{config.paths.messages_dir}[/metric.value]")
         console.print(f"  [metric.label]Export directory:[/metric.label] [metric.value]{config.paths.export_dir}[/metric.value]")
         console.print()

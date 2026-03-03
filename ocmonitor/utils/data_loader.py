@@ -52,8 +52,8 @@ class DataLoader:
     
     def _resolve_db_path(self) -> Optional[Path]:
         """Resolve the database path."""
-        if self._db_path:
-            return self._db_path
+        if self._db_path is not None:
+            return SQLiteProcessor.find_database_path(self._db_path)
         return SQLiteProcessor.find_database_path()
     
     def _resolve_files_path(self) -> Optional[Path]:

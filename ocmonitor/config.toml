@@ -1,6 +1,8 @@
 # OpenCode Monitor Configuration
 
 [paths]
+# OpenCode v1.2.0+ SQLite database path
+database_file = "~/.local/share/opencode/opencode.db"
 # Default path to OpenCode messages directory
 messages_dir = "~/.local/share/opencode/storage/message"
 # Directory for exports

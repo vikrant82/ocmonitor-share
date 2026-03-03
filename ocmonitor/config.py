@@ -32,7 +32,7 @@ class PathsConfig(BaseModel):
     database_file: str = Field(default="~/.local/share/opencode/opencode.db")
     export_dir: str = Field(default="./exports")
 
-    @field_validator('messages_dir', 'opencode_storage_dir', 'export_dir')
+    @field_validator('messages_dir', 'opencode_storage_dir', 'database_file', 'export_dir')
     @classmethod
     def expand_path(cls, v):
         """Expand user paths and environment variables."""

@@ -63,6 +63,18 @@ class TestPathsConfig:
         config = PathsConfig(messages_dir="$TEST_DIR/messages")
         assert "/test/path/messages" in config.messages_dir
 
+    def test_database_file_path_expansion(self):
+        """Test that database_file user paths are expanded."""
+        config = PathsConfig(database_file="~/test/opencode.db")
+        assert not config.database_file.startswith("~")
+        assert config.database_file.endswith("test/opencode.db")
+
+    def test_database_file_environment_variable_expansion(self, monkeypatch):
+        """Test that database_file environment variables are expanded."""
+        monkeypatch.setenv("TEST_DB_DIR", "/test/db")
+        config = PathsConfig(database_file="$TEST_DB_DIR/opencode.db")
+        assert config.database_file == "/test/db/opencode.db"
+
 
 class TestUIConfig:
     """Tests for UIConfig model."""
