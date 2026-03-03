@@ -2,13 +2,16 @@
 
 import json
 import sqlite3
+import statistics
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Generator
 from datetime import datetime
 
 from ..models.session import SessionData, InteractionFile, TokenUsage, TimeData
-from ..models.tool_usage import ToolUsageStats, ModelToolUsage
+from ..models.tool_usage import ToolUsageStats, ToolUsageSummary, ModelToolUsage
+from ..models.analytics import ModelDetailStats
 
 
 class SQLiteProcessor:
@@ -818,7 +821,240 @@ class SQLiteProcessor:
                 ))
             
             result.sort(key=lambda m: m.total_calls, reverse=True)
-            
+
             return result
+        finally:
+            conn.close()
+
+    @classmethod
+    def find_matching_models(
+        cls, query: str, db_path: Optional[Path] = None
+    ) -> List[str]:
+        """Find model names matching a query string (case-insensitive substring match).
+
+        Args:
+            query: Substring to search for in model names
+            db_path: Path to database (uses default if not provided)
+
+        Returns:
+            List of distinct model name strings matching the query
+        """
+        if db_path is None:
+            db_path = cls.find_database_path()
+
+        if not db_path or not db_path.exists():
+            return []
+
+        conn = cls._get_connection(db_path)
+        try:
+            cursor = conn.execute(
+                """
+                SELECT DISTINCT
+                    COALESCE(
+                        json_extract(m.data, '$.modelID'),
+                        json_extract(m.data, '$.model.modelID'),
+                        'unknown'
+                    ) as model_name
+                FROM message m
+                WHERE json_valid(m.data) = 1
+                  AND json_extract(m.data, '$.role') = 'assistant'
+                  AND LOWER(COALESCE(
+                        json_extract(m.data, '$.modelID'),
+                        json_extract(m.data, '$.model.modelID'),
+                        'unknown'
+                  )) LIKE ?
+                ORDER BY model_name
+                """,
+                (f"%{query.lower()}%",),
+            )
+            return [row["model_name"] for row in cursor if row["model_name"] != "unknown"]
+        finally:
+            conn.close()
+
+    @classmethod
+    def get_model_detail_stats(
+        cls, model_name: str, pricing_data: Dict[str, Any], db_path: Optional[Path] = None
+    ) -> Optional[ModelDetailStats]:
+        """Get detailed statistics for a single model.
+
+        Args:
+            model_name: Exact model name to query
+            pricing_data: Model pricing information for cost calculation
+            db_path: Path to database (uses default if not provided)
+
+        Returns:
+            ModelDetailStats object or None if no data found
+        """
+        if db_path is None:
+            db_path = cls.find_database_path()
+
+        if not db_path or not db_path.exists():
+            return None
+
+        conn = cls._get_connection(db_path)
+        try:
+            # Query 1: Basic aggregate stats
+            row = conn.execute(
+                """
+                SELECT
+                    MIN(json_extract(m.data, '$.time.created')) as first_used,
+                    MAX(COALESCE(
+                        json_extract(m.data, '$.time.completed'),
+                        json_extract(m.data, '$.time.created')
+                    )) as last_used,
+                    COUNT(DISTINCT m.session_id) as total_sessions,
+                    COUNT(DISTINCT date(
+                        json_extract(m.data, '$.time.created') / 1000, 'unixepoch'
+                    )) as total_days,
+                    COUNT(m.id) as total_interactions,
+                    SUM(MAX(0, COALESCE(json_extract(m.data, '$.tokens.input'), 0))) as input_tokens,
+                    SUM(MAX(0, COALESCE(json_extract(m.data, '$.tokens.output'), 0))) as output_tokens,
+                    SUM(MAX(0, COALESCE(json_extract(m.data, '$.tokens.cache.read'), 0))) as cache_read,
+                    SUM(MAX(0, COALESCE(json_extract(m.data, '$.tokens.cache.write'), 0))) as cache_write
+                FROM message m
+                WHERE json_valid(m.data) = 1
+                  AND json_extract(m.data, '$.role') = 'assistant'
+                  AND COALESCE(
+                        json_extract(m.data, '$.modelID'),
+                        json_extract(m.data, '$.model.modelID')
+                  ) = ?
+                """,
+                (model_name,),
+            ).fetchone()
+
+            if not row or row["total_interactions"] == 0:
+                return None
+
+            # Parse timestamps
+            first_used = None
+            last_used = None
+            if row["first_used"]:
+                try:
+                    first_used = datetime.fromtimestamp(row["first_used"] / 1000)
+                except (OSError, ValueError):
+                    pass
+            if row["last_used"]:
+                try:
+                    last_used = datetime.fromtimestamp(row["last_used"] / 1000)
+                except (OSError, ValueError):
+                    pass
+
+            tokens = TokenUsage(
+                input=max(0, row["input_tokens"] or 0),
+                output=max(0, row["output_tokens"] or 0),
+                cache_read=max(0, row["cache_read"] or 0),
+                cache_write=max(0, row["cache_write"] or 0),
+            )
+
+            # Calculate cost using pricing data
+            total_cost = Decimal('0.0')
+            model_pricing = pricing_data.get(model_name)
+            if model_pricing:
+                price_input = getattr(model_pricing, 'input', 0) or 0
+                price_output = getattr(model_pricing, 'output', 0) or 0
+                price_cache_read = getattr(model_pricing, 'cacheRead', 0) or 0
+                price_cache_write = getattr(model_pricing, 'cacheWrite', 0) or 0
+                total_cost = (
+                    Decimal(str(tokens.input)) * Decimal(str(price_input)) / Decimal('1000000')
+                    + Decimal(str(tokens.output)) * Decimal(str(price_output)) / Decimal('1000000')
+                    + Decimal(str(tokens.cache_read)) * Decimal(str(price_cache_read)) / Decimal('1000000')
+                    + Decimal(str(tokens.cache_write)) * Decimal(str(price_cache_write)) / Decimal('1000000')
+                )
+
+            total_sessions = row["total_sessions"]
+            total_days = row["total_days"]
+            avg_cost_per_day = total_cost / total_days if total_days > 0 else Decimal('0.0')
+            avg_cost_per_session = total_cost / total_sessions if total_sessions > 0 else Decimal('0.0')
+
+            # Query 2: Per-interaction output rates for p50 calculation
+            rate_cursor = conn.execute(
+                """
+                SELECT
+                    COALESCE(json_extract(m.data, '$.tokens.output'), 0) as output_tokens,
+                    json_extract(m.data, '$.time.created') as created,
+                    json_extract(m.data, '$.time.completed') as completed,
+                    json_extract(m.data, '$.finish') as finish_reason
+                FROM message m
+                WHERE json_valid(m.data) = 1
+                  AND json_extract(m.data, '$.role') = 'assistant'
+                  AND COALESCE(
+                        json_extract(m.data, '$.modelID'),
+                        json_extract(m.data, '$.model.modelID')
+                  ) = ?
+                """,
+                (model_name,),
+            )
+
+            interaction_rates = []
+            for rate_row in rate_cursor:
+                output_tok = rate_row["output_tokens"] or 0
+                created_ms = rate_row["created"]
+                completed_ms = rate_row["completed"]
+                finish = rate_row["finish_reason"]
+
+                if not created_ms or not completed_ms:
+                    continue
+                duration_ms = completed_ms - created_ms
+                if duration_ms <= 0 or output_tok < 100:
+                    continue
+                # Skip tool-call-only interactions
+                if finish == "tool-calls":
+                    continue
+                rate = output_tok / (duration_ms / 1000)
+                interaction_rates.append(rate)
+
+            # Query 3: Tool usage stats
+            tool_cursor = conn.execute(
+                """
+                SELECT
+                    json_extract(p.data, '$.tool') as tool_name,
+                    COUNT(*) as total_calls,
+                    SUM(CASE WHEN json_extract(p.data, '$.state.status') = 'completed'
+                        THEN 1 ELSE 0 END) as success,
+                    SUM(CASE WHEN json_extract(p.data, '$.state.status') = 'error'
+                        THEN 1 ELSE 0 END) as failed
+                FROM part p
+                JOIN message m ON p.message_id = m.id
+                WHERE json_valid(p.data) = 1
+                  AND json_valid(m.data) = 1
+                  AND json_extract(p.data, '$.type') = 'tool'
+                  AND json_extract(p.data, '$.tool') IS NOT NULL
+                  AND json_extract(p.data, '$.state.status') IN ('completed', 'error')
+                  AND COALESCE(
+                        json_extract(m.data, '$.modelID'),
+                        json_extract(m.data, '$.model.modelID')
+                  ) = ?
+                GROUP BY tool_name
+                ORDER BY total_calls DESC
+                """,
+                (model_name,),
+            )
+
+            tool_stats = []
+            for tool_row in tool_cursor:
+                tool_stats.append(ToolUsageStats(
+                    tool_name=tool_row["tool_name"],
+                    total_calls=tool_row["total_calls"],
+                    success_count=tool_row["success"],
+                    failure_count=tool_row["failed"],
+                ))
+
+            tool_summary = ToolUsageSummary(tool_stats=tool_stats)
+
+            return ModelDetailStats(
+                model_name=model_name,
+                first_used=first_used,
+                last_used=last_used,
+                total_sessions=total_sessions,
+                total_days_used=total_days,
+                total_interactions=row["total_interactions"],
+                total_tokens=tokens,
+                total_cost=total_cost,
+                avg_cost_per_day=avg_cost_per_day,
+                avg_cost_per_session=avg_cost_per_session,
+                interaction_rates=interaction_rates,
+                tool_stats=tool_stats,
+                tool_summary=tool_summary,
+            )
         finally:
             conn.close()

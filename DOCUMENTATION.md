@@ -374,6 +374,72 @@ ocmonitor models ~/.local/share/opencode/storage/message --format json
 
 *Click image to view full-size screenshot of model usage analytics*
 
+#### `ocmonitor model <name>`
+Deep-dive detail for a single model. The name is fuzzy-matched against all known model names in the database.
+
+```bash
+# Exact or partial name — fuzzy matched
+ocmonitor model claude-sonnet-4-5
+ocmonitor model sonnet          # lists all matching variants
+ocmonitor model opus -f json    # JSON output
+ocmonitor model nonexistent     # shows "No model found" + available list
+```
+
+**Fuzzy Matching Behavior:**
+
+| Situation | Result |
+|-----------|--------|
+| 0 matches | Shows "No model found" and lists all available model names |
+| 1 match (or exact name) | Displays full detail panel + tool table |
+| >1 matches | Lists candidates with "Did you mean one of these?" |
+
+**Output Layout:**
+
+```
+╭─ Model Detail: claude-sonnet-4-5 ─────────────────────────────╮
+│ First Used      2025-09-15                                      │
+│ Last Used       2026-02-28                                      │
+│ Sessions        42                                              │
+│ Days Used       28                                              │
+│ Interactions    1,247                                           │
+│                                                                 │
+│ Input Tokens    2,451,320                                       │
+│ Output Tokens   489,210                                         │
+│ Cache Read      1,102,400                                       │
+│ Cache Write     312,500                                         │
+│                                                                 │
+│ Total Cost      $47.23                                          │
+│ Avg/Day         $1.69                                           │
+│ Avg/Session     $1.12                                           │
+│                                                                 │
+│ Output Speed    62.4 tok/s (p50)                                │
+╰─────────────────────────────────────────────────────────────────╯
+
+         Tool Usage for claude-sonnet-4-5
+┏━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Tool   ┃ Calls ┃ Success ┃ Failed ┃ Success Rate ┃
+┡━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━┩
+│ read   │   620 │     598 │     22 │         96%  │
+│ edit   │   412 │     389 │     23 │         94%  │
+│ bash   │   298 │     285 │     13 │         96%  │
+│ grep   │   156 │     154 │      2 │         99%  │
+│ glob   │   134 │     134 │      0 │        100%  │
+└────────┴───────┴─────────┴────────┴──────────────┘
+
+Total tool calls: 1,620  1,560 succeeded  60 failed  Overall: 96%
+```
+
+**Options:**
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `--format, -f` | Output format (`table`, `json`, `csv`) | `-f json` |
+
+**Notes:**
+- Requires SQLite database (OpenCode v1.2.0+). File-based storage is not supported for this command.
+- Success rate colors: green ≥90%, yellow ≥70%, red <70%
+- Output speed (p50) excludes tool-call-only interactions and interactions under 100 output tokens
+
 #### `ocmonitor projects <path>`
 Analyze AI usage costs and token consumption by coding project.
 

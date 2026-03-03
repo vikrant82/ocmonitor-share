@@ -8,7 +8,8 @@ from rich.text import Text
 from rich.panel import Panel
 
 from ..models.session import SessionData, TokenUsage
-from ..models.analytics import DailyUsage, ModelUsageStats
+from ..models.analytics import DailyUsage, ModelUsageStats, ModelDetailStats
+from ..models.tool_usage import ToolUsageStats
 from ..utils.time_utils import TimeUtils, compute_p50_output_rate
 from ..utils.formatting import ColorFormatter
 
@@ -538,6 +539,95 @@ class TableFormatter:
             # Add separator
             if root != recent_roots[-1]:
                 table.add_section()
-        
+
+        return table
+
+    def create_model_detail_panel(self, stats: ModelDetailStats) -> Panel:
+        """Create a key-value panel for model detail stats.
+
+        Args:
+            stats: ModelDetailStats with all model metrics
+
+        Returns:
+            Rich Panel with formatted model details
+        """
+        lines = []
+
+        # Date info
+        first_used = stats.first_used.strftime('%Y-%m-%d') if stats.first_used else 'N/A'
+        last_used = stats.last_used.strftime('%Y-%m-%d') if stats.last_used else 'N/A'
+        lines.append(f"[metric.label]First Used[/metric.label]      [metric.value]{first_used}[/metric.value]")
+        lines.append(f"[metric.label]Last Used[/metric.label]       [metric.value]{last_used}[/metric.value]")
+        lines.append(f"[metric.label]Sessions[/metric.label]        [metric.value]{self.format_number(stats.total_sessions)}[/metric.value]")
+        lines.append(f"[metric.label]Days Used[/metric.label]       [metric.value]{self.format_number(stats.total_days_used)}[/metric.value]")
+        lines.append(f"[metric.label]Interactions[/metric.label]    [metric.value]{self.format_number(stats.total_interactions)}[/metric.value]")
+        lines.append("")
+
+        # Token breakdown
+        lines.append(f"[metric.label]Input Tokens[/metric.label]    [metric.tokens]{self.format_number(stats.total_tokens.input)}[/metric.tokens]")
+        lines.append(f"[metric.label]Output Tokens[/metric.label]   [metric.tokens]{self.format_number(stats.total_tokens.output)}[/metric.tokens]")
+        lines.append(f"[metric.label]Cache Read[/metric.label]      [metric.tokens]{self.format_number(stats.total_tokens.cache_read)}[/metric.tokens]")
+        lines.append(f"[metric.label]Cache Write[/metric.label]     [metric.tokens]{self.format_number(stats.total_tokens.cache_write)}[/metric.tokens]")
+        lines.append("")
+
+        # Cost info
+        lines.append(f"[metric.label]Total Cost[/metric.label]      [metric.cost]{self.format_currency(stats.total_cost)}[/metric.cost]")
+        lines.append(f"[metric.label]Avg/Day[/metric.label]         [metric.cost]{self.format_currency(stats.avg_cost_per_day)}[/metric.cost]")
+        lines.append(f"[metric.label]Avg/Session[/metric.label]     [metric.cost]{self.format_currency(stats.avg_cost_per_session)}[/metric.cost]")
+        lines.append("")
+
+        # Speed
+        speed = stats.p50_output_rate
+        speed_text = f"{speed:.1f} tok/s (p50)" if speed > 0 else "N/A"
+        lines.append(f"[metric.label]Output Speed[/metric.label]    [metric.value]{speed_text}[/metric.value]")
+
+        return Panel(
+            "\n".join(lines),
+            title=f"Model Detail: {stats.model_name}",
+            title_align="left",
+            border_style="table.header",
+        )
+
+    def create_model_tool_table(self, tool_stats: list[ToolUsageStats], model_name: str) -> Table:
+        """Create a table showing tool usage for a model.
+
+        Args:
+            tool_stats: List of ToolUsageStats
+            model_name: Model name for title
+
+        Returns:
+            Rich Table with tool usage breakdown
+        """
+        table = Table(
+            title=f"Tool Usage for {model_name}",
+            show_header=True,
+            header_style="table.header",
+            title_style="table.title",
+        )
+
+        table.add_column("Tool", style="table.row.main")
+        table.add_column("Calls", justify="right", style="table.row.tokens")
+        table.add_column("Success", justify="right", style="status.success")
+        table.add_column("Failed", justify="right", style="status.error")
+        table.add_column("Success Rate", justify="right")
+
+        for tool in tool_stats:
+            # Color-code the success rate
+            rate = tool.success_rate
+            if rate >= 90:
+                rate_style = "status.success"
+            elif rate >= 70:
+                rate_style = "status.warning"
+            else:
+                rate_style = "status.error"
+
+            table.add_row(
+                tool.tool_name,
+                self.format_number(tool.total_calls),
+                self.format_number(tool.success_count),
+                self.format_number(tool.failure_count),
+                Text(f"{rate:.0f}%", style=rate_style),
+            )
+
         return table
 

@@ -56,6 +56,14 @@
     "contextWindow": 200000,
     "sessionQuota": 0.0
   },
+  "glm-5": {
+    "input": 1.0,
+    "output": 3.2,
+    "cacheWrite": 0.0,
+    "cacheRead": 0.2,
+    "contextWindow": 200000,
+    "sessionQuota": 0.0
+  },
   "glm-4.7-free": {
     "input": 0.6,
     "output": 2.2,

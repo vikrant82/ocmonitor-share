@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Any, Generator, Literal
 from datetime import datetime
 
 from ..models.session import SessionData
+from ..models.analytics import ModelDetailStats
 from ..models.tool_usage import ToolUsageStats, ModelToolUsage
 from .sqlite_utils import SQLiteProcessor
 from .file_utils import FileProcessor
@@ -342,5 +343,36 @@ class DataLoader:
             return SQLiteProcessor.load_tool_usage_by_model_for_sessions(
                 session_ids, self._resolved_db_path
             )
-        
+
         return []
+
+    def find_matching_models(self, query: str) -> List[str]:
+        """Find model names matching a query string.
+
+        Args:
+            query: Substring to search for in model names
+
+        Returns:
+            List of matching model name strings
+        """
+        if self.sqlite_available:
+            return SQLiteProcessor.find_matching_models(query, self._resolved_db_path)
+        return []
+
+    def get_model_detail(
+        self, model_name: str, pricing_data: Dict
+    ) -> Optional[ModelDetailStats]:
+        """Get detailed statistics for a single model.
+
+        Args:
+            model_name: Exact model name to query
+            pricing_data: Model pricing information
+
+        Returns:
+            ModelDetailStats object or None
+        """
+        if self.sqlite_available:
+            return SQLiteProcessor.get_model_detail_stats(
+                model_name, pricing_data, self._resolved_db_path
+            )
+        return None
