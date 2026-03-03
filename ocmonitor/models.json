@@ -31,6 +31,14 @@
     "contextWindow": 200000,
     "sessionQuota": 0.0
   },
+  "minimax-m2.5": {
+    "input": 0.3,
+    "output": 1.2,
+    "cacheWrite": 0.375,
+    "cacheRead": 0.03,
+    "contextWindow": 200000,
+    "sessionQuota": 0.0
+  },
 
   "kimi-k2.5-free": {
     "input": 0.6,
@@ -49,6 +57,14 @@
     "sessionQuota": 0.0
   },
   "glm-5-free": {
+    "input": 1.0,
+    "output": 3.2,
+    "cacheWrite": 0.0,
+    "cacheRead": 0.2,
+    "contextWindow": 200000,
+    "sessionQuota": 0.0
+  },
+  "glm-5": {
     "input": 1.0,
     "output": 3.2,
     "cacheWrite": 0.0,

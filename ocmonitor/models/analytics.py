@@ -7,6 +7,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field, computed_field
 from collections import defaultdict
 from .session import SessionData, TokenUsage
+from .tool_usage import ToolUsageStats, ToolUsageSummary
 
 
 class DailyUsage(BaseModel):
@@ -166,6 +167,31 @@ class ModelBreakdownReport(BaseModel):
             total.cache_write += model.total_tokens.cache_write
             total.cache_read += model.total_tokens.cache_read
         return total
+
+
+class ModelDetailStats(BaseModel):
+    """Detailed statistics for a single model."""
+    model_name: str
+    first_used: Optional[datetime] = None
+    last_used: Optional[datetime] = None
+    total_sessions: int = 0
+    total_days_used: int = 0
+    total_interactions: int = 0
+    total_tokens: TokenUsage = Field(default_factory=TokenUsage)
+    total_cost: Decimal = Field(default=Decimal('0.0'))
+    avg_cost_per_day: Decimal = Field(default=Decimal('0.0'))
+    avg_cost_per_session: Decimal = Field(default=Decimal('0.0'))
+    interaction_rates: List[float] = Field(default_factory=list)
+    tool_stats: List[ToolUsageStats] = Field(default_factory=list)
+    tool_summary: ToolUsageSummary = Field(default_factory=ToolUsageSummary)
+
+    @computed_field
+    @property
+    def p50_output_rate(self) -> float:
+        """Calculate median (p50) output tokens per second from eligible interactions."""
+        if not self.interaction_rates:
+            return 0.0
+        return statistics.median(self.interaction_rates)
 
 
 class ProjectUsageStats(BaseModel):

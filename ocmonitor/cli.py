@@ -523,6 +523,46 @@ def monthly(
 
 
 @cli.command()
+@click.argument("name")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["table", "json", "csv"]),
+    default="table",
+    help="Output format",
+)
+@click.pass_context
+def model(ctx: click.Context, name: str, output_format: str):
+    """Show detailed breakdown for a specific model.
+
+    NAME: Model name or partial name (fuzzy matched)
+
+    Examples:
+        ocmonitor model claude-sonnet-4-5
+        ocmonitor model sonnet
+        ocmonitor model opus -f json
+    """
+    try:
+        report_generator = ctx.obj["report_generator"]
+        result = report_generator.generate_model_detail_report(name, output_format)
+
+        if output_format == "json" and result:
+            click.echo(json.dumps(result, indent=2, default=json_serializer))
+        elif output_format == "csv" and result:
+            click.echo(
+                "CSV data would be exported to file. Use 'export' command for file output."
+            )
+
+    except Exception as e:
+        error_msg = create_user_friendly_error(e)
+        click.echo(f"Error generating model detail: {error_msg}", err=True)
+        if ctx.obj["verbose"]:
+            click.echo(f"Details: {str(e)}", err=True)
+        ctx.exit(1)
+
+
+@cli.command()
 @click.argument("path", type=click.Path(exists=True), required=False)
 @click.option(
     "--timeframe",

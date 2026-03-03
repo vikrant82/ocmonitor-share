@@ -5,6 +5,75 @@ All notable changes to OpenCode Monitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-03-03
+
+### 🔍 Model Detail Command
+
+New `ocmonitor model <name>` command for drilling into a single AI model with rich statistics.
+
+#### Added
+- **`model` command** - Detailed breakdown for a single model, fuzzy-matched by name
+- **ModelDetailStats Model** - Pydantic model with first/last used, sessions, days used, interactions, token breakdown, costs, output speed, and tool stats
+- **Fuzzy Name Matching** - Substring match against all model names in the database
+  - 0 matches: shows "No model found" + full list of available models
+  - >1 matches: lists candidates with "Did you mean one of these?"
+  - Exact match wins even when other substring matches exist
+- **SQLite Queries** - Two new classmethods on `SQLiteProcessor`:
+  - `find_matching_models(query)` - fuzzy substring search
+  - `get_model_detail_stats(model_name, pricing_data)` - aggregate stats + output rates + tool stats
+
+#### Files Modified
+- `ocmonitor/models/analytics.py` - Added `ModelDetailStats` class
+- `ocmonitor/utils/sqlite_utils.py` - Added `find_matching_models()` and `get_model_detail_stats()`
+- `ocmonitor/utils/data_loader.py` - Added `find_matching_models()` and `get_model_detail()` delegation methods
+- `ocmonitor/services/session_analyzer.py` - Added `find_matching_models()` and `get_model_detail()` methods
+- `ocmonitor/services/report_generator.py` - Added `generate_model_detail_report()`, `_display_model_detail()`, JSON/CSV formatters
+- `ocmonitor/ui/tables.py` - Added `create_model_detail_panel()` and `create_model_tool_table()`
+- `ocmonitor/cli.py` - Added `model` command
+
+#### Features
+- 📋 **Key-Value Panel** - First Used, Last Used, Sessions, Days Used, Interactions, Input/Output/Cache tokens, Total Cost, Avg/Day, Avg/Session, Output Speed (p50)
+- 🔧 **Tool Usage Table** - Per-tool Calls, Success, Failed, and color-coded Success Rate (green ≥90%, yellow ≥70%, red <70%)
+- 📊 **Tool Summary** - Total calls, successes, failures, overall success rate
+- 📤 **JSON/CSV Export** - Full stats available via `-f json` or `-f csv`
+
+#### Usage
+```bash
+# Exact or fuzzy match
+ocmonitor model claude-sonnet-4-5
+ocmonitor model sonnet        # lists all sonnet variants
+ocmonitor model nonexistent   # shows available models
+
+# JSON output
+ocmonitor model claude-opus-4-5 -f json
+```
+
+### 🎯 Live Workflow Picker & Session Pinning
+
+Interactive workflow selection and switching during live monitoring.
+
+#### Added
+- **`--pick` flag** - Interactive picker to select workflow before starting live monitor
+- **`--session-id` flag** - Pin live monitor to specific workflow/session ID
+- **`--interactive-switch` flag** - Enable keyboard controls during live monitoring
+- **Live switching controls** - Press n/p for next/previous, l to list, 1-9 to jump, q to quit
+
+#### Usage
+```bash
+ocmonitor live --pick                    # Pick workflow, enable switching
+ocmonitor live --session-id ses_abc123   # Pin to specific session
+ocmonitor live --interactive-switch      # Enable keyboard controls
+```
+
+#### Files Modified
+- `ocmonitor/cli.py` - Added `--pick`, `--session-id`, `--interactive-switch` options
+- `ocmonitor/services/live_monitor.py` - Added picker, terminal input handling, workflow switching
+- `ocmonitor/ui/dashboard.py` - Added controls panel to dashboard layout
+
+#### Tests
+- 197 unit tests for picker, command handling, session resolution
+- 2 integration tests for CLI flag precedence
+
 ## [0.9.3] - 2026-02-20
 
 ### 🔧 Tool Usage Tracking
@@ -229,6 +298,7 @@ ocmonitor export <type>    # Data export functionality
 
 ## Version History Summary
 
+- **v0.9.4** - Model detail command with fuzzy matching; live workflow picker and session pinning
 - **v0.9.3** - Tool usage tracking in live dashboard
 - **v0.9.2** - Remote pricing fallback from models.dev
 - **v0.9.1** - SQLite database support for OpenCode v1.2.0+

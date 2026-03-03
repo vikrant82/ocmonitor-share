@@ -295,6 +295,174 @@ class ReportGenerator:
 
         return report_data
 
+    def generate_model_detail_report(
+        self, name: str, output_format: str = "table"
+    ) -> Optional[Dict[str, Any]]:
+        """Generate a detailed report for a single model.
+
+        Handles fuzzy matching: 0 matches shows available models,
+        >1 matches shows list, 1 match shows full detail.
+
+        Args:
+            name: Model name query (fuzzy matched)
+            output_format: Output format ("table", "json", "csv")
+
+        Returns:
+            Report data dict, or None if no match
+        """
+        matches = self.analyzer.find_matching_models(name)
+
+        if len(matches) == 0:
+            # No matches - show available models
+            all_models = self.analyzer.find_matching_models("")
+            self.console.print(
+                f"[status.error]No model found matching '{name}'.[/status.error]"
+            )
+            if all_models:
+                self.console.print("\n[metric.label]Available models:[/metric.label]")
+                for m in all_models:
+                    self.console.print(f"  - [table.row.model]{m}[/table.row.model]")
+            return None
+
+        if len(matches) > 1:
+            # Check for exact match first
+            exact = [m for m in matches if m == name]
+            if len(exact) == 1:
+                matches = exact
+            else:
+                self.console.print(
+                    f"[status.warning]Multiple models match '{name}'. "
+                    f"Did you mean one of these?[/status.warning]"
+                )
+                for i, m in enumerate(matches, 1):
+                    self.console.print(f"  {i}. [table.row.model]{m}[/table.row.model]")
+                return None
+
+        model_name = matches[0]
+        stats = self.analyzer.get_model_detail(model_name)
+
+        if stats is None:
+            self.console.print(
+                f"[status.error]No usage data found for model '{model_name}'.[/status.error]"
+            )
+            return None
+
+        report_data = {
+            'type': 'model_detail',
+            'model_detail': stats,
+        }
+
+        if output_format == "table":
+            self._display_model_detail(stats)
+        elif output_format == "json":
+            return self._format_model_detail_json(stats)
+        elif output_format == "csv":
+            return self._format_model_detail_csv(stats)
+
+        return report_data
+
+    def _display_model_detail(self, stats):
+        """Display model detail panel and tool table."""
+        from ..models.analytics import ModelDetailStats
+
+        panel = self.table_formatter.create_model_detail_panel(stats)
+        self.console.print(panel)
+
+        if stats.tool_stats:
+            tool_table = self.table_formatter.create_model_tool_table(
+                stats.tool_stats, stats.model_name
+            )
+            self.console.print(tool_table)
+
+            # Tool summary line
+            summary = stats.tool_summary
+            self.console.print(
+                f"\n[metric.label]Total tool calls:[/metric.label] "
+                f"[metric.value]{summary.total_calls:,}[/metric.value]  "
+                f"[status.success]{summary.total_success:,} succeeded[/status.success]  "
+                f"[status.error]{summary.total_failures:,} failed[/status.error]  "
+                f"[metric.label]Overall:[/metric.label] "
+                f"[metric.value]{summary.overall_success_rate:.0f}%[/metric.value]"
+            )
+
+    def _format_model_detail_json(self, stats) -> Dict[str, Any]:
+        """Format model detail as JSON."""
+        return {
+            'model_name': stats.model_name,
+            'first_used': stats.first_used.isoformat() if stats.first_used else None,
+            'last_used': stats.last_used.isoformat() if stats.last_used else None,
+            'total_sessions': stats.total_sessions,
+            'total_days_used': stats.total_days_used,
+            'total_interactions': stats.total_interactions,
+            'tokens': stats.total_tokens.model_dump(),
+            'total_cost': float(stats.total_cost),
+            'avg_cost_per_day': float(stats.avg_cost_per_day),
+            'avg_cost_per_session': float(stats.avg_cost_per_session),
+            'p50_output_rate': stats.p50_output_rate,
+            'tool_stats': [
+                {
+                    'tool_name': t.tool_name,
+                    'total_calls': t.total_calls,
+                    'success_count': t.success_count,
+                    'failure_count': t.failure_count,
+                    'success_rate': t.success_rate,
+                }
+                for t in stats.tool_stats
+            ],
+            'tool_summary': {
+                'total_calls': stats.tool_summary.total_calls,
+                'total_success': stats.tool_summary.total_success,
+                'total_failures': stats.tool_summary.total_failures,
+                'overall_success_rate': stats.tool_summary.overall_success_rate,
+            },
+        }
+
+    def _format_model_detail_csv(self, stats) -> List[Dict[str, Any]]:
+        """Format model detail as CSV rows (one row per tool)."""
+        if not stats.tool_stats:
+            return [{
+                'model_name': stats.model_name,
+                'total_sessions': stats.total_sessions,
+                'total_days_used': stats.total_days_used,
+                'total_interactions': stats.total_interactions,
+                'input_tokens': stats.total_tokens.input,
+                'output_tokens': stats.total_tokens.output,
+                'cache_read_tokens': stats.total_tokens.cache_read,
+                'cache_write_tokens': stats.total_tokens.cache_write,
+                'total_cost': float(stats.total_cost),
+                'avg_cost_per_day': float(stats.avg_cost_per_day),
+                'avg_cost_per_session': float(stats.avg_cost_per_session),
+                'p50_output_rate': stats.p50_output_rate,
+                'tool_name': '',
+                'tool_calls': 0,
+                'tool_success': 0,
+                'tool_failed': 0,
+                'tool_success_rate': 0.0,
+            }]
+
+        rows = []
+        for t in stats.tool_stats:
+            rows.append({
+                'model_name': stats.model_name,
+                'total_sessions': stats.total_sessions,
+                'total_days_used': stats.total_days_used,
+                'total_interactions': stats.total_interactions,
+                'input_tokens': stats.total_tokens.input,
+                'output_tokens': stats.total_tokens.output,
+                'cache_read_tokens': stats.total_tokens.cache_read,
+                'cache_write_tokens': stats.total_tokens.cache_write,
+                'total_cost': float(stats.total_cost),
+                'avg_cost_per_day': float(stats.avg_cost_per_day),
+                'avg_cost_per_session': float(stats.avg_cost_per_session),
+                'p50_output_rate': stats.p50_output_rate,
+                'tool_name': t.tool_name,
+                'tool_calls': t.total_calls,
+                'tool_success': t.success_count,
+                'tool_failed': t.failure_count,
+                'tool_success_rate': t.success_rate,
+            })
+        return rows
+
     def generate_projects_report(self, base_path: str, timeframe: str = "all",
                                start_date: Optional[str] = None, end_date: Optional[str] = None,
                                output_format: str = "table") -> Dict[str, Any]:

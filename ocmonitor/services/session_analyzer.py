@@ -9,7 +9,7 @@ from decimal import Decimal
 from ..models.session import SessionData, InteractionFile, TokenUsage
 from ..models.analytics import (
     DailyUsage, WeeklyUsage, MonthlyUsage, ModelUsageStats,
-    ModelBreakdownReport, ProjectBreakdownReport, TimeframeAnalyzer
+    ModelBreakdownReport, ModelDetailStats, ProjectBreakdownReport, TimeframeAnalyzer
 )
 from ..utils.file_utils import FileProcessor
 from ..utils.data_loader import DataLoader, DataSourceError
@@ -419,3 +419,25 @@ class SessionAnalyzer:
                 'total_cost': total_cost
             }
         }
+
+    def find_matching_models(self, query: str) -> List[str]:
+        """Find model names matching a query string.
+
+        Args:
+            query: Substring to search for in model names
+
+        Returns:
+            List of matching model name strings
+        """
+        return self._data_loader.find_matching_models(query)
+
+    def get_model_detail(self, model_name: str) -> Optional[ModelDetailStats]:
+        """Get detailed statistics for a single model.
+
+        Args:
+            model_name: Exact model name to query
+
+        Returns:
+            ModelDetailStats object or None
+        """
+        return self._data_loader.get_model_detail(model_name, self.pricing_data)

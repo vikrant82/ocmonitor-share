@@ -17,6 +17,7 @@ Transform your OpenCode usage data into beautiful, actionable insights with comp
 - **📈 Comprehensive Reports** - Daily, weekly, and monthly usage breakdowns
 - **💰 Cost Tracking** - Accurate cost calculations for multiple AI models
 - **📊 Model Analytics** - Detailed breakdown of usage per AI model with `--breakdown` flag
+- **🔍 Single Model Deep Dive** - `ocmonitor model <name>` drills into one model with dates, costs, speed, and tool stats
 - **📋 Project Analytics** - Track costs and token usage by coding project
 - **⏱️ Performance Metrics** - Session duration and processing time tracking
 - **📅 Flexible Week Boundaries** - Customize weekly reports with 7 start day options (Monday-Sunday)
@@ -281,6 +282,53 @@ When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--sessi
 - Cost percentage distribution across models
 - **Speed Column** - Average output tokens per second for each model
 - Session and interaction counts per model
+
+### Single Model Detail
+
+```bash
+# Drill into one model by exact or partial name
+ocmonitor model claude-sonnet-4-5
+ocmonitor model sonnet        # lists all sonnet variants to pick from
+ocmonitor model opus -f json  # JSON output
+```
+
+**Output:**
+```
+╭─ Model Detail: claude-sonnet-4-5 ─────────────────────────────╮
+│ First Used      2025-09-15                                      │
+│ Last Used       2026-02-28                                      │
+│ Sessions        42                                              │
+│ Days Used       28                                              │
+│ Interactions    1,247                                           │
+│                                                                 │
+│ Input Tokens    2,451,320                                       │
+│ Output Tokens   489,210                                         │
+│ Cache Read      1,102,400                                       │
+│ Cache Write     312,500                                         │
+│                                                                 │
+│ Total Cost      $47.23                                          │
+│ Avg/Day         $1.69                                           │
+│ Avg/Session     $1.12                                           │
+│                                                                 │
+│ Output Speed    62.4 tok/s (p50)                                │
+╰─────────────────────────────────────────────────────────────────╯
+
+         Tool Usage for claude-sonnet-4-5
+┏━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Tool   ┃ Calls ┃ Success ┃ Failed ┃ Success Rate ┃
+┡━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━┩
+│ read   │   620 │     598 │     22 │         96%  │
+│ edit   │   412 │     389 │     23 │         94%  │
+│ bash   │   298 │     285 │     13 │         96%  │
+└────────┴───────┴─────────┴────────┴──────────────┘
+```
+
+**Features:**
+- 🔍 **Fuzzy Matching** - Partial name matches; shows alternatives when multiple models match
+- 📋 **Key-Value Panel** - First/last used, sessions, days active, interactions, full token breakdown
+- 💰 **Cost Breakdown** - Total cost, average per day, average per session
+- 🚀 **Output Speed** - Median output tokens/sec (p50) across all interactions
+- 🔧 **Tool Stats** - Per-tool calls, success, failed, color-coded success rate
 
 
 ## ⚙️ Configuration
