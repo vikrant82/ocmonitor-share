@@ -30,7 +30,10 @@ class DashboardUI:
         self.console = console or Console()
 
     def create_header(
-        self, session: SessionData, workflow: Optional[SessionWorkflow] = None
+        self,
+        session: SessionData,
+        workflow: Optional[SessionWorkflow] = None,
+        controls_hint: Optional[str] = None,
     ) -> Panel:
         """Create header panel with session info."""
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -57,6 +60,16 @@ class DashboardUI:
         return Panel(
             header_text,
             title=Text("Dashboard", style="dashboard.title"),
+            title_align="left",
+            border_style="dashboard.border",
+        )
+
+    def create_controls_panel(self, controls_hint: str) -> Panel:
+        """Create dedicated controls panel for live keybind hints."""
+        controls_text = f"[dim]{controls_hint}[/dim]"
+        return Panel(
+            controls_text,
+            title=Text("Controls", style="dashboard.title"),
             title_align="left",
             border_style="dashboard.border",
         )
@@ -686,6 +699,7 @@ class DashboardUI:
         workflow: Optional[SessionWorkflow] = None,
         tool_stats: Optional[List[ToolUsageStats]] = None,
         tool_stats_by_model: Optional[List[ModelToolUsage]] = None,
+        controls_hint: Optional[str] = None,
     ) -> Layout:
         """Create the complete dashboard layout."""
         layout = Layout()
@@ -754,12 +768,21 @@ class DashboardUI:
                 flat_tool_stats = by_model[0].tool_stats
             tool_panel = self.create_tool_panel(flat_tool_stats)
 
-        # 3-section layout: Header, Metrics (3-column), Models+Tools
-        layout.split_column(
-            Layout(header, size=3),  # Compact header
-            Layout(name="metrics", size=12),  # Tokens + Status + Recent (single row)
-            Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
-        )
+        # 3-4 section layout: Header, Metrics, Models+Tools, optional Controls (bottom)
+        if controls_hint:
+            controls_panel = self.create_controls_panel(controls_hint)
+            layout.split_column(
+                Layout(header, size=3),  # Compact header
+                Layout(name="metrics", size=12),  # Tokens + Status + Recent (single row)
+                Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
+                Layout(controls_panel, size=3),  # Persistent keybind visibility
+            )
+        else:
+            layout.split_column(
+                Layout(header, size=3),  # Compact header
+                Layout(name="metrics", size=12),  # Tokens + Status + Recent (single row)
+                Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
+            )
 
         # Metrics section: 3-column layout (Tokens 50% | Status 25% | Recent 25%)
         layout["metrics"].split_row(

@@ -237,9 +237,22 @@ Real-time monitoring dashboard that updates automatically.
 # Start live monitoring (updates every 5 seconds)
 ocmonitor live ~/.local/share/opencode/storage/message
 
-# Custom refresh interval (in seconds)
-ocmonitor live ~/.local/share/opencode/storage/message --refresh 10
+# Custom update interval (in seconds)
+ocmonitor live ~/.local/share/opencode/storage/message --interval 10
+
+# Pick a workflow by readable title before launching
+# (also enables interactive switching controls by default)
+ocmonitor live ~/.local/share/opencode/storage/message --pick
+
+# Pin live monitor to a specific workflow/session ID
+ocmonitor live ~/.local/share/opencode/storage/message --session-id ses_abc123
+
+# Enable interactive switching while live monitor runs (experimental)
+ocmonitor live ~/.local/share/opencode/storage/message --interactive-switch
 ```
+
+If `--session-id` is pinned and the selected workflow is no longer active, live monitoring stops with a clear message.
+When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--session-id` takes precedence and `--pick` is ignored.
 
 **Features:**
 - 🔄 Auto-refreshing display with professional UI design

@@ -5,6 +5,7 @@ import json
 import pytest
 from pathlib import Path
 from click.testing import CliRunner
+from unittest.mock import patch
 
 from ocmonitor.cli import cli
 
@@ -174,6 +175,82 @@ class TestSessionCommand:
         result = runner.invoke(cli, ['session', str(session_dir)])
         
         assert result.exit_code == 0
+
+
+class TestLiveCommand:
+    """Tests for live command selection and precedence."""
+
+    def test_live_with_pick_uses_picker_selection(self, mock_sessions_dir):
+        runner = CliRunner()
+        captured = {}
+
+        def fake_start_monitoring(self, base_path, refresh_interval=5, **kwargs):
+            captured["base_path"] = base_path
+            captured["kwargs"] = kwargs
+
+        with patch(
+            "ocmonitor.services.live_monitor.LiveMonitor.validate_monitoring_setup",
+            return_value={
+                "valid": True,
+                "issues": [],
+                "warnings": [],
+                "info": {"sqlite": {"available": False}, "files": {"available": True}},
+            },
+        ), patch(
+            "ocmonitor.services.live_monitor.LiveMonitor.pick_file_workflow",
+            return_value="picked-workflow",
+        ), patch(
+            "ocmonitor.services.live_monitor.LiveMonitor.start_monitoring",
+            new=fake_start_monitoring,
+        ):
+            result = runner.invoke(
+                cli,
+                ["live", str(mock_sessions_dir), "--source", "files", "--pick"],
+            )
+
+        assert result.exit_code == 0
+        assert captured["base_path"] == str(mock_sessions_dir)
+        assert captured["kwargs"]["selected_session_id"] == "picked-workflow"
+        assert captured["kwargs"]["interactive_switch"] is True
+
+    def test_live_session_id_takes_precedence_over_pick(self, mock_sessions_dir):
+        runner = CliRunner()
+        captured = {}
+
+        def fake_start_monitoring(self, base_path, refresh_interval=5, **kwargs):
+            captured["kwargs"] = kwargs
+
+        with patch(
+            "ocmonitor.services.live_monitor.LiveMonitor.validate_monitoring_setup",
+            return_value={
+                "valid": True,
+                "issues": [],
+                "warnings": [],
+                "info": {"sqlite": {"available": False}, "files": {"available": True}},
+            },
+        ), patch(
+            "ocmonitor.services.live_monitor.LiveMonitor.pick_file_workflow",
+            side_effect=AssertionError("picker should not be called"),
+        ), patch(
+            "ocmonitor.services.live_monitor.LiveMonitor.start_monitoring",
+            new=fake_start_monitoring,
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "live",
+                    str(mock_sessions_dir),
+                    "--source",
+                    "files",
+                    "--pick",
+                    "--session-id",
+                    "explicit-session",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert captured["kwargs"]["selected_session_id"] == "explicit-session"
+        assert captured["kwargs"]["interactive_switch"] is True
 
 
 class TestCLIHelp:
