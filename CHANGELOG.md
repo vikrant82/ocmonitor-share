@@ -5,7 +5,7 @@ All notable changes to OpenCode Monitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.4] - 2026-03-01
+## [0.9.4] - 2026-03-03
 
 ### 🔍 Model Detail Command
 
@@ -47,6 +47,32 @@ ocmonitor model nonexistent   # shows available models
 # JSON output
 ocmonitor model claude-opus-4-5 -f json
 ```
+
+### 🎯 Live Workflow Picker & Session Pinning
+
+Interactive workflow selection and switching during live monitoring.
+
+#### Added
+- **`--pick` flag** - Interactive picker to select workflow before starting live monitor
+- **`--session-id` flag** - Pin live monitor to specific workflow/session ID
+- **`--interactive-switch` flag** - Enable keyboard controls during live monitoring
+- **Live switching controls** - Press n/p for next/previous, l to list, 1-9 to jump, q to quit
+
+#### Usage
+```bash
+ocmonitor live --pick                    # Pick workflow, enable switching
+ocmonitor live --session-id ses_abc123   # Pin to specific session
+ocmonitor live --interactive-switch      # Enable keyboard controls
+```
+
+#### Files Modified
+- `ocmonitor/cli.py` - Added `--pick`, `--session-id`, `--interactive-switch` options
+- `ocmonitor/services/live_monitor.py` - Added picker, terminal input handling, workflow switching
+- `ocmonitor/ui/dashboard.py` - Added controls panel to dashboard layout
+
+#### Tests
+- 197 unit tests for picker, command handling, session resolution
+- 2 integration tests for CLI flag precedence
 
 ## [0.9.3] - 2026-02-20
 
@@ -272,7 +298,7 @@ ocmonitor export <type>    # Data export functionality
 
 ## Version History Summary
 
-- **v0.9.4** - `ocmonitor model <name>` command for single-model detail with fuzzy matching
+- **v0.9.4** - Model detail command with fuzzy matching; live workflow picker and session pinning
 - **v0.9.3** - Tool usage tracking in live dashboard
 - **v0.9.2** - Remote pricing fallback from models.dev
 - **v0.9.1** - SQLite database support for OpenCode v1.2.0+
