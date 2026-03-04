@@ -126,24 +126,46 @@ OPENCODE_DATA_DIR=/your/path/to/opencode/data/dir docker compose run --rm ocmoni
 ### Basic Usage
 
 ```bash
-# Quick configuration check
-ocmonitor config show
+# Real-time monitoring dashboard
+ocmonitor live
 
-# Analyze your sessions (auto-detects SQLite or files)
-ocmonitor --theme light sessions
+# View sessions history
+ocmonitor sessions
 
-# Analyze by project
-ocmonitor projects
+# Daily usage breakdown (add --breakdown for per-model detail)
+ocmonitor daily
+ocmonitor daily --breakdown
 
-# Real-time monitoring (dark theme)
-ocmonitor --theme dark live
+# Deep dive into a specific model
+ocmonitor model claude-sonnet-4-5
+```
 
-# Export your data
-ocmonitor export sessions --format csv
+### Command Reference
 
-# Force specific data source
-ocmonitor sessions --source sqlite
-ocmonitor sessions --source files
+| Command | Description |
+|---|---|
+| `ocmonitor live` | Real-time monitoring dashboard |
+| `ocmonitor sessions` | All sessions summary with workflow grouping |
+| `ocmonitor session <path>` | Single session detail |
+| `ocmonitor daily` | Daily usage breakdown |
+| `ocmonitor weekly` | Weekly usage breakdown |
+| `ocmonitor monthly` | Monthly usage breakdown |
+| `ocmonitor models` | Model usage statistics |
+| `ocmonitor model <name>` | Single model deep dive |
+| `ocmonitor projects` | Project usage statistics |
+| `ocmonitor agents` | List detected agents and types |
+| `ocmonitor export <type>` | Export to CSV/JSON |
+| `ocmonitor config show` | Show current configuration |
+
+### Global Options
+
+These options can be used with any command:
+
+```bash
+ocmonitor --theme light sessions     # Override theme (dark/light)
+ocmonitor --verbose daily            # Show detailed error traces
+ocmonitor --config /path/config.toml sessions  # Use custom config file
+ocmonitor --no-remote sessions       # Disable remote pricing fallback
 ```
 
 ## 📖 Documentation
@@ -189,10 +211,14 @@ By default, sessions are grouped into **workflows** - a main session combined wi
 
 ```bash
 # Sessions with workflow grouping (default)
-ocmonitor sessions ~/.local/share/opencode/storage/message
+ocmonitor sessions
 
 # Sessions without grouping (flat list)
-ocmonitor sessions ~/.local/share/opencode/storage/message --no-group
+ocmonitor sessions --no-group
+
+# Force a specific data source
+ocmonitor sessions --source sqlite   # Force SQLite (v1.2.0+)
+ocmonitor sessions --source files    # Force legacy file storage
 
 # List detected agents and their types
 ocmonitor agents
@@ -212,16 +238,16 @@ Time-based usage breakdown with optional per-model cost analysis.
 
 ```bash
 # Daily breakdown
-ocmonitor daily ~/.local/share/opencode/storage/message
+ocmonitor daily
 
 # Weekly breakdown with per-model breakdown
-ocmonitor weekly ~/.local/share/opencode/storage/message --breakdown
+ocmonitor weekly --breakdown
 
 # Monthly breakdown
-ocmonitor monthly ~/.local/share/opencode/storage/message
+ocmonitor monthly
 
 # Weekly with custom start day
-ocmonitor weekly ~/.local/share/opencode/storage/message --start-day friday --breakdown
+ocmonitor weekly --start-day friday --breakdown
 ```
 
 **`--breakdown` Flag:** Shows token consumption and cost per model within each time period (daily/weekly/monthly), making it easy to see which models are consuming resources.
@@ -235,21 +261,25 @@ Supported days: `monday`, `tuesday`, `wednesday`, `thursday`, `friday`, `saturda
 Real-time monitoring dashboard that updates automatically.
 
 ```bash
-# Start live monitoring (updates every 5 seconds)
-ocmonitor live ~/.local/share/opencode/storage/message
+# Start live monitoring (updates every 3 seconds by default)
+ocmonitor live
 
 # Custom update interval (in seconds)
-ocmonitor live ~/.local/share/opencode/storage/message --interval 10
+ocmonitor live --interval 10
 
 # Pick a workflow by readable title before launching
 # (also enables interactive switching controls by default)
-ocmonitor live ~/.local/share/opencode/storage/message --pick
+ocmonitor live --pick
 
 # Pin live monitor to a specific workflow/session ID
-ocmonitor live ~/.local/share/opencode/storage/message --session-id ses_abc123
+ocmonitor live --session-id ses_abc123
+
+# Force a specific data source
+ocmonitor live --source sqlite    # Force SQLite (v1.2.0+)
+ocmonitor live --source files     # Force legacy file storage
 
 # Enable interactive switching while live monitor runs (experimental)
-ocmonitor live ~/.local/share/opencode/storage/message --interactive-switch
+ocmonitor live --interactive-switch
 ```
 
 If `--session-id` is pinned and the selected workflow is no longer active, live monitoring stops with a clear message.
@@ -276,6 +306,14 @@ When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--sessi
 [![Model Usage Breakdown Screenshot](screenshots/model-usage-breakdown.png)](screenshots/model-usage-breakdown.png)
 
 *Click image to view full-size screenshot of model usage analytics*
+
+```bash
+# Filter by timeframe or date range
+ocmonitor models --timeframe weekly
+ocmonitor models --start-date 2026-01-01 --end-date 2026-02-01
+ocmonitor projects --timeframe monthly
+ocmonitor projects --start-date 2026-01-01 --end-date 2026-02-01
+```
 
 **Model Analytics Features:**
 - Per-model token usage and cost breakdown
@@ -358,13 +396,19 @@ messages_dir = "~/.local/share/opencode/storage/message"
 export_dir = "./exports"
 
 [ui]
-table_style = "rich"
+table_style = "rich"       # "rich", "simple", or "minimal"
+theme = "dark"             # "dark" or "light"
 progress_bars = true
 colors = true
+live_refresh_interval = 3  # Live dashboard refresh in seconds
 
 [export]
 default_format = "csv"
 include_metadata = true
+
+[analytics]
+default_timeframe = "daily"       # "daily", "weekly", or "monthly"
+recent_sessions_limit = 50        # Max sessions to analyze by default
 
 [models]
 # Path to local models pricing configuration
@@ -377,9 +421,12 @@ remote_cache_ttl_hours = 24
 ```
 
 **Configuration File Search Order:**
-1. `~/.config/ocmonitor/config.toml` (recommended user location)
-2. `config.toml` (current directory)
-3. Project directory fallback
+1. Bundled package default (`ocmonitor/config.toml`)
+2. `~/.config/ocmonitor/config.toml` (recommended user overrides)
+3. `config.toml` (current directory)
+4. `ocmonitor.toml` (current directory)
+
+User settings in `~/.config/ocmonitor/config.toml` override the bundled defaults.
 
 ### Remote Pricing Fallback
 
@@ -405,10 +452,9 @@ ocmonitor --no-remote sessions
 ```
 
 **Pricing Precedence (highest to lowest):**
-1. OpenCode's pre-computed cost (from session data, when available)
-2. User override file (`~/.config/ocmonitor/models.json`)
-3. Project/local `models.json`
-4. models.dev remote fallback (fill-only)
+1. User override file (`~/.config/ocmonitor/models.json`)
+2. Project/local `models.json`
+3. models.dev remote fallback (fill-only)
 
 ## 🛠️ Development
 
@@ -455,26 +501,32 @@ python3 test_simple.py
 ### Project Architecture
 ```
 ocmonitor/
-├── ocmonitor/              # Core package
-│   ├── cli.py             # Command-line interface
-│   ├── config.py          # Configuration management
-│   ├── models/            # Pydantic data models
-│   │   ├── session.py     # Session and interaction models
-│   │   └── workflow.py    # Workflow grouping models
-│   ├── services/          # Business logic services
-│   │   ├── agent_registry.py    # Agent type detection
-│   │   ├── session_grouper.py   # Workflow grouping logic
-│   │   ├── live_monitor.py      # Real-time monitoring
-│   │   └── report_generator.py  # Report generation
-│   ├── ui/                # Rich UI components
-│   │   └── dashboard.py   # Live dashboard UI
-│   └── utils/             # Utility functions
-│       ├── data_loader.py # Unified data loading (SQLite/files)
-│       ├── file_utils.py  # File processing
-│       └── sqlite_utils.py # SQLite database access
-├── config.toml            # User configuration
-├── models.json            # AI model pricing data
-└── test_sessions/         # Sample test data
+├── cli.py                     # Command-line interface (all commands)
+├── config.py                  # Configuration management, TOML parsing
+├── models/                    # Pydantic data models
+│   ├── analytics.py           # DailyUsage, WeeklyUsage, MonthlyUsage, ModelUsageStats
+│   ├── session.py             # TokenUsage, TimeData, InteractionFile, SessionData
+│   ├── tool_usage.py          # Tool usage tracking models
+│   └── workflow.py            # Workflow grouping models
+├── services/                  # Business logic layer
+│   ├── agent_registry.py      # Agent type detection
+│   ├── export_service.py      # CSV/JSON export functionality
+│   ├── live_monitor.py        # Real-time dashboard with auto-refresh
+│   ├── price_fetcher.py       # Remote pricing from models.dev
+│   ├── report_generator.py    # Rich UI report generation
+│   ├── session_analyzer.py    # Core session analysis and summaries
+│   └── session_grouper.py     # Workflow grouping logic
+├── ui/                        # Rich UI components
+│   ├── dashboard.py           # Live dashboard UI
+│   ├── tables.py              # Table formatting with progress bars
+│   └── theme.py               # Dark/light theme support
+└── utils/                     # Utility functions
+    ├── data_loader.py         # Unified data loading (SQLite/files)
+    ├── error_handling.py      # User-friendly error messages
+    ├── file_utils.py          # File processing
+    ├── formatting.py          # Number/cost formatting utilities
+    ├── sqlite_utils.py        # SQLite database access
+    └── time_utils.py          # Time formatting and calculations
 ```
 
 ## 🤝 Contributing

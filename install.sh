@@ -19,10 +19,10 @@ echo "✅ Found ocmonitor project directory"
 
 # Check Python version
 PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-if [[ "$(printf '%s\n' "3.7" "$PYTHON_VERSION" | sort -V | head -n1)" == "3.7" ]]; then
+if [[ "$(printf '%s\n' "3.8" "$PYTHON_VERSION" | sort -V | head -n1)" == "3.8" ]]; then
     echo "✅ Python version $PYTHON_VERSION is supported"
 else
-    echo "❌ Python 3.7 or higher is required"
+    echo "❌ Python 3.8 or higher is required"
     exit 1
 fi
 
