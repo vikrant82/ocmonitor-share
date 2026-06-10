@@ -70,7 +70,7 @@ class ReportGenerator:
 
         for session in sessions:
             for file in session.files:
-                model = file.model_id
+                model = file.display_model
                 if model not in model_data:
                     model_data[model] = {
                         "sessions": set(),

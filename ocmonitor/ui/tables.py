@@ -66,8 +66,7 @@ class TableFormatter:
           - bare model    → model
         Truncates to max_groups provider-groups with '(+N more)'.
         """
-        from collections import OrderedDict
-        provider_models: dict = OrderedDict()
+        provider_models: dict = {}
         bare: list = []
         for dm in models:
             if '/' in dm:
@@ -80,12 +79,13 @@ class TableFormatter:
                     bare.append(dm)
 
         parts: list = []
-        for prov, mods in provider_models.items():
+        for prov in sorted(provider_models.keys()):
+            mods = sorted(provider_models[prov])
             if len(mods) == 1:
                 parts.append(f"{prov}/{mods[0]}")
             else:
                 parts.append(f"{prov}/{{{', '.join(mods)}}}")
-        parts.extend(bare)
+        parts.extend(sorted(bare))
 
         if len(parts) <= max_groups:
             return ", ".join(parts)

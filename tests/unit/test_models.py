@@ -630,3 +630,82 @@ class TestWorkflowForceRecalculate:
         # Recalculate: (1M input + 1M output at $3/M) + (0.5M input + 0.5M output at $3/M)
         # = $3.00 + $1.50 = $4.50
         assert workflow.calculate_total_cost(pricing_data, force_recalculate=True) == Decimal("4.5")
+
+
+class TestReportGeneratorModelBreakdown:
+    """Tests for ReportGenerator._get_model_breakdown_for_sessions provider-aware grouping."""
+
+    def _make_file(self, tmp_path, session_id, name, model_id, provider_id=None, **tokens):
+        f = tmp_path / f"{name}.json"
+        f.write_text("{}")
+        return InteractionFile(
+            file_path=f,
+            session_id=session_id,
+            model_id=model_id,
+            provider_id=provider_id,
+            tokens=TokenUsage(**tokens) if tokens else TokenUsage(),
+            raw_data={},
+        )
+
+    def test_same_model_id_different_providers_are_not_merged(self, tmp_path):
+        """Two providers using the same model_id must produce two separate breakdown rows."""
+        from unittest.mock import MagicMock
+        from ocmonitor.services.report_generator import ReportGenerator
+
+        file_a = self._make_file(
+            tmp_path, "ses1", "file_a", model_id="claude-sonnet", provider_id="prov-a",
+            input=100, output=50,
+        )
+        file_b = self._make_file(
+            tmp_path, "ses1", "file_b", model_id="claude-sonnet", provider_id="prov-b",
+            input=200, output=80,
+        )
+
+        session = SessionData(
+            session_id="ses1",
+            session_path=tmp_path / "ses1",
+            files=[file_a, file_b],
+        )
+
+        analyzer = MagicMock()
+        analyzer.pricing_data = {}
+        rg = ReportGenerator(analyzer=analyzer)
+
+        results = rg._get_model_breakdown_for_sessions([session])
+
+        models_in_results = {r["model"] for r in results}
+        assert "prov-a/claude-sonnet" in models_in_results, "prov-a entry missing"
+        assert "prov-b/claude-sonnet" in models_in_results, "prov-b entry missing"
+        assert len(results) == 2, f"Expected 2 rows, got {len(results)}: {models_in_results}"
+
+    def test_same_provider_same_model_id_are_merged(self, tmp_path):
+        """Two files with the same provider+model_id must be aggregated into one row."""
+        from unittest.mock import MagicMock
+        from ocmonitor.services.report_generator import ReportGenerator
+
+        file_a = self._make_file(
+            tmp_path, "ses1", "file_c", model_id="gpt-4o", provider_id="openai",
+            input=100, output=50,
+        )
+        file_b = self._make_file(
+            tmp_path, "ses1", "file_d", model_id="gpt-4o", provider_id="openai",
+            input=200, output=80,
+        )
+
+        session = SessionData(
+            session_id="ses1",
+            session_path=tmp_path / "ses1",
+            files=[file_a, file_b],
+        )
+
+        analyzer = MagicMock()
+        analyzer.pricing_data = {}
+        rg = ReportGenerator(analyzer=analyzer)
+
+        results = rg._get_model_breakdown_for_sessions([session])
+
+        assert len(results) == 1
+        assert results[0]["model"] == "openai/gpt-4o"
+        assert results[0]["interactions"] == 2
+        assert results[0]["input_tokens"] == 300
+        assert results[0]["output_tokens"] == 130
