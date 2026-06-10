@@ -160,10 +160,14 @@ For each `provider_id`, each `model_id`:
 
 ### 7.2 Model key strategy
 
-Generate both keys for better compatibility:
+Generate only the fully-qualified key:
 
-- bare: `<model_id>` (lowercase)
 - fully-qualified: `<provider_id>/<model_id>` (lowercase)
+
+The local pricing lookup chain handles backwards compatibility with existing bare-key
+`models.json` files automatically (see lookup steps 3–5 in section 8.4 below).
+Do not generate bare keys — they cause ambiguity when the same model ID exists under
+multiple providers.
 
 Do not overwrite any existing key from user/local sources.
 

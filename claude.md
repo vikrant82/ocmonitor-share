@@ -80,7 +80,7 @@ models.json                    # AI model pricing data (per 1M tokens)
 1. **File Loading** (`utils/file_utils.py:FileProcessor`):
    - Loads OpenCode session JSON files from `~/.local/share/opencode/storage/message/`
    - Each session contains multiple interaction files with token usage data
-   - Extracts: model_id, tokens (input/output/cache_read/cache_write), project_path, timestamps
+   - Extracts: provider_id, model_id, tokens (input/output/cache_read/cache_write), project_path, timestamps
 
 2. **Session Analysis** (`services/session_analyzer.py:SessionAnalyzer`):
    - Aggregates token usage across all interactions in a session
@@ -106,8 +106,9 @@ models.json                    # AI model pricing data (per 1M tokens)
 - Session time tracking with duration and 5-hour quota progress
 
 **Pricing System**:
-- `models.json` defines cost per 1M tokens for each model
-- Format: `{"model-name": {"input": float, "output": float, "cacheWrite": float, "cacheRead": float, "contextWindow": int, "sessionQuota": float}}`
+- `models.json` defines cost per 1M tokens for each model, keyed by `provider/model-id`
+- Format: `{"provider/model-name": {"input": float, "output": float, "cacheWrite": float, "cacheRead": float, "contextWindow": int, "sessionQuota": float}}`
+- Lookup chain (5 steps, backward compatible): `provider/model_id` → `provider/normalize(model_id)` → bare `model_id` → `normalize(model_id)` → scan `*/model_id`
 - Cost calculation in `session_analyzer.py` multiplies token counts by pricing rates
 
 **CLI Commands** (all in `cli.py`):
@@ -137,10 +138,10 @@ Key settings:
 ## Important Patterns
 
 ### Adding a New Model
-Edit `models.json` with pricing structure:
+Edit `models.json` using `provider/model-id` as the key:
 ```json
 {
-  "model-name": {
+  "provider/model-name": {
     "input": 3.00,
     "output": 15.00,
     "cacheWrite": 3.75,
