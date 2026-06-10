@@ -56,6 +56,7 @@ class InteractionFile(BaseModel):
     file_path: Path
     session_id: str
     model_id: str = Field(default="unknown")
+    provider_id: Optional[str] = Field(default=None, description="Provider ID from OpenCode (e.g. github-copilot, genai-nexus)")
     tokens: TokenUsage = Field(default_factory=TokenUsage)
     time_data: Optional[TimeData] = Field(default=None)
     project_path: Optional[str] = Field(default=None, description="Project working directory from OpenCode")
@@ -76,6 +77,17 @@ class InteractionFile(BaseModel):
     def file_name(self) -> str:
         """Get the file name."""
         return self.file_path.name
+
+    @computed_field
+    @property
+    def display_model(self) -> str:
+        """Get the display model string combining provider and model ID.
+
+        Returns 'provider_id/model_id' when provider is known, else just 'model_id'.
+        """
+        if self.provider_id:
+            return f"{self.provider_id}/{self.model_id}"
+        return self.model_id
 
     @computed_field
     @property
@@ -105,35 +117,58 @@ class InteractionFile(BaseModel):
     def _calculate_cost_from_tokens(self, pricing_data: Dict[str, Any]) -> Decimal:
         """Calculate cost from token usage using pricing data.
 
+        Lookup chain (stops at first match):
+          1. provider_id/model_id          — exact provider+model match
+          2. provider_id/normalize(model_id) — provider + normalized model
+          3. model_id                        — bare exact (backward compat)
+          4. normalize(model_id)             — bare normalized (backward compat)
+          5. scan */model_id or */normalize  — any provider, model-only match
+
         Args:
             pricing_data: Dictionary of model pricing information
 
         Returns:
             Calculated cost in USD
         """
+        from ..utils.file_utils import FileProcessor
         pricing = None
+        normalized = FileProcessor._normalize_model_name(self.model_id)
 
-        # First try exact match
-        if self.model_id in pricing_data:
+        # Step 1: provider_id/model_id exact match
+        if self.provider_id:
+            key = f"{self.provider_id}/{self.model_id}"
+            if key in pricing_data:
+                pricing = pricing_data[key]
+
+        # Step 2: provider_id/normalize(model_id)
+        if pricing is None and self.provider_id:
+            key = f"{self.provider_id}/{normalized}"
+            if key in pricing_data:
+                pricing = pricing_data[key]
+
+        # Step 3: bare model_id exact match (backward compat / old models.json)
+        if pricing is None and self.model_id in pricing_data:
             pricing = pricing_data[self.model_id]
-        else:
-            # Try prefix matching - extract base model name
-            # e.g., claude-opus-4.5-20251101 -> claude-opus-4.5
-            from ..utils.file_utils import FileProcessor
-            normalized = FileProcessor._normalize_model_name(self.model_id)
 
-            if normalized in pricing_data:
-                pricing = pricing_data[normalized]
-            else:
-                # Try finding a matching key by prefix
-                for key in pricing_data.keys():
-                    if normalized.startswith(key) or key.startswith(normalized):
-                        # Check if they're similar (same model family)
-                        # e.g., "claude-opus-4.5" matches "claude-opus-4.5-extended"
-                        if key.replace('-extended', '') == normalized or \
-                           normalized.replace('-extended', '') == key:
-                            pricing = pricing_data[key]
-                            break
+        # Step 4: bare normalized exact match (backward compat)
+        if pricing is None and normalized in pricing_data:
+            pricing = pricing_data[normalized]
+
+        # Step 5: scan all keys for */model_id or */normalized
+        # Covers antigravity-style entries and old bare-key user configs
+        if pricing is None:
+            for key, value in pricing_data.items():
+                if '/' in key:
+                    _, key_model = key.split('/', 1)
+                    if key_model == self.model_id or key_model == normalized:
+                        pricing = value
+                        break
+                else:
+                    # Existing prefix-scan for -extended variant matching
+                    if key.replace('-extended', '') == normalized or \
+                       normalized.replace('-extended', '') == key:
+                        pricing = value
+                        break
 
         if pricing is None:
             return Decimal('0.0')
@@ -195,8 +230,11 @@ class SessionData(BaseModel):
     @computed_field
     @property
     def models_used(self) -> List[str]:
-        """Get list of unique models used in this session."""
-        return list(set(file.model_id for file in self.files))
+        """Get list of unique models used in this session.
+
+        Returns 'provider_id/model_id' when provider is known, else just 'model_id'.
+        """
+        return list(set(file.display_model for file in self.files))
 
     @computed_field
     @property
@@ -279,7 +317,7 @@ class SessionData(BaseModel):
         breakdown = {}
 
         for model in self.models_used:
-            model_files = [f for f in self.files if f.model_id == model]
+            model_files = [f for f in self.files if f.display_model == model]
             model_tokens = TokenUsage()
             model_cost = Decimal('0.0')
             model_duration_ms = 0

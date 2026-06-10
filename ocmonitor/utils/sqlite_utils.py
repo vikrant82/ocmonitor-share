@@ -155,13 +155,15 @@ class SQLiteProcessor:
         time_data = cls._extract_time_data(data)
         project_path = cls._extract_project_path(data)
         agent = cls._extract_agent(data)
-        model_id = cls._extract_model_name(data)
+        model_id = cls._extract_model_name(data).lower()
+        provider_id = data.get("providerID", "").lower() or None
         finish_reason = data.get("finish")
 
         return InteractionFile(
             file_path=Path("sqlite") / session_id,  # Placeholder path
             session_id=session_id,
             model_id=model_id,
+            provider_id=provider_id,
             tokens=tokens,
             time_data=time_data,
             project_path=project_path,

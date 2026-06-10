@@ -213,7 +213,8 @@ class FileProcessor:
         try:
             # Extract basic information
             model_id = data.get('modelID', 'unknown')
-            
+            provider_id = data.get('providerID', '').lower() or None
+
             # Handle fully qualified model names
             model_id = FileProcessor._extract_model_name(model_id)
 
@@ -254,6 +255,7 @@ class FileProcessor:
                 file_path=file_path,
                 session_id=session_id,
                 model_id=model_id,
+                provider_id=provider_id,
                 tokens=tokens,
                 time_data=time_data,
                 project_path=project_path,

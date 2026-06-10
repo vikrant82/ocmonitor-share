@@ -362,7 +362,7 @@ class TimeframeAnalyzer:
 
         for session in filtered_sessions:
             for model in session.models_used:
-                model_files = [f for f in session.files if f.model_id == model]
+                model_files = [f for f in session.files if f.display_model == model]
                 model_stats = model_data[model]
 
                 # Update token counts
