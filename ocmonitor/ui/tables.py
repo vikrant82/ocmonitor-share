@@ -48,6 +48,49 @@ class TableFormatter:
         """Get color for cost based on quota using semantic theme tags."""
         return ColorFormatter.get_cost_color(cost, quota, default_style="table.row.main")
 
+    @staticmethod
+    def _split_provider_model(display_model: str) -> tuple:
+        """Split 'provider/model' into (provider, model). Bare model → ('', model)."""
+        if '/' in display_model:
+            provider, _, model = display_model.partition('/')
+            return provider, model
+        return "", display_model
+
+    @staticmethod
+    def _compact_models_display(models: list, max_groups: int = 3) -> str:
+        """Format a list of provider/model strings compactly.
+
+        Groups models by provider:
+          - single model  → provider/model
+          - multi models  → provider/{model1, model2}
+          - bare model    → model
+        Truncates to max_groups provider-groups with '(+N more)'.
+        """
+        from collections import OrderedDict
+        provider_models: dict = OrderedDict()
+        bare: list = []
+        for dm in models:
+            if '/' in dm:
+                prov, _, mod = dm.partition('/')
+                provider_models.setdefault(prov, [])
+                if mod not in provider_models[prov]:
+                    provider_models[prov].append(mod)
+            else:
+                if dm not in bare:
+                    bare.append(dm)
+
+        parts: list = []
+        for prov, mods in provider_models.items():
+            if len(mods) == 1:
+                parts.append(f"{prov}/{mods[0]}")
+            else:
+                parts.append(f"{prov}/{{{', '.join(mods)}}}")
+        parts.extend(bare)
+
+        if len(parts) <= max_groups:
+            return ", ".join(parts)
+        return ", ".join(parts[:max_groups]) + f" (+{len(parts) - max_groups} more)"
+
     def create_sessions_table(self, sessions: List[SessionData], pricing_data: Dict[str, Any],
                          force_recalculate: bool = False) -> Table:
         """Create a table for multiple sessions using semantic theme styles."""
@@ -62,7 +105,8 @@ class TableFormatter:
         table.add_column("Started", style="table.row.time", no_wrap=True)
         table.add_column("Duration", style="table.row.time", no_wrap=True)
         table.add_column("Session", style="table.row.main", max_width=35)
-        table.add_column("Model", style="table.row.model", max_width=25)
+        table.add_column("Provider", style="table.row.model", max_width=20)
+        table.add_column("Model", style="table.row.model", max_width=30)
         table.add_column("Interactions", justify="right", style="status.success")
         table.add_column("Input Tokens", justify="right", style="table.row.tokens")
         table.add_column("Output Tokens", justify="right", style="table.row.tokens")
@@ -109,9 +153,9 @@ class TableFormatter:
                     session_display = ""
 
                 # Format model name
-                model_text = Text(model)
-                if len(model) > 25:
-                    model_text = Text(f"{model[:22]}...")
+                provider_name, model_name = self._split_provider_model(model)
+                provider_text = Text(provider_name[:17] + "..." if len(provider_name) > 20 else provider_name)
+                model_text = Text(model_name[:27] + "..." if len(model_name) > 30 else model_name)
 
                 # Get cost color
                 cost_color = self.get_cost_color(stats['cost'])
@@ -130,6 +174,7 @@ class TableFormatter:
                     start_time,
                     duration,
                     session_display,
+                    provider_text,
                     model_text,
                     self.format_number(stats['files']),
                     self.format_number(stats['tokens'].input),
@@ -153,6 +198,7 @@ class TableFormatter:
             Text("TOTALS", style="table.footer"),
             "",
             "",  # Empty session column
+            "",  # Empty provider column
             Text(f"{len(sorted_sessions)} sessions", style="table.footer"),
             Text(self.format_number(total_interactions), style="status.success"),
             Text(self.format_number(total_tokens.input), style="table.row.tokens"),
@@ -176,7 +222,8 @@ class TableFormatter:
 
         # Add columns
         table.add_column("File", style="table.row.time", max_width=30)
-        table.add_column("Model", style="table.row.model")
+        table.add_column("Provider", style="table.row.model", max_width=20)
+        table.add_column("Model", style="table.row.model", max_width=30)
         table.add_column("Input", justify="right", style="table.row.tokens")
         table.add_column("Output", justify="right", style="table.row.tokens")
         table.add_column("Cache W", justify="right", style="status.success")
@@ -202,9 +249,12 @@ class TableFormatter:
 
             cost_color = self.get_cost_color(cost)
 
+            prov, mod = self._split_provider_model(file.display_model)
+
             table.add_row(
                 Text(file.file_name[:27] + "..." if len(file.file_name) > 30 else file.file_name),
-                file.model_id,
+                Text(prov[:17] + "..." if len(prov) > 20 else prov),
+                Text(mod[:27] + "..." if len(mod) > 30 else mod),
                 self.format_number(file.tokens.input),
                 self.format_number(file.tokens.output),
                 self.format_number(file.tokens.cache_write),
@@ -218,6 +268,7 @@ class TableFormatter:
         table.add_section()
         table.add_row(
             Text("TOTALS", style="table.footer"),
+            "",
             "",
             Text(self.format_number(total_tokens.input), style="table.row.tokens"),
             Text(self.format_number(total_tokens.output), style="table.row.tokens"),
@@ -267,9 +318,7 @@ class TableFormatter:
             total_tokens.cache_read += day_tokens.cache_read
             total_cost += day_cost
 
-            models_text = ", ".join(day.models_used[:3])
-            if len(day.models_used) > 3:
-                models_text += f" (+{len(day.models_used) - 3} more)"
+            models_text = self._compact_models_display(day.models_used)
 
             cost_color = self.get_cost_color(day_cost)
 
@@ -309,6 +358,7 @@ class TableFormatter:
         )
 
         # Add columns
+        table.add_column("Provider", style="table.row.model", max_width=20)
         table.add_column("Model", style="table.row.model", max_width=30)
         table.add_column("Sessions", justify="right", style="status.success")
         table.add_column("Interactions", justify="right", style="status.success")
@@ -334,8 +384,11 @@ class TableFormatter:
             else:
                 speed_text = f"{speed:.1f} t/s"
 
+            prov, mod = self._split_provider_model(model.model_name)
+
             table.add_row(
-                Text(model.model_name[:27] + "..." if len(model.model_name) > 30 else model.model_name),
+                Text(prov[:17] + "..." if len(prov) > 20 else prov),
+                Text(mod[:27] + "..." if len(mod) > 30 else mod),
                 self.format_number(model.total_sessions),
                 self.format_number(model.total_interactions),
                 self.format_number(model.total_tokens.input),

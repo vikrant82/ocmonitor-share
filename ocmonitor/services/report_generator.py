@@ -46,6 +46,14 @@ class ReportGenerator:
             return self.currency_converter.format(amount)
         return f"${amount:.2f}"
 
+    @staticmethod
+    def _split_provider_model(display_model: str) -> tuple:
+        """Split 'provider/model' into (provider, model). Bare model → ('', model)."""
+        if '/' in display_model:
+            provider, _, model = display_model.partition('/')
+            return provider, model
+        return "", display_model
+
     def _get_model_breakdown_for_sessions(
         self, sessions: List[SessionData], force_recalculate: bool = False
     ) -> List[Dict[str, Any]]:
@@ -839,7 +847,8 @@ class ReportGenerator:
         table.add_column(
             "Project", style="table.row.project", no_wrap=True, max_width=15
         )
-        table.add_column("Model", style="table.row.model", no_wrap=True, max_width=20)
+        table.add_column("Provider", style="table.row.model", no_wrap=True, max_width=15)
+        table.add_column("Model", style="table.row.model", no_wrap=True, max_width=25)
         table.add_column(
             "Agent", justify="center", style="table.row.model", no_wrap=True
         )
@@ -877,11 +886,14 @@ class ReportGenerator:
                 else:
                     model_display = f"{unique_models[0]}+{len(unique_models) - 1}"
 
+                wf_prov, wf_mod = self._split_provider_model(model_display)
+
                 table.add_row(
                     f"[table.row.time]{start_time}[/table.row.time]",
                     f"[table.row.main]{title}[/table.row.main]",
                     f"[table.row.project]{workflow.project_name[:15]}[/table.row.project]",
-                    f"[table.row.model]{model_display}[/table.row.model]",
+                    f"[table.row.model]{wf_prov}[/table.row.model]",
+                    f"[table.row.model]{wf_mod}[/table.row.model]",
                     f"[table.row.model]+{workflow.sub_agent_count}[/table.row.model]",
                     f"[status.success]{sum(s.interaction_count for s in workflow.all_sessions)}[/status.success]",
                     f"[table.row.tokens]{workflow.total_tokens.total:,}[/table.row.tokens]",
@@ -907,11 +919,14 @@ class ReportGenerator:
                 else:
                     main_model_display = "-"
 
+                main_prov, main_mod = self._split_provider_model(main_model_display)
+
                 table.add_row(
                     "",  # No separate start time for sub-rows
                     f"  ├─ {main_title}",
                     "",
-                    main_model_display,
+                    main_prov,
+                    main_mod,
                     main.agent or "main",
                     f"{main.interaction_count}",
                     f"{main.total_tokens.total:,}",
@@ -939,11 +954,14 @@ class ReportGenerator:
                     else:
                         sub_model_display = "-"
 
+                    sub_prov, sub_mod = self._split_provider_model(sub_model_display)
+
                     table.add_row(
                         "",  # No separate start time for sub-rows
                         f"{prefix} {sub_title}",
                         "",
-                        sub_model_display,
+                        sub_prov,
+                        sub_mod,
                         sub.agent or "sub",
                         f"{sub.interaction_count}",
                         f"{sub.total_tokens.total:,}",
@@ -976,11 +994,14 @@ class ReportGenerator:
                 else:
                     model_display = "-"
 
+                single_prov, single_mod = self._split_provider_model(model_display)
+
                 table.add_row(
                     start_time,
                     title,
                     main.project_name[:15],
-                    model_display,
+                    single_prov,
+                    single_mod,
                     main.agent or "-",
                     f"{main.interaction_count}",
                     f"{main.total_tokens.total:,}",
