@@ -10,6 +10,7 @@ from rich.panel import Panel
 from ..models.session import SessionData, TokenUsage
 from ..models.analytics import DailyUsage, ModelUsageStats, ModelDetailStats
 from ..models.tool_usage import ToolUsageStats
+from ..utils.file_utils import FileProcessor
 from ..utils.time_utils import TimeUtils, compute_p50_output_rate
 from ..utils.formatting import ColorFormatter
 
@@ -47,14 +48,6 @@ class TableFormatter:
     def get_cost_color(self, cost: Decimal, quota: Optional[Decimal] = None) -> str:
         """Get color for cost based on quota using semantic theme tags."""
         return ColorFormatter.get_cost_color(cost, quota, default_style="table.row.main")
-
-    @staticmethod
-    def _split_provider_model(display_model: str) -> tuple:
-        """Split 'provider/model' into (provider, model). Bare model → ('', model)."""
-        if '/' in display_model:
-            provider, _, model = display_model.partition('/')
-            return provider, model
-        return "", display_model
 
     @staticmethod
     def _compact_models_display(models: list, max_groups: int = 3) -> str:
@@ -153,7 +146,7 @@ class TableFormatter:
                     session_display = ""
 
                 # Format model name
-                provider_name, model_name = self._split_provider_model(model)
+                provider_name, model_name = FileProcessor.split_provider_model(model)
                 provider_text = Text(provider_name[:17] + "..." if len(provider_name) > 20 else provider_name)
                 model_text = Text(model_name[:27] + "..." if len(model_name) > 30 else model_name)
 
@@ -249,7 +242,7 @@ class TableFormatter:
 
             cost_color = self.get_cost_color(cost)
 
-            prov, mod = self._split_provider_model(file.display_model)
+            prov, mod = FileProcessor.split_provider_model(file.display_model)
 
             table.add_row(
                 Text(file.file_name[:27] + "..." if len(file.file_name) > 30 else file.file_name),
@@ -384,7 +377,7 @@ class TableFormatter:
             else:
                 speed_text = f"{speed:.1f} t/s"
 
-            prov, mod = self._split_provider_model(model.model_name)
+            prov, mod = FileProcessor.split_provider_model(model.model_name)
 
             table.add_row(
                 Text(prov[:17] + "..." if len(prov) > 20 else prov),
@@ -701,4 +694,3 @@ class TableFormatter:
             )
 
         return table
-

@@ -17,6 +17,7 @@ from ..models.session import SessionData
 from ..services.session_analyzer import SessionAnalyzer
 from ..services.session_grouper import SessionGrouper
 from ..ui.tables import TableFormatter
+from ..utils.file_utils import FileProcessor
 
 
 class ReportGenerator:
@@ -45,14 +46,6 @@ class ReportGenerator:
         if self.currency_converter:
             return self.currency_converter.format(amount)
         return f"${amount:.2f}"
-
-    @staticmethod
-    def _split_provider_model(display_model: str) -> tuple:
-        """Split 'provider/model' into (provider, model). Bare model → ('', model)."""
-        if '/' in display_model:
-            provider, _, model = display_model.partition('/')
-            return provider, model
-        return "", display_model
 
     def _get_model_breakdown_for_sessions(
         self, sessions: List[SessionData], force_recalculate: bool = False
@@ -886,7 +879,7 @@ class ReportGenerator:
                 else:
                     model_display = f"{unique_models[0]}+{len(unique_models) - 1}"
 
-                wf_prov, wf_mod = self._split_provider_model(model_display)
+                wf_prov, wf_mod = FileProcessor.split_provider_model(model_display)
 
                 table.add_row(
                     f"[table.row.time]{start_time}[/table.row.time]",
@@ -919,7 +912,7 @@ class ReportGenerator:
                 else:
                     main_model_display = "-"
 
-                main_prov, main_mod = self._split_provider_model(main_model_display)
+                main_prov, main_mod = FileProcessor.split_provider_model(main_model_display)
 
                 table.add_row(
                     "",  # No separate start time for sub-rows
@@ -954,7 +947,7 @@ class ReportGenerator:
                     else:
                         sub_model_display = "-"
 
-                    sub_prov, sub_mod = self._split_provider_model(sub_model_display)
+                    sub_prov, sub_mod = FileProcessor.split_provider_model(sub_model_display)
 
                     table.add_row(
                         "",  # No separate start time for sub-rows
@@ -994,7 +987,7 @@ class ReportGenerator:
                 else:
                     model_display = "-"
 
-                single_prov, single_mod = self._split_provider_model(model_display)
+                single_prov, single_mod = FileProcessor.split_provider_model(model_display)
 
                 table.add_row(
                     start_time,

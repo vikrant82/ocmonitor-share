@@ -182,6 +182,7 @@ class LiveMonitor:
                 )
         else:
             self._displayed_workflow_id = None
+        self.data_loader = DataLoader()
 
     def _lookup_pricing_for_file(
         self, interaction_file: InteractionFile
@@ -193,7 +194,6 @@ class LiveMonitor:
             provider_id=interaction_file.provider_id,
         )
         return cast(Optional[ModelPricing], pricing)
-        self.data_loader = DataLoader()
 
     def _get_file_active_workflows(
         self, base_path: str, allow_fallback: bool = True

@@ -188,6 +188,14 @@ class FileProcessor:
         return None
 
     @staticmethod
+    def split_provider_model(display_model: str) -> tuple[str, str]:
+        """Split 'provider/model' into (provider, model). Bare model -> ('', model)."""
+        if '/' in display_model:
+            provider, _, model = display_model.partition('/')
+            return provider, model
+        return "", display_model
+
+    @staticmethod
     def extract_project_name(path_str: str) -> str:
         """Extract project name from a file path.
         

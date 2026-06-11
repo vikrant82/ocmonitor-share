@@ -1,6 +1,7 @@
 from decimal import Decimal
 from unittest.mock import MagicMock
 
+from ocmonitor.utils.file_utils import FileProcessor
 from ocmonitor.ui.tables import TableFormatter
 
 
@@ -138,21 +139,23 @@ class TestCompactModelsDisplay:
 
 
 class TestSplitProviderModel:
-    """Tests for provider/model splitting helper in table formatter."""
+    """Tests for provider/model splitting helper in file processor."""
 
     def test_qualified_name_splits_provider_and_model(self):
-        provider, model = TableFormatter._split_provider_model(
+        provider, model = FileProcessor.split_provider_model(
             "github-copilot/claude-sonnet-4.5"
         )
         assert provider == "github-copilot"
         assert model == "claude-sonnet-4.5"
 
     def test_bare_model_returns_empty_provider(self):
-        provider, model = TableFormatter._split_provider_model("claude-sonnet-4.5")
+        provider, model = FileProcessor.split_provider_model("claude-sonnet-4.5")
         assert provider == ""
         assert model == "claude-sonnet-4.5"
 
     def test_multiple_slashes_split_on_first_only(self):
-        provider, model = TableFormatter._split_provider_model("openrouter/anthropic/claude-opus")
+        provider, model = FileProcessor.split_provider_model(
+            "openrouter/anthropic/claude-opus"
+        )
         assert provider == "openrouter"
         assert model == "anthropic/claude-opus"

@@ -263,6 +263,12 @@ class SessionAnalyzer:
         if not models:
             return sessions
 
+        def _matches(query: str, session_models: List[str], model_parts: set[str]) -> bool:
+            q = query.lower()
+            if '/' in q:
+                return q in session_models
+            return q in model_parts
+
         filtered = []
         for session in sessions:
             session_models = session.models_used
@@ -271,13 +277,7 @@ class SessionAnalyzer:
                 for m in session_models
             }
 
-            def _matches(query: str) -> bool:
-                q = query.lower()
-                if '/' in q:
-                    return q in session_models
-                return q in model_parts
-
-            if any(_matches(model) for model in models):
+            if any(_matches(model, session_models, model_parts) for model in models):
                 filtered.append(session)
 
         return filtered
@@ -412,10 +412,8 @@ class SessionAnalyzer:
         for model in session.models_used:
             if model == 'unknown':
                 continue
-            if '/' in model:
-                provider_id, model_id = model.split('/', 1)
-            else:
-                provider_id, model_id = None, model
+            provider_id, model_id = FileProcessor.split_provider_model(model)
+            provider_id = provider_id or None
             pricing = FileProcessor.lookup_pricing(self.pricing_data, model_id, provider_id)
             if pricing is None:
                 unknown_models.append(model)
