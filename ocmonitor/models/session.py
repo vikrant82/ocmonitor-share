@@ -117,12 +117,8 @@ class InteractionFile(BaseModel):
     def _calculate_cost_from_tokens(self, pricing_data: Dict[str, Any]) -> Decimal:
         """Calculate cost from token usage using pricing data.
 
-        Lookup chain (stops at first match):
-          1. provider_id/model_id          — exact provider+model match
-          2. provider_id/normalize(model_id) — provider + normalized model
-          3. model_id                        — bare exact (backward compat)
-          4. normalize(model_id)             — bare normalized (backward compat)
-          5. scan */model_id or */normalize  — any provider, model-only match
+        Delegates provider-aware lookup fallback logic to
+        FileProcessor.lookup_pricing.
 
         Args:
             pricing_data: Dictionary of model pricing information
