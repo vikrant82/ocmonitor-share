@@ -131,44 +131,11 @@ class InteractionFile(BaseModel):
             Calculated cost in USD
         """
         from ..utils.file_utils import FileProcessor
-        pricing = None
-        normalized = FileProcessor._normalize_model_name(self.model_id)
-
-        # Step 1: provider_id/model_id exact match
-        if self.provider_id:
-            key = f"{self.provider_id}/{self.model_id}"
-            if key in pricing_data:
-                pricing = pricing_data[key]
-
-        # Step 2: provider_id/normalize(model_id)
-        if pricing is None and self.provider_id:
-            key = f"{self.provider_id}/{normalized}"
-            if key in pricing_data:
-                pricing = pricing_data[key]
-
-        # Step 3: bare model_id exact match (backward compat / old models.json)
-        if pricing is None and self.model_id in pricing_data:
-            pricing = pricing_data[self.model_id]
-
-        # Step 4: bare normalized exact match (backward compat)
-        if pricing is None and normalized in pricing_data:
-            pricing = pricing_data[normalized]
-
-        # Step 5: scan all keys for */model_id or */normalized
-        # Covers antigravity-style entries and old bare-key user configs
-        if pricing is None:
-            for key, value in pricing_data.items():
-                if '/' in key:
-                    _, key_model = key.split('/', 1)
-                    if key_model == self.model_id or key_model == normalized:
-                        pricing = value
-                        break
-                else:
-                    # Existing prefix-scan for -extended variant matching
-                    if key.replace('-extended', '') == normalized or \
-                       normalized.replace('-extended', '') == key:
-                        pricing = value
-                        break
+        pricing = FileProcessor.lookup_pricing(
+            pricing_data,
+            model_id=self.model_id,
+            provider_id=self.provider_id,
+        )
 
         if pricing is None:
             return Decimal('0.0')

@@ -709,3 +709,107 @@ class TestReportGeneratorModelBreakdown:
         assert results[0]["interactions"] == 2
         assert results[0]["input_tokens"] == 300
         assert results[0]["output_tokens"] == 130
+
+
+class TestSessionAnalyzerProviderAwareRegressions:
+    """Regression tests for maintainer-reported provider-aware issues."""
+
+    def _make_file(self, tmp_path, name, model_id, provider_id=None, **tokens):
+        f = tmp_path / f"{name}.json"
+        f.write_text("{}")
+        return InteractionFile(
+            file_path=f,
+            session_id="ses_test",
+            model_id=model_id,
+            provider_id=provider_id,
+            tokens=TokenUsage(**tokens) if tokens else TokenUsage(),
+            raw_data={},
+        )
+
+    def test_filter_sessions_by_model_matches_bare_name_against_provider_model(self, tmp_path):
+        """Bare model filter should match provider/model display values for backward compatibility."""
+        from ocmonitor.services.session_analyzer import SessionAnalyzer
+
+        interaction = self._make_file(
+            tmp_path,
+            "inter_provider",
+            model_id="claude-sonnet-4.5",
+            provider_id="github-copilot",
+            input=10,
+            output=5,
+        )
+        session = SessionData(
+            session_id="ses_test",
+            session_path=tmp_path / "ses_test",
+            files=[interaction],
+        )
+
+        analyzer = SessionAnalyzer(pricing_data={})
+        result = analyzer.filter_sessions_by_model([session], ["claude-sonnet-4.5"])
+
+        assert len(result) == 1
+
+    def test_validate_session_health_no_false_unknown_warning_for_bare_model(self, tmp_path):
+        """Bare model should not be flagged unknown when pricing exists under provider/model key."""
+        from ocmonitor.services.session_analyzer import SessionAnalyzer
+
+        interaction = self._make_file(
+            tmp_path,
+            "inter_bare",
+            model_id="claude-sonnet-4.5",
+            provider_id=None,
+            input=10,
+            output=5,
+        )
+        session = SessionData(
+            session_id="ses_test",
+            session_path=tmp_path / "ses_test",
+            files=[interaction],
+        )
+
+        pricing_data = {
+            "github-copilot/claude-sonnet-4.5": ModelPricing(
+                input=Decimal("1.0"),
+                output=Decimal("2.0"),
+                cacheWrite=Decimal("0.0"),
+                cacheRead=Decimal("0.0"),
+                contextWindow=200000,
+                sessionQuota=Decimal("10.0"),
+            )
+        }
+        analyzer = SessionAnalyzer(pricing_data=pricing_data)
+
+        result = analyzer.validate_session_health(session)
+
+        unknown_warnings = [
+            w for w in result.get("warnings", []) if "Unknown models with no pricing" in w
+        ]
+        assert unknown_warnings == []
+
+
+class TestPricingLookupHelperRegression:
+    """Regression test to enforce shared provider-aware pricing lookup helper."""
+
+    def test_file_processor_exposes_shared_lookup_pricing_helper(self):
+        """Shared helper should exist and resolve bare model via provider/model keys."""
+        from ocmonitor.utils.file_utils import FileProcessor
+
+        pricing_data = {
+            "github-copilot/claude-sonnet-4.5": ModelPricing(
+                input=Decimal("1.0"),
+                output=Decimal("2.0"),
+                cacheWrite=Decimal("0.0"),
+                cacheRead=Decimal("0.0"),
+                contextWindow=200000,
+                sessionQuota=Decimal("10.0"),
+            )
+        }
+
+        pricing = FileProcessor.lookup_pricing(
+            pricing_data,
+            model_id="claude-sonnet-4.5",
+            provider_id=None,
+        )
+
+        assert pricing is not None
+        assert pricing.input == Decimal("1.0")

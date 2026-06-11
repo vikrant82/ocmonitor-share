@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Generator
 from datetime import datetime
 
+from ..utils.file_utils import FileProcessor
 from ..models.session import SessionData, InteractionFile, TokenUsage, TimeData
 from ..models.tool_usage import ToolUsageStats, ToolUsageSummary, ModelToolUsage
 from ..models.analytics import ModelDetailStats
@@ -156,7 +157,7 @@ class SQLiteProcessor:
         project_path = cls._extract_project_path(data)
         agent = cls._extract_agent(data)
         model_id = cls._extract_model_name(data).lower()
-        provider_id = data.get("providerID", "").lower() or None
+        provider_id = (data.get("providerID") or "").lower() or None
         finish_reason = data.get("finish")
 
         return InteractionFile(
@@ -972,7 +973,11 @@ class SQLiteProcessor:
 
             # Calculate cost using pricing data
             total_cost = Decimal('0.0')
-            model_pricing = pricing_data.get(model_name)
+            model_pricing = FileProcessor.lookup_pricing(
+                pricing_data,
+                model_id=model_name,
+                provider_id=None,
+            )
             if model_pricing:
                 price_input = getattr(model_pricing, 'input', 0) or 0
                 price_output = getattr(model_pricing, 'output', 0) or 0

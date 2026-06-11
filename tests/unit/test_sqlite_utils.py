@@ -1,5 +1,6 @@
 """Tests for SQLite path discovery behavior."""
 
+import json
 from pathlib import Path
 
 from ocmonitor.config import Config, PathsConfig, config_manager
@@ -72,3 +73,23 @@ class TestFindDatabasePath:
         resolved = SQLiteProcessor.find_database_path()
 
         assert resolved == default_db
+
+
+class TestParseMessageData:
+    """Tests for SQLiteProcessor.parse_message_data."""
+
+    def test_parse_null_provider_id(self):
+        """providerID=null should not crash and should map to None."""
+        message = json.dumps(
+            {
+                "role": "assistant",
+                "modelID": "test-model",
+                "providerID": None,
+                "tokens": {"input": 1000, "output": 500},
+            }
+        )
+
+        result = SQLiteProcessor.parse_message_data(message, "ses_test")
+
+        assert result is not None
+        assert result.provider_id is None

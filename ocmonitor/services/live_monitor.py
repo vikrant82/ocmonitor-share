@@ -182,6 +182,17 @@ class LiveMonitor:
                 )
         else:
             self._displayed_workflow_id = None
+
+    def _lookup_pricing_for_file(
+        self, interaction_file: InteractionFile
+    ) -> Optional[ModelPricing]:
+        """Lookup pricing for an interaction using provider-aware fallback chain."""
+        pricing = FileProcessor.lookup_pricing(
+            self.pricing_data,
+            model_id=interaction_file.model_id,
+            provider_id=interaction_file.provider_id,
+        )
+        return cast(Optional[ModelPricing], pricing)
         self.data_loader = DataLoader()
 
     def _get_file_active_workflows(
@@ -1013,8 +1024,10 @@ class LiveMonitor:
 
         # Get model pricing for quota
         quota = None
-        if recent_file and recent_file.model_id in self.pricing_data:
-            quota = self.pricing_data[recent_file.model_id].session_quota
+        if recent_file:
+            pricing = self._lookup_pricing_for_file(recent_file)
+            if pricing is not None:
+                quota = pricing.session_quota
 
         # Calculate per-model output rates for this session
         per_model_output_rates = self._calculate_session_output_rates(session)
@@ -1082,8 +1095,9 @@ class LiveMonitor:
         default_context_window = 200000
 
         for model_id, recent_file in model_most_recent.items():
-            if model_id in self.pricing_data:
-                context_window = self.pricing_data[model_id].context_window
+            pricing = self._lookup_pricing_for_file(recent_file)
+            if pricing is not None:
+                context_window = pricing.context_window
             else:
                 context_window = default_context_window
 
@@ -1134,8 +1148,10 @@ class LiveMonitor:
 
         # Get model pricing for quota
         quota = None
-        if recent_file and recent_file.model_id in self.pricing_data:
-            quota = self.pricing_data[recent_file.model_id].session_quota
+        if recent_file:
+            pricing = self._lookup_pricing_for_file(recent_file)
+            if pricing is not None:
+                quota = pricing.session_quota
 
         # Load tool usage statistics (file mode - no SQLite fallback)
         tool_stats = self._load_tool_stats_for_workflow(
@@ -1220,8 +1236,9 @@ class LiveMonitor:
         default_context_window = 200000
 
         for model_id, recent_file in model_most_recent.items():
-            if model_id in self.pricing_data:
-                context_window = self.pricing_data[model_id].context_window
+            pricing = self._lookup_pricing_for_file(recent_file)
+            if pricing is not None:
+                context_window = pricing.context_window
             else:
                 context_window = default_context_window
 
@@ -1431,14 +1448,14 @@ class LiveMonitor:
         Returns:
             Context usage information
         """
-        if interaction_file.model_id not in self.pricing_data:
+        model_pricing = self._lookup_pricing_for_file(interaction_file)
+        if model_pricing is None:
             return {
                 "context_size": 0,
                 "context_window": 200000,
                 "usage_percentage": 0.0,
             }
 
-        model_pricing = self.pricing_data[interaction_file.model_id]
         context_window = model_pricing.context_window
 
         # Context size = input + cache read + cache write
@@ -1814,8 +1831,10 @@ class LiveMonitor:
 
         # Get model pricing for quota
         quota = None
-        if recent_file and recent_file.model_id in self.pricing_data:
-            quota = self.pricing_data[recent_file.model_id].session_quota
+        if recent_file:
+            pricing = self._lookup_pricing_for_file(recent_file)
+            if pricing is not None:
+                quota = pricing.session_quota
 
         # Create a workflow wrapper for the dashboard UI
         workflow_wrapper = WorkflowWrapper(workflow, self.pricing_data)
@@ -1911,8 +1930,9 @@ class LiveMonitor:
         default_context_window = 200000
 
         for model_id, recent_file in model_most_recent.items():
-            if model_id in self.pricing_data:
-                context_window = self.pricing_data[model_id].context_window
+            pricing = self._lookup_pricing_for_file(recent_file)
+            if pricing is not None:
+                context_window = pricing.context_window
             else:
                 context_window = default_context_window
 

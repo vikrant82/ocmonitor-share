@@ -265,7 +265,19 @@ class SessionAnalyzer:
 
         filtered = []
         for session in sessions:
-            if any(model in session.models_used for model in models):
+            session_models = session.models_used
+            model_parts = {
+                m.split('/', 1)[1] if '/' in m else m
+                for m in session_models
+            }
+
+            def _matches(query: str) -> bool:
+                q = query.lower()
+                if '/' in q:
+                    return q in session_models
+                return q in model_parts
+
+            if any(_matches(model) for model in models):
                 filtered.append(session)
 
         return filtered
@@ -396,7 +408,17 @@ class SessionAnalyzer:
             warnings.append(f"{missing_time} interactions missing time data")
 
         # Check for unknown models
-        unknown_models = [model for model in session.models_used if model not in self.pricing_data and model != 'unknown']
+        unknown_models = []
+        for model in session.models_used:
+            if model == 'unknown':
+                continue
+            if '/' in model:
+                provider_id, model_id = model.split('/', 1)
+            else:
+                provider_id, model_id = None, model
+            pricing = FileProcessor.lookup_pricing(self.pricing_data, model_id, provider_id)
+            if pricing is None:
+                unknown_models.append(model)
         if unknown_models:
             warnings.append(f"Unknown models with no pricing: {', '.join(unknown_models)}")
 
