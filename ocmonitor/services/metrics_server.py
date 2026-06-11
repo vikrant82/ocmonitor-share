@@ -18,6 +18,7 @@ class OCMonitorCollector:
     """Custom Prometheus collector that loads fresh data on each scrape."""
 
     def __init__(self, pricing_data: Dict[str, ModelPricing]):
+        """Initialize the collector with pricing data and a session analyzer."""
         self._analyzer = SessionAnalyzer(pricing_data)
         self._pricing_data = pricing_data
 
@@ -161,6 +162,7 @@ class MetricsServer:
     """Lightweight HTTP server exposing Prometheus metrics."""
 
     def __init__(self, pricing_data: Dict[str, ModelPricing], host: str = "0.0.0.0", port: int = 9090):
+        """Store server bind settings and pricing data for metric collection."""
         self.pricing_data = pricing_data
         self.host = host
         self.port = port

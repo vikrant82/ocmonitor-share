@@ -99,4 +99,5 @@ class CurrencyConverter:
             return f"{self.symbol}{formatted_amount}"
 
     def __repr__(self) -> str:
+        """Return debug representation with currency code, rate, and format."""
         return f"CurrencyConverter({self.code}, rate={self.rate}, format={self.display_format})"

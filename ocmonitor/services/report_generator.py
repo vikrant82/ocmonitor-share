@@ -873,7 +873,7 @@ class ReportGenerator:
                 all_models = []
                 for s in workflow.all_sessions:
                     all_models.extend(s.models_used)
-                unique_models = list(set(all_models))
+                unique_models = sorted(set(all_models))
                 if len(unique_models) == 1:
                     display_model = unique_models[0]
                 else:

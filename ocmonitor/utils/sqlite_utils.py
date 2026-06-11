@@ -442,6 +442,7 @@ class SQLiteProcessor:
     def _build_workflow_dict(
         cls, conn: sqlite3.Connection, main_session: SessionData
     ) -> Dict[str, Any]:
+        """Build workflow payload with parent session and loaded sub-agents."""
         sub_agent_rows = conn.execute(
             """
             SELECT s.*, p.worktree as project_path, p.name as project_name

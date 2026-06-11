@@ -264,6 +264,7 @@ class SessionAnalyzer:
             return sessions
 
         def _matches(query: str, session_models: List[str], model_parts: set[str]) -> bool:
+            """Match provider-qualified or bare model filters against session models."""
             q = query.lower()
             if '/' in q:
                 return q in session_models

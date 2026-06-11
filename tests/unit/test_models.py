@@ -819,6 +819,7 @@ class TestInteractionFileDisplayModel:
     """Tests for InteractionFile.display_model provider-aware output."""
 
     def test_display_model_with_provider_returns_qualified_name(self, tmp_path):
+        """Display model includes provider when provider_id is present."""
         f = tmp_path / "inter_0001.json"
         f.write_text("{}")
 
@@ -832,6 +833,7 @@ class TestInteractionFileDisplayModel:
         assert interaction.display_model == "github-copilot/claude-sonnet-4.5"
 
     def test_display_model_without_provider_returns_bare_model(self, tmp_path):
+        """Display model falls back to bare model when provider_id is missing."""
         f = tmp_path / "inter_0002.json"
         f.write_text("{}")
 
@@ -849,6 +851,7 @@ class TestSessionDataProviderAwareModelFields:
     """Tests for provider-aware SessionData models_used and model breakdown."""
 
     def _make_file(self, tmp_path, name, model_id, provider_id=None, **tokens):
+        """Create an interaction file fixture with optional token overrides."""
         f = tmp_path / f"{name}.json"
         f.write_text("{}")
         return InteractionFile(
@@ -861,6 +864,7 @@ class TestSessionDataProviderAwareModelFields:
         )
 
     def _make_session(self, tmp_path, files):
+        """Create a session fixture with the provided interaction files."""
         session_path = tmp_path / "ses_test"
         session_path.mkdir(exist_ok=True)
         return SessionData(
@@ -870,6 +874,7 @@ class TestSessionDataProviderAwareModelFields:
         )
 
     def test_models_used_returns_provider_qualified_names(self, tmp_path):
+        """Session models_used returns provider-qualified model identifiers."""
         file_a = self._make_file(
             tmp_path, "a", model_id="model-a", provider_id="prov-a"
         )
@@ -882,6 +887,7 @@ class TestSessionDataProviderAwareModelFields:
         assert sorted(session.models_used) == ["prov-a/model-a", "prov-a/model-b"]
 
     def test_models_used_deduplicates_same_provider_and_model(self, tmp_path):
+        """Duplicate provider/model pairs are deduplicated in models_used."""
         file_a = self._make_file(
             tmp_path, "a", model_id="model-x", provider_id="prov-a"
         )
@@ -894,6 +900,7 @@ class TestSessionDataProviderAwareModelFields:
         assert session.models_used == ["prov-a/model-x"]
 
     def test_models_used_keeps_same_model_under_different_providers_distinct(self, tmp_path):
+        """Same bare model under different providers remains distinct."""
         file_a = self._make_file(
             tmp_path, "a", model_id="model-x", provider_id="prov-a"
         )
@@ -906,6 +913,7 @@ class TestSessionDataProviderAwareModelFields:
         assert sorted(session.models_used) == ["prov-a/model-x", "prov-b/model-x"]
 
     def test_model_breakdown_aggregates_same_provider_and_model(self, tmp_path):
+        """Model breakdown aggregates token totals per provider/model key."""
         file_a = self._make_file(
             tmp_path,
             "a",
@@ -932,6 +940,7 @@ class TestSessionDataProviderAwareModelFields:
         assert breakdown["openai/gpt-4o"]["tokens"].output == 130
 
     def test_model_breakdown_separates_same_model_across_providers(self, tmp_path):
+        """Model breakdown keeps identical model IDs separate by provider."""
         file_a = self._make_file(
             tmp_path, "a", model_id="gpt-4o", provider_id="prov-a", input=100
         )

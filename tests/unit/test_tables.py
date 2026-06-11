@@ -6,6 +6,7 @@ from ocmonitor.ui.tables import TableFormatter
 
 
 def test_live_dashboard_parent_row_uses_session_total_tokens():
+    """Parent row totals include main session and all sub-agent values."""
     formatter = TableFormatter()
 
     parent = MagicMock()
@@ -42,6 +43,7 @@ def test_live_dashboard_parent_row_uses_session_total_tokens():
 
 
 def test_live_dashboard_parent_row_with_no_sub_agents():
+    """Parent row totals fall back to main session when no sub-agents exist."""
     formatter = TableFormatter()
 
     parent = MagicMock()
@@ -66,6 +68,7 @@ def test_live_dashboard_parent_row_with_no_sub_agents():
 
 
 def test_live_dashboard_parent_row_with_null_sub_agents():
+    """Parent row handles null sub-agent lists without changing totals."""
     formatter = TableFormatter()
 
     parent = MagicMock()
@@ -93,33 +96,41 @@ class TestCompactModelsDisplay:
     """Tests for TableFormatter._compact_models_display determinism and formatting."""
 
     def _fmt(self, models, max_groups=3):
+        """Format compact model list using TableFormatter helper."""
         return TableFormatter._compact_models_display(models, max_groups=max_groups)
 
     def test_single_provider_single_model(self):
+        """Single provider-qualified model renders unchanged."""
         assert self._fmt(["github-copilot/claude-sonnet-4.5"]) == "github-copilot/claude-sonnet-4.5"
 
     def test_single_bare_model(self):
+        """Single bare model renders unchanged."""
         assert self._fmt(["unknown-model"]) == "unknown-model"
 
     def test_multi_model_same_provider(self):
+        """Multiple models from one provider render in grouped brace form."""
         result = self._fmt(["prov/model-b", "prov/model-a"])
         assert result == "prov/{model-a, model-b}"
 
     def test_multi_provider_sorted_alphabetically(self):
+        """Provider groups are sorted alphabetically for deterministic output."""
         # Input order is z-first; output must be sorted by provider name.
         result = self._fmt(["z-prov/model-x", "a-prov/model-y"])
         assert result == "a-prov/model-y, z-prov/model-x"
 
     def test_bare_models_sorted_alphabetically(self):
+        """Bare model names are sorted alphabetically."""
         result = self._fmt(["zzz-bare", "aaa-bare"])
         assert result == "aaa-bare, zzz-bare"
 
     def test_mixed_provider_and_bare_sorted(self):
+        """Provider groups sort first, followed by sorted bare model names."""
         # Provider entries come first (sorted), then bare entries (sorted).
         result = self._fmt(["bare-b", "z-prov/m1", "bare-a", "a-prov/m2"], max_groups=4)
         assert result == "a-prov/m2, z-prov/m1, bare-a, bare-b"
 
     def test_deterministic_regardless_of_input_order(self):
+        """Output remains stable across different input orders."""
         models = ["prov-b/m2", "prov-a/m1", "prov-b/m1", "prov-a/m2"]
         import random
         shuffled = models[:]
@@ -127,14 +138,17 @@ class TestCompactModelsDisplay:
         assert self._fmt(models) == self._fmt(shuffled) == "prov-a/{m1, m2}, prov-b/{m1, m2}"
 
     def test_truncation_with_plus_n_more(self):
+        """Long model lists truncate with a '+N more' suffix."""
         result = self._fmt(["a-prov/m1", "b-prov/m2", "c-prov/m3", "d-prov/m4"], max_groups=3)
         assert result == "a-prov/m1, b-prov/m2, c-prov/m3 (+1 more)"
 
     def test_deduplication(self):
+        """Duplicate provider/model entries are rendered once."""
         result = self._fmt(["prov/model-a", "prov/model-a", "prov/model-b"])
         assert result == "prov/{model-a, model-b}"
 
     def test_empty_list(self):
+        """Empty model list renders as empty string."""
         assert self._fmt([]) == ""
 
 
@@ -142,6 +156,7 @@ class TestSplitProviderModel:
     """Tests for provider/model splitting helper in file processor."""
 
     def test_qualified_name_splits_provider_and_model(self):
+        """Qualified model name splits into provider and model parts."""
         provider, model = FileProcessor.split_provider_model(
             "github-copilot/claude-sonnet-4.5"
         )
@@ -149,11 +164,13 @@ class TestSplitProviderModel:
         assert model == "claude-sonnet-4.5"
 
     def test_bare_model_returns_empty_provider(self):
+        """Bare model names return empty provider and unchanged model name."""
         provider, model = FileProcessor.split_provider_model("claude-sonnet-4.5")
         assert provider == ""
         assert model == "claude-sonnet-4.5"
 
     def test_multiple_slashes_split_on_first_only(self):
+        """Only the first slash is used when splitting provider/model."""
         provider, model = FileProcessor.split_provider_model(
             "openrouter/anthropic/claude-opus"
         )

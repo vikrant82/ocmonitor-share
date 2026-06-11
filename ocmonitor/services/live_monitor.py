@@ -38,6 +38,7 @@ class WorkflowWrapper:
     def __init__(
         self, workflow_dict: Dict[str, Any], pricing_data: Dict[str, ModelPricing]
     ):
+        """Initialize workflow wrapper from SQLite workflow dictionary data."""
         self.main_session: SessionData = workflow_dict["main_session"]
         self.sub_agents: List[SessionData] = workflow_dict["sub_agents"]
         self.all_sessions: List[SessionData] = workflow_dict["all_sessions"]
@@ -1750,6 +1751,7 @@ class LiveMonitor:
             return workflows[0]
 
         def get_latest_activity(workflow: Dict[str, Any]) -> float:
+            """Return latest parent-session activity timestamp for workflow sorting."""
             latest = 0.0
             has_file_activity = False
             main_session = workflow.get("main_session")
@@ -1787,6 +1789,7 @@ class LiveMonitor:
             return workflows[0]
 
         def get_latest_parent_activity(workflow: SessionWorkflow) -> float:
+            """Return latest main-session file modification timestamp."""
             latest = 0.0
             main = workflow.main_session
             if main:

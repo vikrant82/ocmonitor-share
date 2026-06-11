@@ -634,6 +634,7 @@ class DashboardUI:
         per_model_context = per_model_context or {}
 
         def get_model_info(model_name: str):
+            """Return tokens, cost, context usage, and output rate for a model."""
             if model_name in model_breakdown:
                 stats = model_breakdown[model_name]
                 tokens = stats.get("tokens", {}).total if hasattr(stats.get("tokens", {}), "total") else stats.get("tokens", 0)

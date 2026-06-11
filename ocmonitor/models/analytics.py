@@ -348,7 +348,10 @@ class TimeframeAnalyzer:
         
         # Define model stats structure with proper types
         class ModelStats:
+            """Accumulator for per-model aggregates during report creation."""
+
             def __init__(self):
+                """Initialize aggregate fields for a model bucket."""
                 self.tokens = TokenUsage()
                 self.sessions: Set[str] = set()
                 self.interactions = 0
@@ -443,7 +446,10 @@ class TimeframeAnalyzer:
 
         # Define project stats structure with proper types
         class ProjectStats:
+            """Accumulator for per-project aggregates during report creation."""
+
             def __init__(self):
+                """Initialize aggregate fields for a project bucket."""
                 self.tokens = TokenUsage()
                 self.sessions = 0
                 self.interactions = 0
