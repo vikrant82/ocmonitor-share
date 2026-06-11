@@ -14,7 +14,7 @@ OpenCode stores both `providerID` and `modelID` per interaction. This release su
 #### Added
 - **`provider_id` field** on `InteractionFile` — parsed from `providerID` in SQLite message JSON and file-based interactions (`Optional[str]`, default `None`)
 - **`display_model` computed property** on `InteractionFile` — returns `provider/model` when provider is known, else bare model ID
-- **`_split_provider_model()` static helper** on `TableFormatter` and `ReportGenerator` — splits `display_model` on the first `/` for column rendering
+- **`split_provider_model()` static helper** on `FileProcessor` — splits `display_model` on the first `/` for column rendering and is reused by `TableFormatter` and `ReportGenerator`
 - **`_compact_models_display()` method** on `TableFormatter` — groups models by provider in the Daily Usage Breakdown Models column: single model → `provider/model`, multiple from same provider → `provider/{m1, m2}`, truncated to 3 groups with `(+N more)`
 - **Separate Provider and Model columns** in all table builders (`models`, `daily`, `sessions`) and `report_generator.py` workflow table, replacing the former single `Model` column
 
@@ -35,10 +35,15 @@ Old bare-key `models.json` files continue to work without modification:
 - `ocmonitor/models/session.py` — `provider_id`, `display_model`, 5-step lookup
 - `ocmonitor/models/analytics.py` — `create_model_breakdown` uses `display_model`
 - `ocmonitor/utils/sqlite_utils.py` — parses `providerID` from message JSON
-- `ocmonitor/utils/file_utils.py` — parses `providerID` from file interactions
+- `ocmonitor/utils/file_utils.py` — parses `providerID`; provides `lookup_pricing()` (5-step) and `split_provider_model()` helpers
 - `ocmonitor/ui/tables.py` — Provider+Model columns, `_split_provider_model()`, `_compact_models_display()`
 - `ocmonitor/services/report_generator.py` — Provider+Model columns, `_split_provider_model()`
 - `ocmonitor/models.json` — 42 entries in `provider/modelID` format
+
+#### Fixed
+- **Non-deterministic workflow model selection** — `report_generator.py` workflow summary now uses `sorted(set(...))` for stable ordering across runs
+- **Provider/model split helper centralization** — moved split parsing to `FileProcessor.split_provider_model()` and updated all callers
+- **Docstring coverage threshold** — increased docstring coverage to 92.4% (minimum 80%) by adding missing docstrings in touched source and test files
 
 
 
