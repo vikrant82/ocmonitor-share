@@ -135,3 +135,24 @@ class TestCompactModelsDisplay:
 
     def test_empty_list(self):
         assert self._fmt([]) == ""
+
+
+class TestSplitProviderModel:
+    """Tests for provider/model splitting helper in table formatter."""
+
+    def test_qualified_name_splits_provider_and_model(self):
+        provider, model = TableFormatter._split_provider_model(
+            "github-copilot/claude-sonnet-4.5"
+        )
+        assert provider == "github-copilot"
+        assert model == "claude-sonnet-4.5"
+
+    def test_bare_model_returns_empty_provider(self):
+        provider, model = TableFormatter._split_provider_model("claude-sonnet-4.5")
+        assert provider == ""
+        assert model == "claude-sonnet-4.5"
+
+    def test_multiple_slashes_split_on_first_only(self):
+        provider, model = TableFormatter._split_provider_model("openrouter/anthropic/claude-opus")
+        assert provider == "openrouter"
+        assert model == "anthropic/claude-opus"

@@ -813,3 +813,135 @@ class TestPricingLookupHelperRegression:
 
         assert pricing is not None
         assert pricing.input == Decimal("1.0")
+
+
+class TestInteractionFileDisplayModel:
+    """Tests for InteractionFile.display_model provider-aware output."""
+
+    def test_display_model_with_provider_returns_qualified_name(self, tmp_path):
+        f = tmp_path / "inter_0001.json"
+        f.write_text("{}")
+
+        interaction = InteractionFile(
+            file_path=f,
+            session_id="ses_test",
+            model_id="claude-sonnet-4.5",
+            provider_id="github-copilot",
+        )
+
+        assert interaction.display_model == "github-copilot/claude-sonnet-4.5"
+
+    def test_display_model_without_provider_returns_bare_model(self, tmp_path):
+        f = tmp_path / "inter_0002.json"
+        f.write_text("{}")
+
+        interaction = InteractionFile(
+            file_path=f,
+            session_id="ses_test",
+            model_id="claude-sonnet-4.5",
+            provider_id=None,
+        )
+
+        assert interaction.display_model == "claude-sonnet-4.5"
+
+
+class TestSessionDataProviderAwareModelFields:
+    """Tests for provider-aware SessionData models_used and model breakdown."""
+
+    def _make_file(self, tmp_path, name, model_id, provider_id=None, **tokens):
+        f = tmp_path / f"{name}.json"
+        f.write_text("{}")
+        return InteractionFile(
+            file_path=f,
+            session_id="ses_test",
+            model_id=model_id,
+            provider_id=provider_id,
+            tokens=TokenUsage(**tokens) if tokens else TokenUsage(),
+            raw_data={},
+        )
+
+    def _make_session(self, tmp_path, files):
+        session_path = tmp_path / "ses_test"
+        session_path.mkdir(exist_ok=True)
+        return SessionData(
+            session_id="ses_test",
+            session_path=session_path,
+            files=files,
+        )
+
+    def test_models_used_returns_provider_qualified_names(self, tmp_path):
+        file_a = self._make_file(
+            tmp_path, "a", model_id="model-a", provider_id="prov-a"
+        )
+        file_b = self._make_file(
+            tmp_path, "b", model_id="model-b", provider_id="prov-a"
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+
+        assert sorted(session.models_used) == ["prov-a/model-a", "prov-a/model-b"]
+
+    def test_models_used_deduplicates_same_provider_and_model(self, tmp_path):
+        file_a = self._make_file(
+            tmp_path, "a", model_id="model-x", provider_id="prov-a"
+        )
+        file_b = self._make_file(
+            tmp_path, "b", model_id="model-x", provider_id="prov-a"
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+
+        assert session.models_used == ["prov-a/model-x"]
+
+    def test_models_used_keeps_same_model_under_different_providers_distinct(self, tmp_path):
+        file_a = self._make_file(
+            tmp_path, "a", model_id="model-x", provider_id="prov-a"
+        )
+        file_b = self._make_file(
+            tmp_path, "b", model_id="model-x", provider_id="prov-b"
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+
+        assert sorted(session.models_used) == ["prov-a/model-x", "prov-b/model-x"]
+
+    def test_model_breakdown_aggregates_same_provider_and_model(self, tmp_path):
+        file_a = self._make_file(
+            tmp_path,
+            "a",
+            model_id="gpt-4o",
+            provider_id="openai",
+            input=100,
+            output=50,
+        )
+        file_b = self._make_file(
+            tmp_path,
+            "b",
+            model_id="gpt-4o",
+            provider_id="openai",
+            input=200,
+            output=80,
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+        breakdown = session.get_model_breakdown({})
+
+        assert len(breakdown) == 1
+        assert "openai/gpt-4o" in breakdown
+        assert breakdown["openai/gpt-4o"]["tokens"].input == 300
+        assert breakdown["openai/gpt-4o"]["tokens"].output == 130
+
+    def test_model_breakdown_separates_same_model_across_providers(self, tmp_path):
+        file_a = self._make_file(
+            tmp_path, "a", model_id="gpt-4o", provider_id="prov-a", input=100
+        )
+        file_b = self._make_file(
+            tmp_path, "b", model_id="gpt-4o", provider_id="prov-b", input=200
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+        breakdown = session.get_model_breakdown({})
+
+        assert sorted(breakdown.keys()) == ["prov-a/gpt-4o", "prov-b/gpt-4o"]
+        assert breakdown["prov-a/gpt-4o"]["tokens"].input == 100
+        assert breakdown["prov-b/gpt-4o"]["tokens"].input == 200
