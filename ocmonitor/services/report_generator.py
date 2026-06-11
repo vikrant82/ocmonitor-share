@@ -59,13 +59,13 @@ class ReportGenerator:
         Returns:
             List of model breakdown dicts sorted by cost descending
         """
-        model_data: Dict[str, Dict[str, Any]] = {}
+        by_display_model: Dict[str, Dict[str, Any]] = {}
 
         for session in sessions:
             for file in session.files:
-                model = file.display_model
-                if model not in model_data:
-                    model_data[model] = {
+                display_model = file.display_model
+                if display_model not in by_display_model:
+                    by_display_model[display_model] = {
                         "sessions": set(),
                         "interactions": 0,
                         "tokens": 0,
@@ -75,22 +75,22 @@ class ReportGenerator:
                         "cache_write": 0,
                         "cost": Decimal("0.0"),
                     }
-                model_data[model]["sessions"].add(session.session_id)
-                model_data[model]["interactions"] += 1
-                model_data[model]["tokens"] += file.tokens.total
-                model_data[model]["input_tokens"] += file.tokens.input
-                model_data[model]["output_tokens"] += file.tokens.output
-                model_data[model]["cache_read"] += file.tokens.cache_read
-                model_data[model]["cache_write"] += file.tokens.cache_write
-                model_data[model]["cost"] += file.calculate_cost(
+                by_display_model[display_model]["sessions"].add(session.session_id)
+                by_display_model[display_model]["interactions"] += 1
+                by_display_model[display_model]["tokens"] += file.tokens.total
+                by_display_model[display_model]["input_tokens"] += file.tokens.input
+                by_display_model[display_model]["output_tokens"] += file.tokens.output
+                by_display_model[display_model]["cache_read"] += file.tokens.cache_read
+                by_display_model[display_model]["cache_write"] += file.tokens.cache_write
+                by_display_model[display_model]["cost"] += file.calculate_cost(
                     self.analyzer.pricing_data, force_recalculate
                 )
 
         results = []
-        for model, data in model_data.items():
+        for display_model, data in by_display_model.items():
             results.append(
                 {
-                    "model": model,
+                    "model": display_model,
                     "sessions": len(data["sessions"]),
                     "interactions": data["interactions"],
                     "tokens": data["tokens"],
@@ -875,18 +875,18 @@ class ReportGenerator:
                     all_models.extend(s.models_used)
                 unique_models = list(set(all_models))
                 if len(unique_models) == 1:
-                    model_display = unique_models[0]
+                    display_model = unique_models[0]
                 else:
-                    model_display = f"{unique_models[0]}+{len(unique_models) - 1}"
+                    display_model = f"{unique_models[0]}+{len(unique_models) - 1}"
 
-                wf_prov, wf_mod = FileProcessor.split_provider_model(model_display)
+                provider, model = FileProcessor.split_provider_model(display_model)
 
                 table.add_row(
                     f"[table.row.time]{start_time}[/table.row.time]",
                     f"[table.row.main]{title}[/table.row.main]",
                     f"[table.row.project]{workflow.project_name[:15]}[/table.row.project]",
-                    f"[table.row.model]{wf_prov}[/table.row.model]",
-                    f"[table.row.model]{wf_mod}[/table.row.model]",
+                    f"[table.row.model]{provider}[/table.row.model]",
+                    f"[table.row.model]{model}[/table.row.model]",
                     f"[table.row.model]+{workflow.sub_agent_count}[/table.row.model]",
                     f"[status.success]{sum(s.interaction_count for s in workflow.all_sessions)}[/status.success]",
                     f"[table.row.tokens]{workflow.total_tokens.total:,}[/table.row.tokens]",
@@ -906,20 +906,20 @@ class ReportGenerator:
                 # Get model for main session
                 main_models = main.models_used
                 if len(main_models) == 1:
-                    main_model_display = main_models[0]
+                    display_model = main_models[0]
                 elif len(main_models) > 1:
-                    main_model_display = f"{main_models[0]}+{len(main_models) - 1}"
+                    display_model = f"{main_models[0]}+{len(main_models) - 1}"
                 else:
-                    main_model_display = "-"
+                    display_model = "-"
 
-                main_prov, main_mod = FileProcessor.split_provider_model(main_model_display)
+                provider, model = FileProcessor.split_provider_model(display_model)
 
                 table.add_row(
                     "",  # No separate start time for sub-rows
                     f"  ├─ {main_title}",
                     "",
-                    main_prov,
-                    main_mod,
+                    provider,
+                    model,
                     main.agent or "main",
                     f"{main.interaction_count}",
                     f"{main.total_tokens.total:,}",
@@ -941,20 +941,20 @@ class ReportGenerator:
                     # Get model for sub-agent session
                     sub_models = sub.models_used
                     if len(sub_models) == 1:
-                        sub_model_display = sub_models[0]
+                        display_model = sub_models[0]
                     elif len(sub_models) > 1:
-                        sub_model_display = f"{sub_models[0]}+{len(sub_models) - 1}"
+                        display_model = f"{sub_models[0]}+{len(sub_models) - 1}"
                     else:
-                        sub_model_display = "-"
+                        display_model = "-"
 
-                    sub_prov, sub_mod = FileProcessor.split_provider_model(sub_model_display)
+                    provider, model = FileProcessor.split_provider_model(display_model)
 
                     table.add_row(
                         "",  # No separate start time for sub-rows
                         f"{prefix} {sub_title}",
                         "",
-                        sub_prov,
-                        sub_mod,
+                        provider,
+                        model,
                         sub.agent or "sub",
                         f"{sub.interaction_count}",
                         f"{sub.total_tokens.total:,}",
@@ -981,20 +981,20 @@ class ReportGenerator:
                 # Get model for single session
                 main_models = main.models_used
                 if len(main_models) == 1:
-                    model_display = main_models[0]
+                    display_model = main_models[0]
                 elif len(main_models) > 1:
-                    model_display = f"{main_models[0]}+{len(main_models) - 1}"
+                    display_model = f"{main_models[0]}+{len(main_models) - 1}"
                 else:
-                    model_display = "-"
+                    display_model = "-"
 
-                single_prov, single_mod = FileProcessor.split_provider_model(model_display)
+                provider, model = FileProcessor.split_provider_model(display_model)
 
                 table.add_row(
                     start_time,
                     title,
                     main.project_name[:15],
-                    single_prov,
-                    single_mod,
+                    provider,
+                    model,
                     main.agent or "-",
                     f"{main.interaction_count}",
                     f"{main.total_tokens.total:,}",
@@ -1070,17 +1070,17 @@ class ReportGenerator:
                 model_breakdown = self._get_model_breakdown_for_sessions(
                     day.sessions, force_recalculate
                 )
-                for model_data in model_breakdown:
+                for row in model_breakdown:
                     table.add_row(
-                        f"  ↳ {model_data['model']}",
-                        f"{model_data['sessions']}",
-                        f"{model_data['interactions']}",
-                        f"{model_data['input_tokens']:,}",
-                        f"{model_data['output_tokens']:,}",
-                        f"{model_data['cache_read']:,}",
-                        f"{model_data['cache_write']:,}",
-                        f"{model_data['tokens']:,}",
-                        self._fmt_cost(model_data["cost"]),
+                        f"  ↳ {row['model']}",
+                        f"{row['sessions']}",
+                        f"{row['interactions']}",
+                        f"{row['input_tokens']:,}",
+                        f"{row['output_tokens']:,}",
+                        f"{row['cache_read']:,}",
+                        f"{row['cache_write']:,}",
+                        f"{row['tokens']:,}",
+                        self._fmt_cost(row["cost"]),
                         style="table.row.dim",
                     )
 
@@ -1146,14 +1146,14 @@ class ReportGenerator:
                 model_breakdown = self._get_model_breakdown_for_sessions(
                     week_sessions, force_recalculate
                 )
-                for model_data in model_breakdown:
+                for row in model_breakdown:
                     table.add_row(
                         "",
-                        f"  ↳ {model_data['model']}",
-                        f"{model_data['sessions']}",
-                        f"{model_data['interactions']}",
-                        f"{model_data['tokens']:,}",
-                        self._fmt_cost(model_data["cost"]),
+                        f"  ↳ {row['model']}",
+                        f"{row['sessions']}",
+                        f"{row['interactions']}",
+                        f"{row['tokens']:,}",
+                        self._fmt_cost(row["cost"]),
                         style="table.row.dim",
                     )
 
@@ -1202,13 +1202,13 @@ class ReportGenerator:
                 model_breakdown = self._get_model_breakdown_for_sessions(
                     month_sessions, force_recalculate
                 )
-                for model_data in model_breakdown:
+                for row in model_breakdown:
                     table.add_row(
-                        f"  ↳ {model_data['model']}",
-                        f"{model_data['sessions']}",
-                        f"{model_data['interactions']}",
-                        f"{model_data['tokens']:,}",
-                        self._fmt_cost(model_data["cost"]),
+                        f"  ↳ {row['model']}",
+                        f"{row['sessions']}",
+                        f"{row['interactions']}",
+                        f"{row['tokens']:,}",
+                        self._fmt_cost(row["cost"]),
                         style="table.row.dim",
                     )
 
@@ -1439,7 +1439,7 @@ class ReportGenerator:
             "recalculated": force_recalculate,
             "models": [
                 {
-                    "model_name": model.model_name,
+                    "model_name": model.display_model,
                     "sessions": model.total_sessions,
                     "interactions": model.total_interactions,
                     "tokens": model.total_tokens.model_dump(),
@@ -1594,7 +1594,7 @@ class ReportGenerator:
         """Format models breakdown for CSV export."""
         return [
             {
-                "model_name": model.model_name,
+                "model_name": model.display_model,
                 "sessions": model.total_sessions,
                 "interactions": model.total_interactions,
                 "input_tokens": model.total_tokens.input,

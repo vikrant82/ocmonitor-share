@@ -283,8 +283,8 @@ class SessionData(BaseModel):
         """
         breakdown = {}
 
-        for model in self.models_used:
-            model_files = [f for f in self.files if f.display_model == model]
+        for display_model in self.models_used:
+            model_files = [f for f in self.files if f.display_model == display_model]
             model_tokens = TokenUsage()
             model_cost = Decimal('0.0')
             model_duration_ms = 0
@@ -302,7 +302,7 @@ class SessionData(BaseModel):
                     rate = file.tokens.output / (file.time_data.duration_ms / 1000)
                     interaction_rates.append(rate)
 
-            breakdown[model] = {
+            breakdown[display_model] = {
                 'files': len(model_files),
                 'tokens': model_tokens,
                 'cost': model_cost,

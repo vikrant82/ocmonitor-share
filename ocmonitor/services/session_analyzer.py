@@ -409,14 +409,14 @@ class SessionAnalyzer:
 
         # Check for unknown models
         unknown_models = []
-        for model in session.models_used:
-            if model == 'unknown':
+        for display_model in session.models_used:
+            if display_model == 'unknown':
                 continue
-            provider_id, model_id = FileProcessor.split_provider_model(model)
+            provider_id, model_id = FileProcessor.split_provider_model(display_model)
             provider_id = provider_id or None
             pricing = FileProcessor.lookup_pricing(self.pricing_data, model_id, provider_id)
             if pricing is None:
-                unknown_models.append(model)
+                unknown_models.append(display_model)
         if unknown_models:
             warnings.append(f"Unknown models with no pricing: {', '.join(unknown_models)}")
 

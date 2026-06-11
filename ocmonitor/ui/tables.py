@@ -61,15 +61,15 @@ class TableFormatter:
         """
         provider_models: dict = {}
         bare: list = []
-        for dm in models:
-            if '/' in dm:
-                prov, _, mod = dm.partition('/')
+        for display_model in models:
+            if '/' in display_model:
+                prov, _, mod = display_model.partition('/')
                 provider_models.setdefault(prov, [])
                 if mod not in provider_models[prov]:
                     provider_models[prov].append(mod)
             else:
-                if dm not in bare:
-                    bare.append(dm)
+                if display_model not in bare:
+                    bare.append(display_model)
 
         parts: list = []
         for prov in sorted(provider_models.keys()):
@@ -131,7 +131,7 @@ class TableFormatter:
             model_breakdown = session.get_model_breakdown(pricing_data, force_recalculate)
 
             # Add rows for each model
-            for i, (model, stats) in enumerate(model_breakdown.items()):
+            for i, (display_model, stats) in enumerate(model_breakdown.items()):
                 # Show session info only for first model
                 if i == 0:
                     start_time = session.start_time.strftime('%Y-%m-%d %H:%M:%S') if session.start_time else 'N/A'
@@ -146,9 +146,9 @@ class TableFormatter:
                     session_display = ""
 
                 # Format model name
-                provider_name, model_name = FileProcessor.split_provider_model(model)
-                provider_text = Text(provider_name[:17] + "..." if len(provider_name) > 20 else provider_name)
-                model_text = Text(model_name[:27] + "..." if len(model_name) > 30 else model_name)
+                provider, model = FileProcessor.split_provider_model(display_model)
+                provider_text = Text(provider[:17] + "..." if len(provider) > 20 else provider)
+                model_text = Text(model[:27] + "..." if len(model) > 30 else model)
 
                 # Get cost color
                 cost_color = self.get_cost_color(stats['cost'])
@@ -242,12 +242,12 @@ class TableFormatter:
 
             cost_color = self.get_cost_color(cost)
 
-            prov, mod = FileProcessor.split_provider_model(file.display_model)
+            provider, model = FileProcessor.split_provider_model(file.display_model)
 
             table.add_row(
                 Text(file.file_name[:27] + "..." if len(file.file_name) > 30 else file.file_name),
-                Text(prov[:17] + "..." if len(prov) > 20 else prov),
-                Text(mod[:27] + "..." if len(mod) > 30 else mod),
+                Text(provider[:17] + "..." if len(provider) > 20 else provider),
+                Text(model[:27] + "..." if len(model) > 30 else model),
                 self.format_number(file.tokens.input),
                 self.format_number(file.tokens.output),
                 self.format_number(file.tokens.cache_write),
@@ -364,32 +364,32 @@ class TableFormatter:
         table.add_column("Cost %", justify="right", style="table.row.cost")
         table.add_column("Speed", justify="right", style="table.row.time")
 
-        total_cost = sum(model.total_cost for model in model_stats)
+        total_cost = sum(stat.total_cost for stat in model_stats)
 
-        for model in model_stats:
-            cost_percentage = self.format_percentage(float(model.total_cost), float(total_cost))
-            cost_color = self.get_cost_color(model.total_cost)
+        for stat in model_stats:
+            cost_percentage = self.format_percentage(float(stat.total_cost), float(total_cost))
+            cost_color = self.get_cost_color(stat.total_cost)
 
             # Format speed
-            speed = model.p50_output_rate
+            speed = stat.p50_output_rate
             if speed == 0:
                 speed_text = "-"
             else:
                 speed_text = f"{speed:.1f} t/s"
 
-            prov, mod = FileProcessor.split_provider_model(model.model_name)
+            provider, model = FileProcessor.split_provider_model(stat.display_model)
 
             table.add_row(
-                Text(prov[:17] + "..." if len(prov) > 20 else prov),
-                Text(mod[:27] + "..." if len(mod) > 30 else mod),
-                self.format_number(model.total_sessions),
-                self.format_number(model.total_interactions),
-                self.format_number(model.total_tokens.input),
-                self.format_number(model.total_tokens.output),
-                self.format_number(model.total_tokens.cache_write),
-                self.format_number(model.total_tokens.cache_read),
-                self.format_number(model.total_tokens.total),
-                Text(self.format_currency(model.total_cost), style=cost_color),
+                Text(provider[:17] + "..." if len(provider) > 20 else provider),
+                Text(model[:27] + "..." if len(model) > 30 else model),
+                self.format_number(stat.total_sessions),
+                self.format_number(stat.total_interactions),
+                self.format_number(stat.total_tokens.input),
+                self.format_number(stat.total_tokens.output),
+                self.format_number(stat.total_tokens.cache_write),
+                self.format_number(stat.total_tokens.cache_read),
+                self.format_number(stat.total_tokens.total),
+                Text(self.format_currency(stat.total_cost), style=cost_color),
                 Text(cost_percentage, style=cost_color),
                 speed_text
             )

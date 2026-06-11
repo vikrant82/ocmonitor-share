@@ -139,7 +139,7 @@ class MonthlyUsage(BaseModel):
 
 class ModelUsageStats(BaseModel):
     """Model for model-specific usage statistics."""
-    model_name: str
+    display_model: str
     total_tokens: TokenUsage = Field(default_factory=TokenUsage)
     total_sessions: int = Field(default=0)
     total_interactions: int = Field(default=0)
@@ -361,9 +361,9 @@ class TimeframeAnalyzer:
         model_data: Dict[str, ModelStats] = defaultdict(ModelStats)
 
         for session in filtered_sessions:
-            for model in session.models_used:
-                model_files = [f for f in session.files if f.display_model == model]
-                model_stats = model_data[model]
+            for display_model in session.models_used:
+                model_files = [f for f in session.files if f.display_model == display_model]
+                model_stats = model_data[display_model]
 
                 # Update token counts
                 for file in model_files:
@@ -395,9 +395,9 @@ class TimeframeAnalyzer:
 
         # Convert to ModelUsageStats objects
         model_stats_list = []
-        for model_name, stats in model_data.items():
+        for display_model, stats in model_data.items():
             model_stats_list.append(ModelUsageStats(
-                model_name=model_name,
+                display_model=display_model,
                 total_tokens=stats.tokens,
                 total_sessions=len(stats.sessions),
                 total_interactions=stats.interactions,

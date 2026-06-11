@@ -82,7 +82,7 @@ class OCMonitorCollector:
             )
 
             for model_stats in model_report.model_stats:
-                label = [model_stats.model_name]
+                label = [model_stats.display_model]
                 tokens_input.add_metric(label, model_stats.total_tokens.input)
                 tokens_output.add_metric(label, model_stats.total_tokens.output)
                 tokens_cache_read.add_metric(label, model_stats.total_tokens.cache_read)
