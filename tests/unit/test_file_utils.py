@@ -149,6 +149,20 @@ class TestParseInteractionFile:
         
         assert result is not None
         assert result.model_id == "unknown"
+
+    def test_parse_null_model_id(self, tmp_path):
+        """Test parsing interaction with null modelID."""
+        test_file = tmp_path / "inter_0001.json"
+        interaction_data = {
+            "modelID": None,
+            "tokens": {"input": 1000, "output": 500},
+        }
+        test_file.write_text(json.dumps(interaction_data))
+
+        result = FileProcessor.parse_interaction_file(test_file, "ses_test")
+
+        assert result is not None
+        assert result.model_id == "unknown"
     
     def test_parse_missing_tokens(self, tmp_path):
         """Test parsing interaction without tokens."""

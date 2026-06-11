@@ -243,10 +243,24 @@ class SessionAnalyzer:
 
         filtered = []
         for session in sessions:
-            if session.start_time:
-                session_date = session.start_time.date()
-                if TimeUtils.date_in_range(session_date, start_date, end_date):
-                    filtered.append(session)
+            fallback_date = session.start_time.date() if session.start_time else None
+            matching_files = []
+
+            for file in session.files:
+                interaction_date = TimeframeAnalyzer._interaction_date(file, fallback_date)
+                if interaction_date and TimeUtils.date_in_range(interaction_date, start_date, end_date):
+                    matching_files.append(file)
+
+            if matching_files:
+                filtered.append(session.model_copy(update={"files": matching_files}))
+                continue
+
+            if not session.files and fallback_date and TimeUtils.date_in_range(
+                fallback_date,
+                start_date,
+                end_date,
+            ):
+                filtered.append(session)
 
         return filtered
 

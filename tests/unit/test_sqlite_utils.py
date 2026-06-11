@@ -1,5 +1,6 @@
 """Tests for SQLite path discovery behavior."""
 
+import json
 from pathlib import Path
 
 from ocmonitor.config import Config, PathsConfig, config_manager
@@ -72,3 +73,27 @@ class TestFindDatabasePath:
         resolved = SQLiteProcessor.find_database_path()
 
         assert resolved == default_db
+
+
+class TestParseMessageData:
+    """Tests for SQLiteProcessor.parse_message_data."""
+
+    def test_null_model_id_falls_back_to_unknown(self):
+        """Null modelID in SQLite message payload should not break parsing."""
+        message_data = json.dumps({"role": "assistant", "modelID": None})
+
+        interaction = SQLiteProcessor.parse_message_data(message_data, "ses_test")
+
+        assert interaction is not None
+        assert interaction.model_id == "unknown"
+
+    def test_nested_null_model_id_falls_back_to_unknown(self):
+        """Null nested model.modelID in SQLite payload should fall back to unknown."""
+        message_data = json.dumps(
+            {"role": "assistant", "model": {"modelID": None}}
+        )
+
+        interaction = SQLiteProcessor.parse_message_data(message_data, "ses_test")
+
+        assert interaction is not None
+        assert interaction.model_id == "unknown"

@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional, Set
 from decimal import Decimal
 from pydantic import BaseModel, Field, computed_field
 from collections import defaultdict
-from .session import SessionData, TokenUsage
+from .session import SessionData, TokenUsage, InteractionFile
 from .tool_usage import ToolUsageStats, ToolUsageSummary
 
 
@@ -78,7 +78,12 @@ class WeeklyUsage(BaseModel):
     @property
     def total_sessions(self) -> int:
         """Calculate total sessions for the week."""
-        return sum(len(day.sessions) for day in self.daily_usage)
+        session_ids = {
+            session.session_id
+            for day in self.daily_usage
+            for session in day.sessions
+        }
+        return len(session_ids)
 
     @computed_field
     @property
@@ -119,7 +124,13 @@ class MonthlyUsage(BaseModel):
     @property
     def total_sessions(self) -> int:
         """Calculate total sessions for the month."""
-        return sum(week.total_sessions for week in self.weekly_usage)
+        session_ids = {
+            session.session_id
+            for week in self.weekly_usage
+            for day in week.daily_usage
+            for session in day.sessions
+        }
+        return len(session_ids)
 
     @computed_field
     @property
@@ -254,19 +265,53 @@ class TimeframeAnalyzer:
     """Analyzer for different timeframe breakdowns."""
 
     @staticmethod
+    def _interaction_date(file: InteractionFile, fallback_date: Optional[date]) -> Optional[date]:
+        """Return interaction date using interaction timestamp with fallback."""
+        if file.time_data and file.time_data.created_datetime:
+            return file.time_data.created_datetime.date()
+        return fallback_date
+
+    @staticmethod
+    def _is_in_date_range(
+        check_date: Optional[date],
+        start_date: Optional[date],
+        end_date: Optional[date],
+    ) -> bool:
+        """Check whether a date is within optional inclusive bounds."""
+        if check_date is None:
+            return False
+        if start_date and check_date < start_date:
+            return False
+        if end_date and check_date > end_date:
+            return False
+        return True
+
+    @staticmethod
     def create_daily_breakdown(sessions: List[SessionData]) -> List[DailyUsage]:
         """Create daily breakdown from sessions."""
-        daily_data = defaultdict(list)
+        daily_data = defaultdict(lambda: defaultdict(list))
+        session_refs: Dict[int, SessionData] = {}
 
         for session in sessions:
-            if session.start_time:
-                session_date = session.start_time.date()
-                daily_data[session_date].append(session)
+            session_key = id(session)
+            session_refs[session_key] = session
+            fallback_date = session.start_time.date() if session.start_time else None
 
-        return [
-            DailyUsage(date=date_key, sessions=sessions_list)
-            for date_key, sessions_list in sorted(daily_data.items())
-        ]
+            for file in session.files:
+                interaction_date = TimeframeAnalyzer._interaction_date(file, fallback_date)
+                if interaction_date is None:
+                    continue
+                daily_data[interaction_date][session_key].append(file)
+
+        daily_usage = []
+        for date_key, sessions_files in sorted(daily_data.items()):
+            sessions_list = [
+                session_refs[session_key].model_copy(update={"files": files})
+                for session_key, files in sessions_files.items()
+            ]
+            daily_usage.append(DailyUsage(date=date_key, sessions=sessions_list))
+
+        return daily_usage
 
     @staticmethod
     def create_weekly_breakdown(daily_usage: List[DailyUsage], week_start_day: int = 0) -> List[WeeklyUsage]:
@@ -331,19 +376,6 @@ class TimeframeAnalyzer:
         force_recalculate: bool = False,
     ) -> ModelBreakdownReport:
         """Create model usage breakdown."""
-        # Filter sessions by date range if specified
-        filtered_sessions = sessions
-        if start_date or end_date:
-            filtered_sessions = []
-            for session in sessions:
-                if session.start_time:
-                    session_date = session.start_time.date()
-                    if start_date and session_date < start_date:
-                        continue
-                    if end_date and session_date > end_date:
-                        continue
-                    filtered_sessions.append(session)
-
         from typing import Dict, Set
         
         # Define model stats structure with proper types
@@ -360,10 +392,27 @@ class TimeframeAnalyzer:
         
         model_data: Dict[str, ModelStats] = defaultdict(ModelStats)
 
-        for session in filtered_sessions:
-            for model in session.models_used:
-                model_files = [f for f in session.files if f.model_id == model]
-                model_stats = model_data[model]
+        for session in sessions:
+            if start_date or end_date:
+                fallback_date = session.start_time.date() if session.start_time else None
+                filtered_files = [
+                    file
+                    for file in session.files
+                    if TimeframeAnalyzer._is_in_date_range(
+                        TimeframeAnalyzer._interaction_date(file, fallback_date),
+                        start_date,
+                        end_date,
+                    )
+                ]
+            else:
+                filtered_files = list(session.files)
+
+            if not filtered_files:
+                continue
+
+            for model_name in {file.model_id for file in filtered_files}:
+                model_files = [f for f in filtered_files if f.model_id == model_name]
+                model_stats = model_data[model_name]
 
                 # Update token counts
                 for file in model_files:
@@ -385,13 +434,31 @@ class TimeframeAnalyzer:
                 model_stats.sessions.add(session.session_id)
 
                 # Update first/last used times
-                if session.start_time:
-                    if model_stats.first_used is None or session.start_time < model_stats.first_used:
-                        model_stats.first_used = session.start_time
+                model_start_times = [
+                    file.time_data.created_datetime
+                    for file in model_files
+                    if file.time_data and file.time_data.created_datetime
+                ]
+                model_end_times = [
+                    file.time_data.completed_datetime
+                    for file in model_files
+                    if file.time_data and file.time_data.completed_datetime
+                ]
 
-                if session.end_time:
-                    if model_stats.last_used is None or session.end_time > model_stats.last_used:
-                        model_stats.last_used = session.end_time
+                model_first = min(model_start_times) if model_start_times else (
+                    session.start_time if model_files else None
+                )
+                model_last = max(model_end_times) if model_end_times else (
+                    session.start_time if model_files else None
+                )
+
+                if model_first:
+                    if model_stats.first_used is None or model_first < model_stats.first_used:
+                        model_stats.first_used = model_first
+
+                if model_last:
+                    if model_stats.last_used is None or model_last > model_stats.last_used:
+                        model_stats.last_used = model_last
 
         # Convert to ModelUsageStats objects
         model_stats_list = []
@@ -428,24 +495,11 @@ class TimeframeAnalyzer:
         force_recalculate: bool = False,
     ) -> 'ProjectBreakdownReport':
         """Create project usage breakdown."""
-        # Filter sessions by date range if specified
-        filtered_sessions = sessions
-        if start_date or end_date:
-            filtered_sessions = []
-            for session in sessions:
-                if session.start_time:
-                    session_date = session.start_time.date()
-                    if start_date and session_date < start_date:
-                        continue
-                    if end_date and session_date > end_date:
-                        continue
-                    filtered_sessions.append(session)
-
         # Define project stats structure with proper types
         class ProjectStats:
             def __init__(self):
                 self.tokens = TokenUsage()
-                self.sessions = 0
+                self.sessions: Set[str] = set()
                 self.interactions = 0
                 self.cost = Decimal('0.0')
                 self.models_used: Set[str] = set()
@@ -454,32 +508,72 @@ class TimeframeAnalyzer:
         
         project_data: Dict[str, ProjectStats] = defaultdict(ProjectStats)
 
-        for session in filtered_sessions:
-            project_name = session.project_name or "Unknown"
-            project_stats = project_data[project_name]
-            
-            # Update aggregated data
-            session_tokens = session.total_tokens
-            project_stats.tokens.input += session_tokens.input
-            project_stats.tokens.output += session_tokens.output
-            project_stats.tokens.cache_write += session_tokens.cache_write
-            project_stats.tokens.cache_read += session_tokens.cache_read
-            
-            project_stats.sessions += 1
-            project_stats.interactions += session.interaction_count
-            project_stats.cost += session.calculate_total_cost(pricing_data, force_recalculate)
-            project_stats.models_used.update(session.models_used)
-            
-            # Track first/last activity times
-            if session.start_time:
-                if (project_stats.first_activity is None or 
-                    session.start_time < project_stats.first_activity):
-                    project_stats.first_activity = session.start_time
-                    
-            if session.end_time:
-                if (project_stats.last_activity is None or 
-                    session.end_time > project_stats.last_activity):
-                    project_stats.last_activity = session.end_time
+        for session in sessions:
+            if start_date or end_date:
+                fallback_date = session.start_time.date() if session.start_time else None
+                filtered_files = [
+                    file
+                    for file in session.files
+                    if TimeframeAnalyzer._is_in_date_range(
+                        TimeframeAnalyzer._interaction_date(file, fallback_date),
+                        start_date,
+                        end_date,
+                    )
+                ]
+            else:
+                filtered_files = list(session.files)
+
+            if not filtered_files:
+                continue
+
+            project_files: Dict[str, List[InteractionFile]] = defaultdict(list)
+            for file in filtered_files:
+                project_files[file.project_name].append(file)
+
+            for project_name, files in project_files.items():
+                project_stats = project_data[project_name]
+
+                for file in files:
+                    project_stats.tokens.input += file.tokens.input
+                    project_stats.tokens.output += file.tokens.output
+                    project_stats.tokens.cache_write += file.tokens.cache_write
+                    project_stats.tokens.cache_read += file.tokens.cache_read
+
+                project_stats.sessions.add(session.session_id)
+                project_stats.interactions += len(files)
+                project_stats.cost += sum(
+                    (file.calculate_cost(pricing_data, force_recalculate) for file in files),
+                    Decimal('0.0'),
+                )
+                project_stats.models_used.update(file.model_id for file in files)
+
+                session_start_times = [
+                    file.time_data.created_datetime
+                    for file in files
+                    if file.time_data and file.time_data.created_datetime
+                ]
+                session_end_times = [
+                    file.time_data.completed_datetime
+                    for file in files
+                    if file.time_data and file.time_data.completed_datetime
+                ]
+
+                session_first = min(session_start_times) if session_start_times else (
+                    session.start_time if files else None
+                )
+                session_last = max(session_end_times) if session_end_times else (
+                    session.start_time if files else None
+                )
+
+                if session_first:
+                    if (project_stats.first_activity is None or
+                        session_first < project_stats.first_activity):
+                        project_stats.first_activity = session_first
+
+                if session_last:
+                    if (project_stats.last_activity is None or
+                        session_last > project_stats.last_activity):
+                        project_stats.last_activity = session_last
 
         # Convert to ProjectUsageStats objects
         project_stats = []
@@ -487,7 +581,7 @@ class TimeframeAnalyzer:
             project_stats.append(ProjectUsageStats(
                 project_name=project_name,
                 total_tokens=stats.tokens,
-                total_sessions=stats.sessions,
+                total_sessions=len(stats.sessions),
                 total_interactions=stats.interactions,
                 total_cost=stats.cost,
                 models_used=list(stats.models_used),

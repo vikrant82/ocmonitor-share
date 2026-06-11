@@ -212,7 +212,7 @@ class FileProcessor:
 
         try:
             # Extract basic information
-            model_id = data.get('modelID', 'unknown')
+            model_id = data.get('modelID') or 'unknown'
             
             # Handle fully qualified model names
             model_id = FileProcessor._extract_model_name(model_id)
