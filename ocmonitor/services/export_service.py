@@ -321,7 +321,7 @@ class ExportService:
                 converter = self.currency_converter
                 return [
                     {
-                        'model_name': model.model_name,
+                        'model_name': model.display_model,
                         'total_sessions': model.total_sessions,
                         'total_interactions': model.total_interactions,
                         'input_tokens': model.total_tokens.input,
