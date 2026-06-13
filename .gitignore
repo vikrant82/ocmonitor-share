@@ -149,3 +149,7 @@ agents.md
 
 # PyPI credentials
 .pypirc
+
+# Local planning/scratch notes
+PLAN_reasoning_tokens.md
+RECALCULATE_OUTPUT_PROPAGATION_FIX_PLAN.md
