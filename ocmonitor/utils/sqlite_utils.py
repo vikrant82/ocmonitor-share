@@ -83,10 +83,10 @@ class SQLiteProcessor:
         if isinstance(model_data, dict):
             # Try modelID directly
             if "modelID" in model_data:
-                return model_data["modelID"]
+                return model_data["modelID"] or "unknown"
             # Try nested model.modelID
             if "model" in model_data and isinstance(model_data["model"], dict):
-                return model_data["model"].get("modelID", "unknown")
+                return model_data["model"].get("modelID") or "unknown"
         return "unknown"
 
     @staticmethod

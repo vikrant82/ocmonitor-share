@@ -284,7 +284,7 @@ class FileProcessor:
 
         try:
             # Extract basic information
-            model_id = data.get('modelID', 'unknown')
+            model_id = data.get('modelID') or 'unknown'
             provider_id = (data.get('providerID') or '').lower() or None
 
             # Handle fully qualified model names

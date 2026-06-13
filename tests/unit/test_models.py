@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, date
 
 from ocmonitor.models.session import TokenUsage, TimeData, InteractionFile, SessionData
 from ocmonitor.config import ModelPricing
@@ -954,3 +954,388 @@ class TestSessionDataProviderAwareModelFields:
         assert sorted(breakdown.keys()) == ["prov-a/gpt-4o", "prov-b/gpt-4o"]
         assert breakdown["prov-a/gpt-4o"]["tokens"].input == 100
         assert breakdown["prov-b/gpt-4o"]["tokens"].input == 200
+
+
+class TestInteractionDateAttribution:
+    """Tests interaction-date-based aggregation and filtering behavior."""
+
+    @pytest.fixture
+    def pricing_data(self):
+        """Provide simple pricing for aggregation tests."""
+        return {
+            "known-model": ModelPricing(
+                input=Decimal("1.0"),
+                output=Decimal("2.0"),
+                cacheWrite=Decimal("0.0"),
+                cacheRead=Decimal("0.0"),
+                contextWindow=128000,
+                sessionQuota=Decimal("0.0"),
+            )
+        }
+
+    def _make_file(self, tmp_path, name, created_dt, input_tokens, output_tokens=0):
+        """Create an interaction file with timestamp and token usage."""
+        f = tmp_path / f"{name}.json"
+        f.write_text("{}")
+        return InteractionFile(
+            file_path=f,
+            session_id="ses_multi",
+            model_id="known-model",
+            tokens=TokenUsage(input=input_tokens, output=output_tokens),
+            time_data=TimeData(created=int(created_dt.timestamp() * 1000)),
+        )
+
+    def test_daily_breakdown_splits_one_session_across_interaction_dates(self, tmp_path):
+        """Daily usage should split a multi-day session by interaction date."""
+        from ocmonitor.models.analytics import TimeframeAnalyzer
+
+        day_one = datetime(2026, 5, 1, 9, 0, 0)
+        day_two = datetime(2026, 5, 2, 10, 30, 0)
+
+        session = SessionData(
+            session_id="ses_multi",
+            session_path=tmp_path / "ses_multi",
+            files=[
+                self._make_file(tmp_path, "inter_day1", day_one, 100),
+                self._make_file(tmp_path, "inter_day2", day_two, 200),
+            ],
+        )
+
+        daily = TimeframeAnalyzer.create_daily_breakdown([session])
+
+        assert [d.date for d in daily] == [date(2026, 5, 1), date(2026, 5, 2)]
+        assert [d.total_interactions for d in daily] == [1, 1]
+        assert [d.total_tokens.input for d in daily] == [100, 200]
+
+    def test_weekly_and_monthly_total_sessions_are_unique_across_split_days(self, tmp_path):
+        """Weekly and monthly session totals should not double count a split session."""
+        from ocmonitor.models.analytics import TimeframeAnalyzer
+
+        day_one = datetime(2026, 5, 1, 9, 0, 0)
+        day_two = datetime(2026, 5, 2, 10, 30, 0)
+
+        session = SessionData(
+            session_id="ses_multi",
+            session_path=tmp_path / "ses_multi",
+            files=[
+                self._make_file(tmp_path, "inter_week_day1", day_one, 100),
+                self._make_file(tmp_path, "inter_week_day2", day_two, 200),
+            ],
+        )
+
+        daily = TimeframeAnalyzer.create_daily_breakdown([session])
+        weekly = TimeframeAnalyzer.create_weekly_breakdown(daily)
+        monthly = TimeframeAnalyzer.create_monthly_breakdown(weekly)
+
+        assert len(weekly) == 1
+        assert weekly[0].total_sessions == 1
+        assert len(monthly) == 1
+        assert monthly[0].total_sessions == 1
+
+    def test_model_breakdown_filters_by_interaction_date_not_session_start(self, tmp_path, pricing_data):
+        """Model breakdown should include only interactions in the date window."""
+        from ocmonitor.models.analytics import TimeframeAnalyzer
+
+        old_day = datetime(2026, 5, 30, 8, 0, 0)
+        in_window_day = datetime(2026, 6, 2, 14, 0, 0)
+
+        session = SessionData(
+            session_id="ses_multi",
+            session_path=tmp_path / "ses_multi",
+            files=[
+                self._make_file(tmp_path, "inter_old", old_day, 300),
+                self._make_file(tmp_path, "inter_in_window", in_window_day, 700),
+            ],
+        )
+
+        report = TimeframeAnalyzer.create_model_breakdown(
+            [session],
+            pricing_data,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 7),
+        )
+
+        assert len(report.model_stats) == 1
+        assert report.model_stats[0].total_interactions == 1
+        assert report.model_stats[0].total_tokens.input == 700
+
+    def test_project_breakdown_filters_by_interaction_date_not_session_start(self, tmp_path, pricing_data):
+        """Project breakdown should count only in-window interactions and cost."""
+        from ocmonitor.models.analytics import TimeframeAnalyzer
+
+        old_day = datetime(2026, 5, 30, 8, 0, 0)
+        in_window_day = datetime(2026, 6, 2, 14, 0, 0)
+
+        session = SessionData(
+            session_id="ses_multi",
+            session_path=tmp_path / "ses_multi",
+            files=[
+                self._make_file(tmp_path, "project_old", old_day, 300),
+                self._make_file(tmp_path, "project_in_window", in_window_day, 700),
+            ],
+        )
+
+        report = TimeframeAnalyzer.create_project_breakdown(
+            [session],
+            pricing_data,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 7),
+        )
+
+        assert len(report.project_stats) == 1
+        assert report.project_stats[0].total_interactions == 1
+        assert report.project_stats[0].total_tokens.input == 700
+        assert report.project_stats[0].total_cost == Decimal("0.0007")
+
+    def test_project_breakdown_buckets_filtered_files_by_file_project(self, tmp_path, pricing_data):
+        """Project breakdown should bucket filtered interactions by each file's project path."""
+        from ocmonitor.models.analytics import TimeframeAnalyzer
+
+        in_window_day = datetime(2026, 6, 2, 14, 0, 0)
+
+        a_file = self._make_file(tmp_path, "project_a", in_window_day, 300)
+        b_file = self._make_file(tmp_path, "project_b", in_window_day, 700)
+        a_file.project_path = "/workspace/project-a"
+        b_file.project_path = "/workspace/project-b"
+
+        session = SessionData(
+            session_id="ses_multi_project",
+            session_path=tmp_path / "ses_multi_project",
+            files=[a_file, b_file],
+        )
+
+        report = TimeframeAnalyzer.create_project_breakdown(
+            [session],
+            pricing_data,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 7),
+        )
+
+        assert len(report.project_stats) == 2
+        by_project = {p.project_name: p for p in report.project_stats}
+        assert by_project["project-a"].total_tokens.input == 300
+        assert by_project["project-a"].total_interactions == 1
+        assert by_project["project-a"].total_sessions == 1
+        assert by_project["project-b"].total_tokens.input == 700
+        assert by_project["project-b"].total_interactions == 1
+        assert by_project["project-b"].total_sessions == 1
+
+    def test_model_last_used_does_not_fall_back_to_unfiltered_session_end(self, tmp_path, pricing_data):
+        """Model last_used should not leak end time from unrelated filtered files."""
+        from ocmonitor.models.analytics import TimeframeAnalyzer
+
+        model_a_created = datetime(2026, 6, 2, 10, 0, 0)
+        model_b_created = datetime(2026, 6, 2, 23, 0, 0)
+        model_b_completed = datetime(2026, 6, 2, 23, 5, 0)
+
+        file_a = self._make_file(tmp_path, "model_a", model_a_created, 100)
+        file_b = self._make_file(tmp_path, "model_b", model_b_created, 200)
+        file_b.model_id = "other-model"
+        file_b.time_data = TimeData(
+            created=int(model_b_created.timestamp() * 1000),
+            completed=int(model_b_completed.timestamp() * 1000),
+        )
+
+        session = SessionData(
+            session_id="ses_model_last_used",
+            session_path=tmp_path / "ses_model_last_used",
+            files=[file_a, file_b],
+        )
+
+        report = TimeframeAnalyzer.create_model_breakdown(
+            [session],
+            pricing_data,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 7),
+        )
+
+        by_model = {m.display_model: m for m in report.model_stats}
+        assert by_model["known-model"].last_used == session.start_time
+        assert by_model["known-model"].last_used != session.end_time
+
+    def test_model_times_fall_back_to_session_start_when_file_timestamps_missing(self, tmp_path, pricing_data):
+        """Model first/last used should fall back to session start for timestamp-less files."""
+        from ocmonitor.models.analytics import TimeframeAnalyzer
+
+        anchor_created = datetime(2026, 6, 2, 9, 0, 0)
+        anchor_completed = datetime(2026, 6, 2, 9, 5, 0)
+
+        missing = tmp_path / "model_missing_time.json"
+        missing.write_text("{}")
+        file_missing = InteractionFile(
+            file_path=missing,
+            session_id="ses_model_fallback",
+            model_id="known-model",
+            tokens=TokenUsage(input=100),
+            time_data=None,
+        )
+
+        file_anchor = self._make_file(tmp_path, "model_anchor", anchor_created, 1)
+        file_anchor.model_id = "other-model"
+        file_anchor.time_data = TimeData(
+            created=int(anchor_created.timestamp() * 1000),
+            completed=int(anchor_completed.timestamp() * 1000),
+        )
+
+        session = SessionData(
+            session_id="ses_model_fallback",
+            session_path=tmp_path / "ses_model_fallback",
+            files=[file_missing, file_anchor],
+        )
+
+        report = TimeframeAnalyzer.create_model_breakdown(
+            [session],
+            pricing_data,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 7),
+        )
+
+        by_model = {m.display_model: m for m in report.model_stats}
+        assert by_model["known-model"].first_used == session.start_time
+        assert by_model["known-model"].last_used == session.start_time
+
+    def test_project_last_activity_does_not_fall_back_to_unfiltered_session_end(self, tmp_path, pricing_data):
+        """Project last_activity should not leak end time from other project files."""
+        from ocmonitor.models.analytics import TimeframeAnalyzer
+
+        project_a_created = datetime(2026, 6, 2, 10, 0, 0)
+        project_b_created = datetime(2026, 6, 2, 23, 0, 0)
+        project_b_completed = datetime(2026, 6, 2, 23, 5, 0)
+
+        file_a = self._make_file(tmp_path, "project_last_a", project_a_created, 100)
+        file_b = self._make_file(tmp_path, "project_last_b", project_b_created, 200)
+        file_a.project_path = "/workspace/project-a"
+        file_b.project_path = "/workspace/project-b"
+        file_b.time_data = TimeData(
+            created=int(project_b_created.timestamp() * 1000),
+            completed=int(project_b_completed.timestamp() * 1000),
+        )
+
+        session = SessionData(
+            session_id="ses_project_last",
+            session_path=tmp_path / "ses_project_last",
+            files=[file_a, file_b],
+        )
+
+        report = TimeframeAnalyzer.create_project_breakdown(
+            [session],
+            pricing_data,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 7),
+        )
+
+        by_project = {p.project_name: p for p in report.project_stats}
+        assert by_project["project-a"].last_activity == session.start_time
+        assert by_project["project-a"].last_activity != session.end_time
+
+    def test_project_times_fall_back_to_session_start_when_file_timestamps_missing(self, tmp_path, pricing_data):
+        """Project first/last activity should fall back to session start for timestamp-less files."""
+        from ocmonitor.models.analytics import TimeframeAnalyzer
+
+        anchor_created = datetime(2026, 6, 2, 9, 0, 0)
+        anchor_completed = datetime(2026, 6, 2, 9, 5, 0)
+
+        missing = tmp_path / "project_missing_time.json"
+        missing.write_text("{}")
+        file_missing = InteractionFile(
+            file_path=missing,
+            session_id="ses_project_fallback",
+            model_id="known-model",
+            tokens=TokenUsage(input=100),
+            project_path="/workspace/project-a",
+            time_data=None,
+        )
+
+        file_anchor = self._make_file(tmp_path, "project_anchor", anchor_created, 1)
+        file_anchor.project_path = "/workspace/project-b"
+        file_anchor.time_data = TimeData(
+            created=int(anchor_created.timestamp() * 1000),
+            completed=int(anchor_completed.timestamp() * 1000),
+        )
+
+        session = SessionData(
+            session_id="ses_project_fallback",
+            session_path=tmp_path / "ses_project_fallback",
+            files=[file_missing, file_anchor],
+        )
+
+        report = TimeframeAnalyzer.create_project_breakdown(
+            [session],
+            pricing_data,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 7),
+        )
+
+        by_project = {p.project_name: p for p in report.project_stats}
+        assert by_project["project-a"].first_activity == session.start_time
+        assert by_project["project-a"].last_activity == session.start_time
+
+    def test_filter_sessions_by_date_keeps_only_in_window_interactions(self, tmp_path):
+        """Session date filter should retain only interactions that match the date range."""
+        from ocmonitor.services.session_analyzer import SessionAnalyzer
+
+        old_day = datetime(2026, 5, 30, 8, 0, 0)
+        in_window_day = datetime(2026, 6, 2, 14, 0, 0)
+
+        session = SessionData(
+            session_id="ses_multi",
+            session_path=tmp_path / "ses_multi",
+            files=[
+                self._make_file(tmp_path, "filter_old", old_day, 300),
+                self._make_file(tmp_path, "filter_in_window", in_window_day, 700),
+            ],
+        )
+
+        analyzer = SessionAnalyzer(pricing_data={})
+        filtered = analyzer.filter_sessions_by_date(
+            [session],
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 7),
+        )
+
+        assert len(filtered) == 1
+        assert len(filtered[0].files) == 1
+        assert filtered[0].files[0].tokens.input == 700
+
+    def test_filter_sessions_by_date_falls_back_to_session_start_for_missing_timestamps(self, tmp_path):
+        """Date filtering should fall back to session start when interaction timestamp is missing."""
+        from ocmonitor.services.session_analyzer import SessionAnalyzer
+
+        in_window_day = datetime(2026, 6, 2, 14, 0, 0)
+        session_start = int(in_window_day.timestamp() * 1000)
+
+        f1 = tmp_path / "missing_time.json"
+        f2 = tmp_path / "session_anchor.json"
+        f1.write_text("{}")
+        f2.write_text("{}")
+
+        session = SessionData(
+            session_id="ses_missing",
+            session_path=tmp_path / "ses_missing",
+            files=[
+                InteractionFile(
+                    file_path=f1,
+                    session_id="ses_missing",
+                    model_id="known-model",
+                    tokens=TokenUsage(input=10),
+                    time_data=None,
+                ),
+                InteractionFile(
+                    file_path=f2,
+                    session_id="ses_missing",
+                    model_id="known-model",
+                    tokens=TokenUsage(input=1),
+                    time_data=TimeData(created=session_start),
+                ),
+            ],
+        )
+
+        analyzer = SessionAnalyzer(pricing_data={})
+        filtered = analyzer.filter_sessions_by_date(
+            [session],
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 7),
+        )
+
+        assert len(filtered) == 1
+        assert len(filtered[0].files) == 2

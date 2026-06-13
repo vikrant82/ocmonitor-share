@@ -93,3 +93,23 @@ class TestParseMessageData:
 
         assert result is not None
         assert result.provider_id is None
+
+    def test_null_model_id_falls_back_to_unknown(self):
+        """Null modelID in SQLite message payload should not break parsing."""
+        message_data = json.dumps({"role": "assistant", "modelID": None})
+
+        interaction = SQLiteProcessor.parse_message_data(message_data, "ses_test")
+
+        assert interaction is not None
+        assert interaction.model_id == "unknown"
+
+    def test_nested_null_model_id_falls_back_to_unknown(self):
+        """Null nested model.modelID in SQLite payload should fall back to unknown."""
+        message_data = json.dumps(
+            {"role": "assistant", "model": {"modelID": None}}
+        )
+
+        interaction = SQLiteProcessor.parse_message_data(message_data, "ses_test")
+
+        assert interaction is not None
+        assert interaction.model_id == "unknown"
