@@ -1,4 +1,20 @@
 {
+  "deepseek/deepseek-v4-flash": {
+    "input": 0.14,
+    "output": 0.28,
+    "cacheWrite": 0.0,
+    "cacheRead": 0.028,
+    "contextWindow": 1000000,
+    "sessionQuota": 0.0
+  },
+  "deepseek/deepseek-v4-pro": {
+    "input": 1.74,
+    "output": 3.48,
+    "cacheWrite": 0.0,
+    "cacheRead": 0.87,
+    "contextWindow": 1000000,
+    "sessionQuota": 0.0
+  },
   "opencode/big-pickle": {
     "input": 0.0,
     "output": 0.0,
@@ -109,6 +125,14 @@
     "cacheWrite": 0.0,
     "cacheRead": 0.0,
     "contextWindow": 256000,
+    "sessionQuota": 0.0
+  },
+  "moonshotai/kimi-k2.6": {
+    "input": 0.95,
+    "output": 4.0,
+    "cacheWrite": 0.0,
+    "cacheRead": 0.16,
+    "contextWindow": 200000,
     "sessionQuota": 0.0
   },
   "moonshotai/kimi-k2-thinking": {
@@ -276,6 +300,22 @@
     "output": 180.0,
     "cacheWrite": 0.0,
     "cacheRead": 30.0,
+    "contextWindow": 1000000,
+    "sessionQuota": 0.0
+  },
+  "openai/gpt-5.4-mini": {
+    "input": 0.75,
+    "output": 4.5,
+    "cacheWrite": 0.0,
+    "cacheRead": 0.075,
+    "contextWindow": 400000,
+    "sessionQuota": 0.0
+  },
+  "openai/gpt-5.5": {
+    "input": 5.0,
+    "output": 30.0,
+    "cacheWrite": 0.0,
+    "cacheRead": 0.5,
     "contextWindow": 1000000,
     "sessionQuota": 0.0
   },
