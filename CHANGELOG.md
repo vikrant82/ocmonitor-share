@@ -5,7 +5,47 @@ All notable changes to OpenCode Monitor will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.4] - 2026-04-12
+## [1.0.5] - Unreleased
+
+### 🌐 Provider-Aware Model Pricing
+
+OpenCode stores both `providerID` and `modelID` per interaction. This release surfaces the provider throughout OCMonitor's output and aligns `models.json` keys with the same `provider/modelID` format, enabling accurate per-provider pricing.
+
+#### Added
+- **`provider_id` field** on `InteractionFile` — parsed from `providerID` in SQLite message JSON and file-based interactions (`Optional[str]`, default `None`)
+- **`display_model` computed property** on `InteractionFile` — returns `provider/model` when provider is known, else bare model ID
+- **`split_provider_model()` static helper** on `FileProcessor` — splits `display_model` on the first `/` for column rendering and is reused by `TableFormatter` and `ReportGenerator`
+- **`_compact_models_display()` method** on `TableFormatter` — groups models by provider in the Daily Usage Breakdown Models column: single model → `provider/model`, multiple from same provider → `provider/{m1, m2}`, truncated to 3 groups with `(+N more)`
+- **Separate Provider and Model columns** in all table builders (`models`, `daily`, `sessions`) and `report_generator.py` workflow table, replacing the former single `Model` column
+
+#### Changed
+- **`models.json` key format** migrated from bare `model-id` to `provider/model-id` (e.g., `anthropic/claude-sonnet-4-20250514`). All 42 existing entries updated with canonical provider IDs.
+- **`models_used` and `get_model_breakdown`** now group by `display_model` (provider-qualified)
+- **Prometheus `model` label** now emits `provider/model` values (e.g., `anthropic/claude-sonnet-4-20250514`)
+
+#### Pricing Lookup Chain (5 steps, fully backward compatible)
+Old bare-key `models.json` files continue to work without modification:
+1. `provider_id/model_id` — exact provider+model match
+2. `provider_id/normalize(model_id)` — provider + normalized model
+3. `model_id` — bare exact match (legacy files)
+4. `normalize(model_id)` — bare normalized
+5. Scan `*/model_id` — any provider, model-only fallback
+
+#### Files Modified
+- `ocmonitor/models/session.py` — `provider_id`, `display_model`, 5-step lookup
+- `ocmonitor/models/analytics.py` — `create_model_breakdown` uses `display_model`
+- `ocmonitor/utils/sqlite_utils.py` — parses `providerID` from message JSON
+- `ocmonitor/utils/file_utils.py` — parses `providerID`; provides `lookup_pricing()` (5-step) and `split_provider_model()` helpers
+- `ocmonitor/ui/tables.py` — Provider+Model columns, `_split_provider_model()`, `_compact_models_display()`
+- `ocmonitor/services/report_generator.py` — Provider+Model columns, `_split_provider_model()`
+- `ocmonitor/models.json` — 42 entries in `provider/modelID` format
+
+#### Fixed
+- **Non-deterministic workflow model selection** — `report_generator.py` workflow summary now uses `sorted(set(...))` for stable ordering across runs
+- **Provider/model split helper centralization** — moved split parsing to `FileProcessor.split_provider_model()` and updated all callers
+- **Docstring coverage threshold** — increased docstring coverage to 92.4% (minimum 80%) by adding missing docstrings in touched source and test files
+
+
 
 ### ✨ Improvements
 

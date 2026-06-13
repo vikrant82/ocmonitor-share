@@ -17,6 +17,7 @@ class OCMonitorError(Exception):
     """Base exception for OpenCode Monitor."""
 
     def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        """Initialize error with a message and optional structured details."""
         super().__init__(message)
         self.message = message
         self.details = details or {}
@@ -123,8 +124,11 @@ def handle_errors(error_handler: Optional[ErrorHandler] = None, context: str = "
         Decorated function
     """
     def decorator(func: F) -> F:
+        """Wrap function with centralized error handling."""
+
         @wraps(func)
         def wrapper(*args, **kwargs):
+            """Execute wrapped function and return structured success/error output."""
             handler = error_handler or ErrorHandler()
             func_context = context or f"{func.__module__}.{func.__name__}"
             return handler.safe_execute(func, *args, context=func_context, **kwargs)
@@ -404,8 +408,11 @@ def graceful_shutdown(cleanup_func: Optional[Callable] = None):
         Decorated function
     """
     def decorator(func: F) -> F:
+        """Wrap function to run cleanup on interruption or failure."""
+
         @wraps(func)
         def wrapper(*args, **kwargs):
+            """Execute wrapped function and invoke cleanup before re-raising errors."""
             try:
                 return func(*args, **kwargs)
             except KeyboardInterrupt:

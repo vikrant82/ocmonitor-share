@@ -710,9 +710,13 @@ Models are defined in the `models.json` file. Each model includes pricing and te
 
 ### Current Models Format
 
+Models are keyed by `provider/model-id`, where `provider` is the canonical provider ID
+(e.g., `anthropic`, `openai`, `google`) and `model-id` matches the model identifier
+stored by OpenCode.
+
 ```json
 {
-  "claude-sonnet-4-20250514": {
+  "anthropic/claude-sonnet-4-20250514": {
     "input": 3.0,
     "output": 15.0,
     "cacheWrite": 3.75,
@@ -721,7 +725,7 @@ Models are defined in the `models.json` file. Each model includes pricing and te
     "sessionQuota": 6.00,
     "description": "Claude Sonnet 4 (2025-05-14)"
   },
-  "claude-opus-4": {
+  "anthropic/claude-opus-4": {
     "input": 15.0,
     "output": 75.0,
     "cacheWrite": 18.75,
@@ -730,7 +734,7 @@ Models are defined in the `models.json` file. Each model includes pricing and te
     "sessionQuota": 10.00,
     "description": "Claude Opus 4"
   },
-  "grok-code": {
+  "opencode/grok-code": {
     "input": 0.0,
     "output": 0.0,
     "cacheWrite": 0.0,
@@ -746,13 +750,13 @@ Models are defined in the `models.json` file. Each model includes pricing and te
 
 #### Step 1: Edit models.json
 
-Add your new model to the `models.json` file:
+Add your new model to the `models.json` file using `provider/model-id` as the key:
 
 ```json
 {
   "existing-models": "...",
   
-  "new-ai-model": {
+  "provider/new-ai-model": {
     "input": 5.0,
     "output": 25.0,
     "cacheWrite": 6.25,
@@ -762,7 +766,7 @@ Add your new model to the `models.json` file:
     "description": "New AI Model"
   },
   
-  "another-model": {
+  "provider/another-model": {
     "input": 0.0,
     "output": 0.0,
     "cacheWrite": 0.0,
@@ -786,9 +790,17 @@ ocmonitor config show
 ocmonitor sessions /path/to/sessions
 ```
 
-#### Step 3: Handle Fully Qualified Names
+#### Step 3: Pricing Lookup Chain
 
-For models with provider prefixes (like `provider/model-name`), add both versions:
+OCMonitor uses a 5-step backward-compatible lookup chain when resolving pricing for
+a session interaction. You only need to add a single `provider/model-id` entry — bare
+model IDs (legacy files) continue to work automatically:
+
+1. `provider_id/model_id` — exact provider+model match
+2. `provider_id/normalize(model_id)` — provider + normalized model
+3. `model_id` — bare exact match (old `models.json` files keep working)
+4. `normalize(model_id)` — bare normalized
+5. Scan `*/model_id` — any provider, model-only fallback
 
 ```json
 {
@@ -800,15 +812,6 @@ For models with provider prefixes (like `provider/model-name`), add both version
     "contextWindow": 150000,
     "sessionQuota": 8.0,
     "description": "Provider Model"
-  },
-  "model-name": {
-    "input": 2.0,
-    "output": 10.0,
-    "cacheWrite": 2.5,
-    "cacheRead": 0.20,
-    "contextWindow": 150000,
-    "sessionQuota": 8.0,
-    "description": "Provider Model (short name)"
   }
 }
 ```
@@ -2061,14 +2064,14 @@ ocmonitor monthly --breakdown
 **Example Output:**
 ```
                              Daily Usage Breakdown                              
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┓
-┃ Date / Model                   ┃ Sessions ┃ Interactions┃ Total Tokens┃    Cost ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━┩
-│ 2024-01-13                     │        1 │          2 │     1,150 │ $0.0128 │
-│   ↳ claude-sonnet-4-20250514   │        1 │          2 │     1,150 │ $0.0128 │
-│ 2024-01-14                     │        1 │          1 │     5,200 │ $0.0000 │
-│   ↳ grok-code                  │        1 │          1 │     5,200 │ $0.0000 │
-└────────────────────────────────┴──────────┴────────────┴───────────┴─────────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┓
+┃ Date / Model                            ┃ Sessions ┃ Interactions┃ Total Tokens┃    Cost ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━┩
+│ 2024-01-13                              │        1 │          2 │     1,150 │ $0.0128 │
+│   ↳ anthropic/claude-sonnet-4-20250514  │        1 │          2 │     1,150 │ $0.0128 │
+│ 2024-01-14                              │        1 │          1 │     5,200 │ $0.0000 │
+│   ↳ opencode/grok-code                  │        1 │          1 │     5,200 │ $0.0000 │
+└─────────────────────────────────────────┴──────────┴────────────┴───────────┴─────────┘
 ```
 
 **Features:**

@@ -124,6 +124,78 @@ class FileProcessor:
         return model_id
 
     @staticmethod
+    def lookup_pricing(
+        pricing_data: Dict[str, Any], model_id: str, provider_id: Optional[str] = None
+    ) -> Optional[Any]:
+        """Lookup pricing with provider-aware, backward-compatible fallback chain.
+
+        Lookup chain (stops at first match):
+          1. provider_id/model_id            - exact provider+model match
+          2. provider_id/normalize(model_id) - provider + normalized model
+          3. model_id                         - bare exact (backward compat)
+          4. normalize(model_id)             - bare normalized (backward compat)
+          5. scan */model_id or */normalize  - any provider, model-only match
+
+        Args:
+            pricing_data: Dictionary of model pricing information
+            model_id: Raw or normalized model id
+            provider_id: Optional provider id
+
+        Returns:
+            Matched pricing object or None
+        """
+        if not pricing_data:
+            return None
+
+        raw_model = (model_id or "unknown").lower()
+        normalized = FileProcessor._normalize_model_name(raw_model)
+        provider = (provider_id or "").lower() or None
+
+        # Step 1: provider_id/model_id exact match
+        if provider:
+            key = f"{provider}/{raw_model}"
+            if key in pricing_data:
+                return pricing_data[key]
+
+        # Step 2: provider_id/normalize(model_id)
+        if provider:
+            key = f"{provider}/{normalized}"
+            if key in pricing_data:
+                return pricing_data[key]
+
+        # Step 3: bare model_id exact match (backward compat / old models.json)
+        if raw_model in pricing_data:
+            return pricing_data[raw_model]
+
+        # Step 4: bare normalized exact match (backward compat)
+        if normalized in pricing_data:
+            return pricing_data[normalized]
+
+        # Step 5: scan all keys for */model_id or */normalized
+        for key, value in pricing_data.items():
+            if not isinstance(key, str):
+                continue
+            if '/' in key:
+                _, key_model = key.split('/', 1)
+                if key_model == raw_model or key_model == normalized:
+                    return value
+            else:
+                # Existing prefix-scan for -extended variant matching
+                if key.replace('-extended', '') == normalized or \
+                   normalized.replace('-extended', '') == key:
+                    return value
+
+        return None
+
+    @staticmethod
+    def split_provider_model(display_model: str) -> tuple[str, str]:
+        """Split 'provider/model' into (provider, model). Bare model -> ('', model)."""
+        if '/' in display_model:
+            provider, _, model = display_model.partition('/')
+            return provider, model
+        return "", display_model
+
+    @staticmethod
     def extract_project_name(path_str: str) -> str:
         """Extract project name from a file path.
         
@@ -213,7 +285,8 @@ class FileProcessor:
         try:
             # Extract basic information
             model_id = data.get('modelID', 'unknown')
-            
+            provider_id = (data.get('providerID') or '').lower() or None
+
             # Handle fully qualified model names
             model_id = FileProcessor._extract_model_name(model_id)
 
@@ -254,6 +327,7 @@ class FileProcessor:
                 file_path=file_path,
                 session_id=session_id,
                 model_id=model_id,
+                provider_id=provider_id,
                 tokens=tokens,
                 time_data=time_data,
                 project_path=project_path,

@@ -172,6 +172,21 @@ class TestParseInteractionFile:
         result = FileProcessor.parse_interaction_file(test_file, "ses_test")
         assert result is None
 
+    def test_parse_null_provider_id(self, tmp_path):
+        """providerID=null should not crash and should map to None."""
+        test_file = tmp_path / "inter_0001.json"
+        interaction_data = {
+            "modelID": "test-model",
+            "providerID": None,
+            "tokens": {"input": 1000, "output": 500},
+        }
+        test_file.write_text(json.dumps(interaction_data))
+
+        result = FileProcessor.parse_interaction_file(test_file, "ses_test")
+
+        assert result is not None
+        assert result.provider_id is None
+
 
 class TestLoadSessionData:
     """Tests for load_session_data method."""

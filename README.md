@@ -310,7 +310,7 @@ ocmonitor projects --start-date 2026-01-01 --end-date 2026-02-01
 ```
 
 **Model Analytics Features:**
-- Per-model token usage and cost breakdown
+- Per-provider/model token usage and cost breakdown, with separate **Provider** and **Model** columns
 - Cost percentage distribution across models
 - **Speed Column** - Average output tokens per second for each model
 - Session and interaction counts per model
@@ -383,6 +383,8 @@ curl http://localhost:9090/metrics
 - `ocmonitor_sessions_total{model}` - Session count per model
 - `ocmonitor_session_duration_hours_total` - Total session duration
 - `ocmonitor_sessions_by_project{project}` - Sessions by project
+
+**Note:** The `model` label value is in `provider/model` format (e.g., `anthropic/claude-sonnet-4-20250514`).
 
 ## ⚙️ Configuration
 

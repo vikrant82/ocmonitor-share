@@ -10,6 +10,7 @@ from rich.panel import Panel
 from ..models.session import SessionData, TokenUsage
 from ..models.analytics import DailyUsage, ModelUsageStats, ModelDetailStats
 from ..models.tool_usage import ToolUsageStats
+from ..utils.file_utils import FileProcessor
 from ..utils.time_utils import TimeUtils, compute_p50_output_rate
 from ..utils.formatting import ColorFormatter
 
@@ -48,6 +49,41 @@ class TableFormatter:
         """Get color for cost based on quota using semantic theme tags."""
         return ColorFormatter.get_cost_color(cost, quota, default_style="table.row.main")
 
+    @staticmethod
+    def _compact_models_display(models: list, max_groups: int = 3) -> str:
+        """Format a list of provider/model strings compactly.
+
+        Groups models by provider:
+          - single model  → provider/model
+          - multi models  → provider/{model1, model2}
+          - bare model    → model
+        Truncates to max_groups provider-groups with '(+N more)'.
+        """
+        provider_models: dict = {}
+        bare: list = []
+        for display_model in models:
+            if '/' in display_model:
+                prov, _, mod = display_model.partition('/')
+                provider_models.setdefault(prov, [])
+                if mod not in provider_models[prov]:
+                    provider_models[prov].append(mod)
+            else:
+                if display_model not in bare:
+                    bare.append(display_model)
+
+        parts: list = []
+        for prov in sorted(provider_models.keys()):
+            mods = sorted(provider_models[prov])
+            if len(mods) == 1:
+                parts.append(f"{prov}/{mods[0]}")
+            else:
+                parts.append(f"{prov}/{{{', '.join(mods)}}}")
+        parts.extend(sorted(bare))
+
+        if len(parts) <= max_groups:
+            return ", ".join(parts)
+        return ", ".join(parts[:max_groups]) + f" (+{len(parts) - max_groups} more)"
+
     def create_sessions_table(self, sessions: List[SessionData], pricing_data: Dict[str, Any],
                          force_recalculate: bool = False) -> Table:
         """Create a table for multiple sessions using semantic theme styles."""
@@ -62,7 +98,8 @@ class TableFormatter:
         table.add_column("Started", style="table.row.time", no_wrap=True)
         table.add_column("Duration", style="table.row.time", no_wrap=True)
         table.add_column("Session", style="table.row.main", max_width=35)
-        table.add_column("Model", style="table.row.model", max_width=25)
+        table.add_column("Provider", style="table.row.model", max_width=20)
+        table.add_column("Model", style="table.row.model", max_width=30)
         table.add_column("Interactions", justify="right", style="status.success")
         table.add_column("Input Tokens", justify="right", style="table.row.tokens")
         table.add_column("Output Tokens", justify="right", style="table.row.tokens")
@@ -94,7 +131,7 @@ class TableFormatter:
             model_breakdown = session.get_model_breakdown(pricing_data, force_recalculate)
 
             # Add rows for each model
-            for i, (model, stats) in enumerate(model_breakdown.items()):
+            for i, (display_model, stats) in enumerate(model_breakdown.items()):
                 # Show session info only for first model
                 if i == 0:
                     start_time = session.start_time.strftime('%Y-%m-%d %H:%M:%S') if session.start_time else 'N/A'
@@ -109,9 +146,9 @@ class TableFormatter:
                     session_display = ""
 
                 # Format model name
-                model_text = Text(model)
-                if len(model) > 25:
-                    model_text = Text(f"{model[:22]}...")
+                provider, model = FileProcessor.split_provider_model(display_model)
+                provider_text = Text(provider[:17] + "..." if len(provider) > 20 else provider)
+                model_text = Text(model[:27] + "..." if len(model) > 30 else model)
 
                 # Get cost color
                 cost_color = self.get_cost_color(stats['cost'])
@@ -130,6 +167,7 @@ class TableFormatter:
                     start_time,
                     duration,
                     session_display,
+                    provider_text,
                     model_text,
                     self.format_number(stats['files']),
                     self.format_number(stats['tokens'].input),
@@ -153,6 +191,7 @@ class TableFormatter:
             Text("TOTALS", style="table.footer"),
             "",
             "",  # Empty session column
+            "",  # Empty provider column
             Text(f"{len(sorted_sessions)} sessions", style="table.footer"),
             Text(self.format_number(total_interactions), style="status.success"),
             Text(self.format_number(total_tokens.input), style="table.row.tokens"),
@@ -176,7 +215,8 @@ class TableFormatter:
 
         # Add columns
         table.add_column("File", style="table.row.time", max_width=30)
-        table.add_column("Model", style="table.row.model")
+        table.add_column("Provider", style="table.row.model", max_width=20)
+        table.add_column("Model", style="table.row.model", max_width=30)
         table.add_column("Input", justify="right", style="table.row.tokens")
         table.add_column("Output", justify="right", style="table.row.tokens")
         table.add_column("Cache W", justify="right", style="status.success")
@@ -202,9 +242,12 @@ class TableFormatter:
 
             cost_color = self.get_cost_color(cost)
 
+            provider, model = FileProcessor.split_provider_model(file.display_model)
+
             table.add_row(
                 Text(file.file_name[:27] + "..." if len(file.file_name) > 30 else file.file_name),
-                file.model_id,
+                Text(provider[:17] + "..." if len(provider) > 20 else provider),
+                Text(model[:27] + "..." if len(model) > 30 else model),
                 self.format_number(file.tokens.input),
                 self.format_number(file.tokens.output),
                 self.format_number(file.tokens.cache_write),
@@ -218,6 +261,7 @@ class TableFormatter:
         table.add_section()
         table.add_row(
             Text("TOTALS", style="table.footer"),
+            "",
             "",
             Text(self.format_number(total_tokens.input), style="table.row.tokens"),
             Text(self.format_number(total_tokens.output), style="table.row.tokens"),
@@ -267,9 +311,7 @@ class TableFormatter:
             total_tokens.cache_read += day_tokens.cache_read
             total_cost += day_cost
 
-            models_text = ", ".join(day.models_used[:3])
-            if len(day.models_used) > 3:
-                models_text += f" (+{len(day.models_used) - 3} more)"
+            models_text = self._compact_models_display(day.models_used)
 
             cost_color = self.get_cost_color(day_cost)
 
@@ -309,6 +351,7 @@ class TableFormatter:
         )
 
         # Add columns
+        table.add_column("Provider", style="table.row.model", max_width=20)
         table.add_column("Model", style="table.row.model", max_width=30)
         table.add_column("Sessions", justify="right", style="status.success")
         table.add_column("Interactions", justify="right", style="status.success")
@@ -321,29 +364,32 @@ class TableFormatter:
         table.add_column("Cost %", justify="right", style="table.row.cost")
         table.add_column("Speed", justify="right", style="table.row.time")
 
-        total_cost = sum(model.total_cost for model in model_stats)
+        total_cost = sum(stat.total_cost for stat in model_stats)
 
-        for model in model_stats:
-            cost_percentage = self.format_percentage(float(model.total_cost), float(total_cost))
-            cost_color = self.get_cost_color(model.total_cost)
+        for stat in model_stats:
+            cost_percentage = self.format_percentage(float(stat.total_cost), float(total_cost))
+            cost_color = self.get_cost_color(stat.total_cost)
 
             # Format speed
-            speed = model.p50_output_rate
+            speed = stat.p50_output_rate
             if speed == 0:
                 speed_text = "-"
             else:
                 speed_text = f"{speed:.1f} t/s"
 
+            provider, model = FileProcessor.split_provider_model(stat.display_model)
+
             table.add_row(
-                Text(model.model_name[:27] + "..." if len(model.model_name) > 30 else model.model_name),
-                self.format_number(model.total_sessions),
-                self.format_number(model.total_interactions),
-                self.format_number(model.total_tokens.input),
-                self.format_number(model.total_tokens.output),
-                self.format_number(model.total_tokens.cache_write),
-                self.format_number(model.total_tokens.cache_read),
-                self.format_number(model.total_tokens.total),
-                Text(self.format_currency(model.total_cost), style=cost_color),
+                Text(provider[:17] + "..." if len(provider) > 20 else provider),
+                Text(model[:27] + "..." if len(model) > 30 else model),
+                self.format_number(stat.total_sessions),
+                self.format_number(stat.total_interactions),
+                self.format_number(stat.total_tokens.input),
+                self.format_number(stat.total_tokens.output),
+                self.format_number(stat.total_tokens.cache_write),
+                self.format_number(stat.total_tokens.cache_read),
+                self.format_number(stat.total_tokens.total),
+                Text(self.format_currency(stat.total_cost), style=cost_color),
                 Text(cost_percentage, style=cost_color),
                 speed_text
             )
@@ -648,4 +694,3 @@ class TableFormatter:
             )
 
         return table
-

@@ -99,6 +99,7 @@ cat > test_sessions/ses_test_001/msg_001.json << 'EOF'
   "id": "msg_001",
   "role": "user",
   "sessionID": "ses_test_001",
+  "providerID": "anthropic",
   "modelID": "claude-sonnet-4-20250514",
   "tokens": {
     "input": 100,
@@ -121,6 +122,7 @@ cat > test_sessions/ses_test_001/msg_002.json << 'EOF'
   "id": "msg_002",
   "role": "assistant",
   "sessionID": "ses_test_001",
+  "providerID": "anthropic",
   "modelID": "claude-sonnet-4-20250514",
   "tokens": {
     "input": 75,
@@ -218,6 +220,7 @@ cat > test_sessions/ses_test_002/msg_001.json << 'EOF'
 {
   "id": "msg_001",
   "sessionID": "ses_test_002",
+  "providerID": "anthropic",
   "modelID": "claude-opus-4",
   "tokens": {
     "input": 200,
@@ -246,9 +249,9 @@ ocmonitor daily test_sessions
 ocmonitor models test_sessions
 ```
 **Expected**:
-- Model usage table
-- Both claude-sonnet-4 and claude-opus-4 listed
-- Token counts and costs per model
+- Model usage table with separate **Provider** and **Model** columns
+- Both `anthropic` / `claude-sonnet-4-20250514` and `anthropic` / `claude-opus-4` listed
+- Token counts and costs per provider/model
 - Percentage breakdown
 
 ## 🔴 Error Handling Tests

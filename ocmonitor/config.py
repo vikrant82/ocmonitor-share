@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 def opencode_storage_path(path: Optional[str] = None) -> str:
+    """Return the OpenCode storage directory, optionally with a child path."""
     base = os.getenv("XDG_DATA_HOME") or "~/.local/share"
     parts = [base, "opencode", "storage"]
     if path:
@@ -112,6 +113,7 @@ class CurrencyConfig(BaseModel):
     @field_validator('remote_rates_cache_path')
     @classmethod
     def expand_currency_paths(cls, v):
+        """Expand user and environment variables for currency cache paths."""
         if v is None:
             return v
         return os.path.expanduser(os.path.expandvars(v))

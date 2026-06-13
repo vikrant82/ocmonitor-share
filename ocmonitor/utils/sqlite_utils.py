@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Generator
 from datetime import datetime
 
+from ..utils.file_utils import FileProcessor
 from ..models.session import SessionData, InteractionFile, TokenUsage, TimeData
 from ..models.tool_usage import ToolUsageStats, ToolUsageSummary, ModelToolUsage
 from ..models.analytics import ModelDetailStats
@@ -155,13 +156,15 @@ class SQLiteProcessor:
         time_data = cls._extract_time_data(data)
         project_path = cls._extract_project_path(data)
         agent = cls._extract_agent(data)
-        model_id = cls._extract_model_name(data)
+        model_id = cls._extract_model_name(data).lower()
+        provider_id = (data.get("providerID") or "").lower() or None
         finish_reason = data.get("finish")
 
         return InteractionFile(
             file_path=Path("sqlite") / session_id,  # Placeholder path
             session_id=session_id,
             model_id=model_id,
+            provider_id=provider_id,
             tokens=tokens,
             time_data=time_data,
             project_path=project_path,
@@ -439,6 +442,7 @@ class SQLiteProcessor:
     def _build_workflow_dict(
         cls, conn: sqlite3.Connection, main_session: SessionData
     ) -> Dict[str, Any]:
+        """Build workflow payload with parent session and loaded sub-agents."""
         sub_agent_rows = conn.execute(
             """
             SELECT s.*, p.worktree as project_path, p.name as project_name
@@ -970,7 +974,11 @@ class SQLiteProcessor:
 
             # Calculate cost using pricing data
             total_cost = Decimal('0.0')
-            model_pricing = pricing_data.get(model_name)
+            model_pricing = FileProcessor.lookup_pricing(
+                pricing_data,
+                model_id=model_name,
+                provider_id=None,
+            )
             if model_pricing:
                 price_input = getattr(model_pricing, 'input', 0) or 0
                 price_output = getattr(model_pricing, 'output', 0) or 0

@@ -142,15 +142,27 @@ ocmonitor/
 To add support for a new AI model:
 
 1. **Update models.json**
+
+   Use `provider/model-id` as the key, where `provider` is the canonical provider ID
+   (e.g., `anthropic`, `openai`, `google`) and `model-id` is the model identifier as
+   stored by OpenCode:
+
    ```json
    {
-     "new-model-name": {
-       "input_cost_per_million": 5.0,
-       "output_cost_per_million": 15.0,
-       "context_window": 200000
+     "provider/new-model-id": {
+       "input": 5.0,
+       "output": 15.0,
+       "cacheWrite": 6.25,
+       "cacheRead": 0.50,
+       "contextWindow": 200000,
+       "sessionQuota": 0.0
      }
    }
    ```
+
+   Bare keys (without a provider prefix) are still supported for backward compatibility
+   via the 5-step lookup chain, but all new entries should use the `provider/model-id`
+   format.
 
 2. **Test the Model**
    - Create test session data with the new model

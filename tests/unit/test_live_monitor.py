@@ -1365,3 +1365,47 @@ class TestHandleNavigationCommand:
         assert workflow_id == "wf-3"
         assert workflow == workflow_3
         assert selected == "wf-3"
+
+
+class TestLiveMonitorProviderAwareRegressions:
+    """Regression tests for provider-aware pricing lookups in live monitor."""
+
+    def test_session_context_usage_uses_provider_aware_context_window(self, tmp_path):
+        """Provider/model pricing should be used instead of default context window."""
+        from decimal import Decimal
+        from ocmonitor.config import ModelPricing
+        from ocmonitor.models.session import InteractionFile, SessionData, TokenUsage
+
+        pricing_data = {
+            "github-copilot/claude-sonnet-4.5": ModelPricing(
+                input=Decimal("1.0"),
+                output=Decimal("2.0"),
+                cacheWrite=Decimal("0.0"),
+                cacheRead=Decimal("0.0"),
+                contextWindow=100000,
+                sessionQuota=Decimal("5.0"),
+            )
+        }
+
+        monitor = LiveMonitor(pricing_data=pricing_data, paths_config=PathsConfig(messages_dir=str(tmp_path)))
+
+        inter_file = tmp_path / "inter_0001.json"
+        inter_file.write_text("{}")
+        interaction = InteractionFile(
+            file_path=inter_file,
+            session_id="ses_test",
+            model_id="claude-sonnet-4.5",
+            provider_id="github-copilot",
+            tokens=TokenUsage(input=1000, output=100, cache_read=200, cache_write=300),
+            raw_data={},
+        )
+        session = SessionData(
+            session_id="ses_test",
+            session_path=tmp_path / "ses_test",
+            files=[interaction],
+        )
+
+        result = monitor._get_session_context_usage(session)
+
+        assert "claude-sonnet-4.5" in result
+        assert result["claude-sonnet-4.5"]["context_window"] == 100000

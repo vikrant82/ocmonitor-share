@@ -630,3 +630,327 @@ class TestWorkflowForceRecalculate:
         # Recalculate: (1M input + 1M output at $3/M) + (0.5M input + 0.5M output at $3/M)
         # = $3.00 + $1.50 = $4.50
         assert workflow.calculate_total_cost(pricing_data, force_recalculate=True) == Decimal("4.5")
+
+
+class TestReportGeneratorModelBreakdown:
+    """Tests for ReportGenerator._get_model_breakdown_for_sessions provider-aware grouping."""
+
+    def _make_file(self, tmp_path, session_id, name, model_id, provider_id=None, **tokens):
+        f = tmp_path / f"{name}.json"
+        f.write_text("{}")
+        return InteractionFile(
+            file_path=f,
+            session_id=session_id,
+            model_id=model_id,
+            provider_id=provider_id,
+            tokens=TokenUsage(**tokens) if tokens else TokenUsage(),
+            raw_data={},
+        )
+
+    def test_same_model_id_different_providers_are_not_merged(self, tmp_path):
+        """Two providers using the same model_id must produce two separate breakdown rows."""
+        from unittest.mock import MagicMock
+        from ocmonitor.services.report_generator import ReportGenerator
+
+        file_a = self._make_file(
+            tmp_path, "ses1", "file_a", model_id="claude-sonnet", provider_id="prov-a",
+            input=100, output=50,
+        )
+        file_b = self._make_file(
+            tmp_path, "ses1", "file_b", model_id="claude-sonnet", provider_id="prov-b",
+            input=200, output=80,
+        )
+
+        session = SessionData(
+            session_id="ses1",
+            session_path=tmp_path / "ses1",
+            files=[file_a, file_b],
+        )
+
+        analyzer = MagicMock()
+        analyzer.pricing_data = {}
+        rg = ReportGenerator(analyzer=analyzer)
+
+        results = rg._get_model_breakdown_for_sessions([session])
+
+        models_in_results = {r["model"] for r in results}
+        assert "prov-a/claude-sonnet" in models_in_results, "prov-a entry missing"
+        assert "prov-b/claude-sonnet" in models_in_results, "prov-b entry missing"
+        assert len(results) == 2, f"Expected 2 rows, got {len(results)}: {models_in_results}"
+
+    def test_same_provider_same_model_id_are_merged(self, tmp_path):
+        """Two files with the same provider+model_id must be aggregated into one row."""
+        from unittest.mock import MagicMock
+        from ocmonitor.services.report_generator import ReportGenerator
+
+        file_a = self._make_file(
+            tmp_path, "ses1", "file_c", model_id="gpt-4o", provider_id="openai",
+            input=100, output=50,
+        )
+        file_b = self._make_file(
+            tmp_path, "ses1", "file_d", model_id="gpt-4o", provider_id="openai",
+            input=200, output=80,
+        )
+
+        session = SessionData(
+            session_id="ses1",
+            session_path=tmp_path / "ses1",
+            files=[file_a, file_b],
+        )
+
+        analyzer = MagicMock()
+        analyzer.pricing_data = {}
+        rg = ReportGenerator(analyzer=analyzer)
+
+        results = rg._get_model_breakdown_for_sessions([session])
+
+        assert len(results) == 1
+        assert results[0]["model"] == "openai/gpt-4o"
+        assert results[0]["interactions"] == 2
+        assert results[0]["input_tokens"] == 300
+        assert results[0]["output_tokens"] == 130
+
+
+class TestSessionAnalyzerProviderAwareRegressions:
+    """Regression tests for maintainer-reported provider-aware issues."""
+
+    def _make_file(self, tmp_path, name, model_id, provider_id=None, **tokens):
+        f = tmp_path / f"{name}.json"
+        f.write_text("{}")
+        return InteractionFile(
+            file_path=f,
+            session_id="ses_test",
+            model_id=model_id,
+            provider_id=provider_id,
+            tokens=TokenUsage(**tokens) if tokens else TokenUsage(),
+            raw_data={},
+        )
+
+    def test_filter_sessions_by_model_matches_bare_name_against_provider_model(self, tmp_path):
+        """Bare model filter should match provider/model display values for backward compatibility."""
+        from ocmonitor.services.session_analyzer import SessionAnalyzer
+
+        interaction = self._make_file(
+            tmp_path,
+            "inter_provider",
+            model_id="claude-sonnet-4.5",
+            provider_id="github-copilot",
+            input=10,
+            output=5,
+        )
+        session = SessionData(
+            session_id="ses_test",
+            session_path=tmp_path / "ses_test",
+            files=[interaction],
+        )
+
+        analyzer = SessionAnalyzer(pricing_data={})
+        result = analyzer.filter_sessions_by_model([session], ["claude-sonnet-4.5"])
+
+        assert len(result) == 1
+
+    def test_validate_session_health_no_false_unknown_warning_for_bare_model(self, tmp_path):
+        """Bare model should not be flagged unknown when pricing exists under provider/model key."""
+        from ocmonitor.services.session_analyzer import SessionAnalyzer
+
+        interaction = self._make_file(
+            tmp_path,
+            "inter_bare",
+            model_id="claude-sonnet-4.5",
+            provider_id=None,
+            input=10,
+            output=5,
+        )
+        session = SessionData(
+            session_id="ses_test",
+            session_path=tmp_path / "ses_test",
+            files=[interaction],
+        )
+
+        pricing_data = {
+            "github-copilot/claude-sonnet-4.5": ModelPricing(
+                input=Decimal("1.0"),
+                output=Decimal("2.0"),
+                cacheWrite=Decimal("0.0"),
+                cacheRead=Decimal("0.0"),
+                contextWindow=200000,
+                sessionQuota=Decimal("10.0"),
+            )
+        }
+        analyzer = SessionAnalyzer(pricing_data=pricing_data)
+
+        result = analyzer.validate_session_health(session)
+
+        unknown_warnings = [
+            w for w in result.get("warnings", []) if "Unknown models with no pricing" in w
+        ]
+        assert unknown_warnings == []
+
+
+class TestPricingLookupHelperRegression:
+    """Regression test to enforce shared provider-aware pricing lookup helper."""
+
+    def test_file_processor_exposes_shared_lookup_pricing_helper(self):
+        """Shared helper should exist and resolve bare model via provider/model keys."""
+        from ocmonitor.utils.file_utils import FileProcessor
+
+        pricing_data = {
+            "github-copilot/claude-sonnet-4.5": ModelPricing(
+                input=Decimal("1.0"),
+                output=Decimal("2.0"),
+                cacheWrite=Decimal("0.0"),
+                cacheRead=Decimal("0.0"),
+                contextWindow=200000,
+                sessionQuota=Decimal("10.0"),
+            )
+        }
+
+        pricing = FileProcessor.lookup_pricing(
+            pricing_data,
+            model_id="claude-sonnet-4.5",
+            provider_id=None,
+        )
+
+        assert pricing is not None
+        assert pricing.input == Decimal("1.0")
+
+
+class TestInteractionFileDisplayModel:
+    """Tests for InteractionFile.display_model provider-aware output."""
+
+    def test_display_model_with_provider_returns_qualified_name(self, tmp_path):
+        """Display model includes provider when provider_id is present."""
+        f = tmp_path / "inter_0001.json"
+        f.write_text("{}")
+
+        interaction = InteractionFile(
+            file_path=f,
+            session_id="ses_test",
+            model_id="claude-sonnet-4.5",
+            provider_id="github-copilot",
+        )
+
+        assert interaction.display_model == "github-copilot/claude-sonnet-4.5"
+
+    def test_display_model_without_provider_returns_bare_model(self, tmp_path):
+        """Display model falls back to bare model when provider_id is missing."""
+        f = tmp_path / "inter_0002.json"
+        f.write_text("{}")
+
+        interaction = InteractionFile(
+            file_path=f,
+            session_id="ses_test",
+            model_id="claude-sonnet-4.5",
+            provider_id=None,
+        )
+
+        assert interaction.display_model == "claude-sonnet-4.5"
+
+
+class TestSessionDataProviderAwareModelFields:
+    """Tests for provider-aware SessionData models_used and model breakdown."""
+
+    def _make_file(self, tmp_path, name, model_id, provider_id=None, **tokens):
+        """Create an interaction file fixture with optional token overrides."""
+        f = tmp_path / f"{name}.json"
+        f.write_text("{}")
+        return InteractionFile(
+            file_path=f,
+            session_id="ses_test",
+            model_id=model_id,
+            provider_id=provider_id,
+            tokens=TokenUsage(**tokens) if tokens else TokenUsage(),
+            raw_data={},
+        )
+
+    def _make_session(self, tmp_path, files):
+        """Create a session fixture with the provided interaction files."""
+        session_path = tmp_path / "ses_test"
+        session_path.mkdir(exist_ok=True)
+        return SessionData(
+            session_id="ses_test",
+            session_path=session_path,
+            files=files,
+        )
+
+    def test_models_used_returns_provider_qualified_names(self, tmp_path):
+        """Session models_used returns provider-qualified model identifiers."""
+        file_a = self._make_file(
+            tmp_path, "a", model_id="model-a", provider_id="prov-a"
+        )
+        file_b = self._make_file(
+            tmp_path, "b", model_id="model-b", provider_id="prov-a"
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+
+        assert sorted(session.models_used) == ["prov-a/model-a", "prov-a/model-b"]
+
+    def test_models_used_deduplicates_same_provider_and_model(self, tmp_path):
+        """Duplicate provider/model pairs are deduplicated in models_used."""
+        file_a = self._make_file(
+            tmp_path, "a", model_id="model-x", provider_id="prov-a"
+        )
+        file_b = self._make_file(
+            tmp_path, "b", model_id="model-x", provider_id="prov-a"
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+
+        assert session.models_used == ["prov-a/model-x"]
+
+    def test_models_used_keeps_same_model_under_different_providers_distinct(self, tmp_path):
+        """Same bare model under different providers remains distinct."""
+        file_a = self._make_file(
+            tmp_path, "a", model_id="model-x", provider_id="prov-a"
+        )
+        file_b = self._make_file(
+            tmp_path, "b", model_id="model-x", provider_id="prov-b"
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+
+        assert sorted(session.models_used) == ["prov-a/model-x", "prov-b/model-x"]
+
+    def test_model_breakdown_aggregates_same_provider_and_model(self, tmp_path):
+        """Model breakdown aggregates token totals per provider/model key."""
+        file_a = self._make_file(
+            tmp_path,
+            "a",
+            model_id="gpt-4o",
+            provider_id="openai",
+            input=100,
+            output=50,
+        )
+        file_b = self._make_file(
+            tmp_path,
+            "b",
+            model_id="gpt-4o",
+            provider_id="openai",
+            input=200,
+            output=80,
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+        breakdown = session.get_model_breakdown({})
+
+        assert len(breakdown) == 1
+        assert "openai/gpt-4o" in breakdown
+        assert breakdown["openai/gpt-4o"]["tokens"].input == 300
+        assert breakdown["openai/gpt-4o"]["tokens"].output == 130
+
+    def test_model_breakdown_separates_same_model_across_providers(self, tmp_path):
+        """Model breakdown keeps identical model IDs separate by provider."""
+        file_a = self._make_file(
+            tmp_path, "a", model_id="gpt-4o", provider_id="prov-a", input=100
+        )
+        file_b = self._make_file(
+            tmp_path, "b", model_id="gpt-4o", provider_id="prov-b", input=200
+        )
+
+        session = self._make_session(tmp_path, [file_a, file_b])
+        breakdown = session.get_model_breakdown({})
+
+        assert sorted(breakdown.keys()) == ["prov-a/gpt-4o", "prov-b/gpt-4o"]
+        assert breakdown["prov-a/gpt-4o"]["tokens"].input == 100
+        assert breakdown["prov-b/gpt-4o"]["tokens"].input == 200
