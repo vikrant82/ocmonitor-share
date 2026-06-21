@@ -96,10 +96,10 @@ class SQLiteProcessor:
         cache_data = tokens_data.get("cache", {})
 
         return TokenUsage(
-            input=max(0, tokens_data.get('input', 0)),
-            output=max(0, tokens_data.get('output', 0)),
-            cache_write=max(0, cache_data.get('write', 0)),
-            cache_read=max(0, cache_data.get('read', 0))
+            input=max(0, tokens_data.get("input", 0)),
+            output=max(0, tokens_data.get("output", 0)),
+            cache_write=max(0, cache_data.get("write", 0)),
+            cache_read=max(0, cache_data.get("read", 0)),
         )
 
     @staticmethod
@@ -673,39 +673,37 @@ class SQLiteProcessor:
             return stats
         finally:
             conn.close()
-    
+
     @classmethod
     def load_tool_usage_for_sessions(
-        cls,
-        session_ids: List[str],
-        db_path: Optional[Path] = None
+        cls, session_ids: List[str], db_path: Optional[Path] = None
     ) -> List[ToolUsageStats]:
         """Load tool usage statistics for the given sessions.
-        
+
         Queries the `part` table for tool entries with terminal statuses
         (completed or error) and aggregates counts by tool name.
-        
+
         Args:
             session_ids: List of session IDs to aggregate tool usage for
             db_path: Path to database (uses default if not provided)
-            
+
         Returns:
             List of ToolUsageStats sorted by total_calls descending
         """
         if not session_ids:
             return []
-        
+
         if db_path is None:
             db_path = cls.find_database_path()
-        
+
         if not db_path or not db_path.exists():
             return []
-        
+
         conn = cls._get_connection(db_path)
         try:
             # Build placeholders for IN clause
-            placeholders = ','.join('?' * len(session_ids))
-            
+            placeholders = ",".join("?" * len(session_ids))
+
             # Query tool parts with terminal statuses
             # Use json_valid to protect against malformed JSON
             # Use json_extract to access nested fields in the data column
@@ -722,73 +720,144 @@ class SQLiteProcessor:
                   AND json_extract(data, '$.state.status') IN ('completed', 'error')
                 GROUP BY tool_name, status
             """
-            
+
             cursor = conn.execute(query, session_ids)
-            
+
             # Aggregate by tool name
             tool_data: Dict[str, Dict[str, int]] = {}
             for row in cursor:
-                tool_name = row['tool_name']
-                status = row['status']
-                count = row['count']
-                
+                tool_name = row["tool_name"]
+                status = row["status"]
+                count = row["count"]
+
                 if tool_name not in tool_data:
-                    tool_data[tool_name] = {'success': 0, 'failure': 0}
-                
-                if status == 'completed':
-                    tool_data[tool_name]['success'] += count
-                elif status == 'error':
-                    tool_data[tool_name]['failure'] += count
-            
+                    tool_data[tool_name] = {
+                        "success": 0,
+                        "failure": 0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                    }
+
+                if status == "completed":
+                    tool_data[tool_name]["success"] += count
+                elif status == "error":
+                    tool_data[tool_name]["failure"] += count
+
+            # Attribute message-level tokens to tools. OpenCode records tokens on
+            # assistant messages, while tool calls are separate part rows. For a
+            # message with multiple terminal tool calls, split the message tokens
+            # evenly across those calls to avoid double-counting.
+            token_query = f"""
+                WITH terminal_tools AS (
+                    SELECT
+                        p.session_id,
+                        p.message_id,
+                        json_extract(p.data, '$.tool') as tool_name,
+                        m.data as message_data
+                    FROM part p
+                    JOIN message m ON p.message_id = m.id
+                    WHERE p.session_id IN ({placeholders})
+                      AND json_valid(p.data) = 1
+                      AND json_valid(m.data) = 1
+                      AND json_extract(p.data, '$.type') = 'tool'
+                      AND json_extract(p.data, '$.tool') IS NOT NULL
+                      AND json_extract(p.data, '$.state.status') IN ('completed', 'error')
+                ),
+                message_tool_counts AS (
+                    SELECT session_id, message_id, COUNT(*) as tool_count
+                    FROM terminal_tools
+                    GROUP BY session_id, message_id
+                )
+                SELECT
+                    t.tool_name,
+                    SUM(COALESCE(json_extract(t.message_data, '$.tokens.input'), 0) * 1.0 / mtc.tool_count) as input_tokens,
+                    SUM(COALESCE(json_extract(t.message_data, '$.tokens.output'), 0) * 1.0 / mtc.tool_count) as output_tokens,
+                    SUM(COALESCE(json_extract(t.message_data, '$.tokens.cache.read'), 0) * 1.0 / mtc.tool_count) as cache_read_tokens,
+                    SUM(COALESCE(json_extract(t.message_data, '$.tokens.cache.write'), 0) * 1.0 / mtc.tool_count) as cache_write_tokens
+                FROM terminal_tools t
+                JOIN message_tool_counts mtc
+                  ON t.session_id = mtc.session_id
+                 AND t.message_id = mtc.message_id
+                GROUP BY t.tool_name
+            """
+
+            try:
+                token_cursor = conn.execute(token_query, session_ids)
+                for row in token_cursor:
+                    tool_name = row["tool_name"]
+                    if tool_name not in tool_data:
+                        continue
+                    tool_data[tool_name]["input_tokens"] = round(
+                        row["input_tokens"] or 0
+                    )
+                    tool_data[tool_name]["output_tokens"] = round(
+                        row["output_tokens"] or 0
+                    )
+                    tool_data[tool_name]["cache_read_tokens"] = round(
+                        row["cache_read_tokens"] or 0
+                    )
+                    tool_data[tool_name]["cache_write_tokens"] = round(
+                        row["cache_write_tokens"] or 0
+                    )
+            except sqlite3.OperationalError:
+                # Legacy/minimal DBs may not have a message table; keep counts.
+                pass
+
             # Build ToolUsageStats list
             stats = []
             for tool_name, counts in tool_data.items():
-                total = counts['success'] + counts['failure']
-                stats.append(ToolUsageStats(
-                    tool_name=tool_name,
-                    total_calls=total,
-                    success_count=counts['success'],
-                    failure_count=counts['failure']
-                ))
-            
+                total = counts["success"] + counts["failure"]
+                stats.append(
+                    ToolUsageStats(
+                        tool_name=tool_name,
+                        total_calls=total,
+                        success_count=counts["success"],
+                        failure_count=counts["failure"],
+                        input_tokens=counts["input_tokens"],
+                        output_tokens=counts["output_tokens"],
+                        cache_read_tokens=counts["cache_read_tokens"],
+                        cache_write_tokens=counts["cache_write_tokens"],
+                    )
+                )
+
             # Sort by total_calls descending
             stats.sort(key=lambda s: s.total_calls, reverse=True)
-            
+
             return stats
         finally:
             conn.close()
 
     @classmethod
     def load_tool_usage_by_model_for_sessions(
-        cls,
-        session_ids: List[str],
-        db_path: Optional[Path] = None
+        cls, session_ids: List[str], db_path: Optional[Path] = None
     ) -> List[ModelToolUsage]:
         """Load tool usage statistics grouped by model for the given sessions.
-        
+
         Queries the `part` table joined with `message` to get model information
         for each tool call. Aggregates counts by model and tool name.
-        
+
         Args:
             session_ids: List of session IDs to aggregate tool usage for
             db_path: Path to database (uses default if not provided)
-            
+
         Returns:
             List of ModelToolUsage sorted by total_calls descending
         """
         if not session_ids:
             return []
-        
+
         if db_path is None:
             db_path = cls.find_database_path()
-        
+
         if not db_path or not db_path.exists():
             return []
-        
+
         conn = cls._get_connection(db_path)
         try:
-            placeholders = ','.join('?' * len(session_ids))
-            
+            placeholders = ",".join("?" * len(session_ids))
+
             query = f"""
                 SELECT 
                     COALESCE(
@@ -809,43 +878,118 @@ class SQLiteProcessor:
                   AND json_extract(p.data, '$.state.status') IN ('completed', 'error')
                 GROUP BY model_id, tool_name, status
             """
-            
+
             cursor = conn.execute(query, session_ids)
-            
+
             model_data: Dict[str, Dict[str, Dict[str, int]]] = {}
             for row in cursor:
-                model_id = row['model_id']
-                tool_name = row['tool_name']
-                status = row['status']
-                count = row['count']
-                
+                model_id = row["model_id"]
+                tool_name = row["tool_name"]
+                status = row["status"]
+                count = row["count"]
+
                 if model_id not in model_data:
                     model_data[model_id] = {}
                 if tool_name not in model_data[model_id]:
-                    model_data[model_id][tool_name] = {'success': 0, 'failure': 0}
-                
-                if status == 'completed':
-                    model_data[model_id][tool_name]['success'] += count
-                elif status == 'error':
-                    model_data[model_id][tool_name]['failure'] += count
-            
+                    model_data[model_id][tool_name] = {
+                        "success": 0,
+                        "failure": 0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                    }
+
+                if status == "completed":
+                    model_data[model_id][tool_name]["success"] += count
+                elif status == "error":
+                    model_data[model_id][tool_name]["failure"] += count
+
+            # Attribute message-level tokens to each model/tool pair. Tokens are
+            # stored on assistant messages, not individual tool rows. Split a
+            # message's tokens evenly across its terminal tool calls to avoid
+            # over-counting when multiple tools share one message.
+            token_query = f"""
+                WITH terminal_tools AS (
+                    SELECT
+                        p.session_id,
+                        p.message_id,
+                        COALESCE(
+                            json_extract(m.data, '$.modelID'),
+                            json_extract(m.data, '$.model.modelID'),
+                            'unknown'
+                        ) as model_id,
+                        json_extract(p.data, '$.tool') as tool_name,
+                        m.data as message_data
+                    FROM part p
+                    JOIN message m ON p.message_id = m.id
+                    WHERE p.session_id IN ({placeholders})
+                      AND json_valid(p.data) = 1
+                      AND json_valid(m.data) = 1
+                      AND json_extract(p.data, '$.type') = 'tool'
+                      AND json_extract(p.data, '$.tool') IS NOT NULL
+                      AND json_extract(p.data, '$.state.status') IN ('completed', 'error')
+                ),
+                message_tool_counts AS (
+                    SELECT session_id, message_id, COUNT(*) as tool_count
+                    FROM terminal_tools
+                    GROUP BY session_id, message_id
+                )
+                SELECT
+                    t.model_id,
+                    t.tool_name,
+                    SUM(COALESCE(json_extract(t.message_data, '$.tokens.input'), 0) * 1.0 / mtc.tool_count) as input_tokens,
+                    SUM(COALESCE(json_extract(t.message_data, '$.tokens.output'), 0) * 1.0 / mtc.tool_count) as output_tokens,
+                    SUM(COALESCE(json_extract(t.message_data, '$.tokens.cache.read'), 0) * 1.0 / mtc.tool_count) as cache_read_tokens,
+                    SUM(COALESCE(json_extract(t.message_data, '$.tokens.cache.write'), 0) * 1.0 / mtc.tool_count) as cache_write_tokens
+                FROM terminal_tools t
+                JOIN message_tool_counts mtc
+                  ON t.session_id = mtc.session_id
+                 AND t.message_id = mtc.message_id
+                GROUP BY t.model_id, t.tool_name
+            """
+
+            token_cursor = conn.execute(token_query, session_ids)
+            for row in token_cursor:
+                model_id = row["model_id"]
+                tool_name = row["tool_name"]
+                if model_id not in model_data or tool_name not in model_data[model_id]:
+                    continue
+                model_data[model_id][tool_name]["input_tokens"] = round(
+                    row["input_tokens"] or 0
+                )
+                model_data[model_id][tool_name]["output_tokens"] = round(
+                    row["output_tokens"] or 0
+                )
+                model_data[model_id][tool_name]["cache_read_tokens"] = round(
+                    row["cache_read_tokens"] or 0
+                )
+                model_data[model_id][tool_name]["cache_write_tokens"] = round(
+                    row["cache_write_tokens"] or 0
+                )
+
             result = []
             for model_name, tools in model_data.items():
                 tool_stats = []
                 for tool_name, counts in tools.items():
-                    total = counts['success'] + counts['failure']
-                    tool_stats.append(ToolUsageStats(
-                        tool_name=tool_name,
-                        total_calls=total,
-                        success_count=counts['success'],
-                        failure_count=counts['failure']
-                    ))
+                    total = counts["success"] + counts["failure"]
+                    tool_stats.append(
+                        ToolUsageStats(
+                            tool_name=tool_name,
+                            total_calls=total,
+                            success_count=counts["success"],
+                            failure_count=counts["failure"],
+                            input_tokens=counts["input_tokens"],
+                            output_tokens=counts["output_tokens"],
+                            cache_read_tokens=counts["cache_read_tokens"],
+                            cache_write_tokens=counts["cache_write_tokens"],
+                        )
+                    )
                 tool_stats.sort(key=lambda s: s.total_calls, reverse=True)
-                result.append(ModelToolUsage(
-                    model_name=model_name,
-                    tool_stats=tool_stats
-                ))
-            
+                result.append(
+                    ModelToolUsage(model_name=model_name, tool_stats=tool_stats)
+                )
+
             result.sort(key=lambda m: m.total_calls, reverse=True)
 
             return result
@@ -893,13 +1037,18 @@ class SQLiteProcessor:
                 """,
                 (f"%{query.lower()}%",),
             )
-            return [row["model_name"] for row in cursor if row["model_name"] != "unknown"]
+            return [
+                row["model_name"] for row in cursor if row["model_name"] != "unknown"
+            ]
         finally:
             conn.close()
 
     @classmethod
     def get_model_detail_stats(
-        cls, model_name: str, pricing_data: Dict[str, Any], db_path: Optional[Path] = None
+        cls,
+        model_name: str,
+        pricing_data: Dict[str, Any],
+        db_path: Optional[Path] = None,
     ) -> Optional[ModelDetailStats]:
         """Get detailed statistics for a single model.
 
@@ -973,28 +1122,40 @@ class SQLiteProcessor:
             )
 
             # Calculate cost using pricing data
-            total_cost = Decimal('0.0')
+            total_cost = Decimal("0.0")
             model_pricing = FileProcessor.lookup_pricing(
                 pricing_data,
                 model_id=model_name,
                 provider_id=None,
             )
             if model_pricing:
-                price_input = getattr(model_pricing, 'input', 0) or 0
-                price_output = getattr(model_pricing, 'output', 0) or 0
-                price_cache_read = getattr(model_pricing, 'cacheRead', 0) or 0
-                price_cache_write = getattr(model_pricing, 'cacheWrite', 0) or 0
+                price_input = getattr(model_pricing, "input", 0) or 0
+                price_output = getattr(model_pricing, "output", 0) or 0
+                price_cache_read = getattr(model_pricing, "cacheRead", 0) or 0
+                price_cache_write = getattr(model_pricing, "cacheWrite", 0) or 0
                 total_cost = (
-                    Decimal(str(tokens.input)) * Decimal(str(price_input)) / Decimal('1000000')
-                    + Decimal(str(tokens.output)) * Decimal(str(price_output)) / Decimal('1000000')
-                    + Decimal(str(tokens.cache_read)) * Decimal(str(price_cache_read)) / Decimal('1000000')
-                    + Decimal(str(tokens.cache_write)) * Decimal(str(price_cache_write)) / Decimal('1000000')
+                    Decimal(str(tokens.input))
+                    * Decimal(str(price_input))
+                    / Decimal("1000000")
+                    + Decimal(str(tokens.output))
+                    * Decimal(str(price_output))
+                    / Decimal("1000000")
+                    + Decimal(str(tokens.cache_read))
+                    * Decimal(str(price_cache_read))
+                    / Decimal("1000000")
+                    + Decimal(str(tokens.cache_write))
+                    * Decimal(str(price_cache_write))
+                    / Decimal("1000000")
                 )
 
             total_sessions = row["total_sessions"]
             total_days = row["total_days"]
-            avg_cost_per_day = total_cost / total_days if total_days > 0 else Decimal('0.0')
-            avg_cost_per_session = total_cost / total_sessions if total_sessions > 0 else Decimal('0.0')
+            avg_cost_per_day = (
+                total_cost / total_days if total_days > 0 else Decimal("0.0")
+            )
+            avg_cost_per_session = (
+                total_cost / total_sessions if total_sessions > 0 else Decimal("0.0")
+            )
 
             # Query 2: Per-interaction output rates for p50 calculation
             rate_cursor = conn.execute(
@@ -1062,12 +1223,14 @@ class SQLiteProcessor:
 
             tool_stats = []
             for tool_row in tool_cursor:
-                tool_stats.append(ToolUsageStats(
-                    tool_name=tool_row["tool_name"],
-                    total_calls=tool_row["total_calls"],
-                    success_count=tool_row["success"],
-                    failure_count=tool_row["failed"],
-                ))
+                tool_stats.append(
+                    ToolUsageStats(
+                        tool_name=tool_row["tool_name"],
+                        total_calls=tool_row["total_calls"],
+                        success_count=tool_row["success"],
+                        failure_count=tool_row["failed"],
+                    )
+                )
 
             tool_summary = ToolUsageSummary(tool_stats=tool_stats)
 
