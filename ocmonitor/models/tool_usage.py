@@ -6,10 +6,15 @@ from pydantic import BaseModel, computed_field
 
 class ToolUsageStats(BaseModel):
     """Statistics for a single tool's usage."""
+
     tool_name: str
     total_calls: int = 0
     success_count: int = 0
     failure_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
     @computed_field
     @property
@@ -19,9 +24,21 @@ class ToolUsageStats(BaseModel):
             return 0.0
         return (self.success_count / self.total_calls) * 100.0
 
+    @computed_field
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens attributed to this tool."""
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+        )
+
 
 class ToolUsageSummary(BaseModel):
     """Summary of all tool usage across sessions."""
+
     tool_stats: List[ToolUsageStats] = []
 
     @computed_field
@@ -50,9 +67,16 @@ class ToolUsageSummary(BaseModel):
             return 0.0
         return (self.total_success / self.total_calls) * 100.0
 
+    @computed_field
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens attributed across all tools."""
+        return sum(t.total_tokens for t in self.tool_stats)
+
 
 class ModelToolUsage(BaseModel):
     """Tool usage statistics grouped by model."""
+
     model_name: str
     tool_stats: List[ToolUsageStats] = []
 
@@ -61,3 +85,9 @@ class ModelToolUsage(BaseModel):
     def total_calls(self) -> int:
         """Total tool calls for this model."""
         return sum(t.total_calls for t in self.tool_stats)
+
+    @computed_field
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens attributed to tools for this model."""
+        return sum(t.total_tokens for t in self.tool_stats)
