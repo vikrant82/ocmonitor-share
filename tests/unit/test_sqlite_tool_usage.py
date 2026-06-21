@@ -21,7 +21,7 @@ class TestLoadToolUsageForSessions:
         db_path = tmp_path / "test_opencode.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        
+
         # Create tables
         conn.execute("""
             CREATE TABLE session (
@@ -33,7 +33,7 @@ class TestLoadToolUsageForSessions:
                 time_updated INTEGER NOT NULL
             )
         """)
-        
+
         conn.execute("""
             CREATE TABLE part (
                 id TEXT PRIMARY KEY,
@@ -44,90 +44,77 @@ class TestLoadToolUsageForSessions:
                 data TEXT NOT NULL
             )
         """)
-        
+
         # Insert test sessions
         conn.execute(
             "INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
-            ("ses_test1", "proj_1", None, "Test Session 1", 1000, 2000)
+            ("ses_test1", "proj_1", None, "Test Session 1", 1000, 2000),
         )
         conn.execute(
             "INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
-            ("ses_test2", "proj_1", None, "Test Session 2", 3000, 4000)
+            ("ses_test2", "proj_1", None, "Test Session 2", 3000, 4000),
         )
-        
+
         # Insert tool parts for session 1
         # bash: 3 completed, 1 error
         for i, status in enumerate(["completed", "completed", "completed", "error"]):
-            data = json.dumps({
-                "type": "tool",
-                "tool": "bash",
-                "state": {"status": status}
-            })
+            data = json.dumps(
+                {"type": "tool", "tool": "bash", "state": {"status": status}}
+            )
             conn.execute(
                 "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-                (f"prt_bash_{i}", "msg_1", "ses_test1", 1000 + i, 1000 + i, data)
+                (f"prt_bash_{i}", "msg_1", "ses_test1", 1000 + i, 1000 + i, data),
             )
-        
+
         # read: 2 completed
         for i in range(2):
-            data = json.dumps({
-                "type": "tool",
-                "tool": "read",
-                "state": {"status": "completed"}
-            })
+            data = json.dumps(
+                {"type": "tool", "tool": "read", "state": {"status": "completed"}}
+            )
             conn.execute(
                 "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-                (f"prt_read_{i}", "msg_1", "ses_test1", 2000 + i, 2000 + i, data)
+                (f"prt_read_{i}", "msg_1", "ses_test1", 2000 + i, 2000 + i, data),
             )
-        
+
         # edit: 1 completed, 2 error
         for i, status in enumerate(["completed", "error", "error"]):
-            data = json.dumps({
-                "type": "tool",
-                "tool": "edit",
-                "state": {"status": status}
-            })
+            data = json.dumps(
+                {"type": "tool", "tool": "edit", "state": {"status": status}}
+            )
             conn.execute(
                 "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-                (f"prt_edit_{i}", "msg_1", "ses_test1", 3000 + i, 3000 + i, data)
+                (f"prt_edit_{i}", "msg_1", "ses_test1", 3000 + i, 3000 + i, data),
             )
-        
+
         # Insert tool parts for session 2
         # bash: 1 completed
-        data = json.dumps({
-            "type": "tool",
-            "tool": "bash",
-            "state": {"status": "completed"}
-        })
+        data = json.dumps(
+            {"type": "tool", "tool": "bash", "state": {"status": "completed"}}
+        )
         conn.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_bash_s2", "msg_2", "ses_test2", 3000, 3000, data)
+            ("prt_bash_s2", "msg_2", "ses_test2", 3000, 3000, data),
         )
-        
+
         # Insert non-tool parts (should be ignored)
-        data = json.dumps({
-            "type": "text",
-            "text": "Some text"
-        })
+        data = json.dumps({"type": "text", "text": "Some text"})
         conn.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_text", "msg_1", "ses_test1", 4000, 4000, data)
+            ("prt_text", "msg_1", "ses_test1", 4000, 4000, data),
         )
-        
+
         # Insert running tool (should be ignored)
-        data = json.dumps({
-            "type": "tool",
-            "tool": "bash",
-            "state": {"status": "running"}
-        })
+        data = json.dumps(
+            {"type": "tool", "tool": "bash", "state": {"status": "running"}}
+        )
         conn.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_running", "msg_1", "ses_test1", 5000, 5000, data)
+            ("prt_running", "msg_1", "ses_test1", 5000, 5000, data),
         )
-        
+
         conn.commit()
         conn.close()
-        
+
         return db_path
 
     def test_load_tool_usage_aggregates_correctly(self, temp_db: Path):
@@ -135,23 +122,23 @@ class TestLoadToolUsageForSessions:
         stats = SQLiteProcessor.load_tool_usage_for_sessions(
             ["ses_test1", "ses_test2"], temp_db
         )
-        
+
         assert len(stats) == 3
-        
+
         # bash should be first (most calls: 4 completed from ses_test1 + 1 completed from ses_test2 + 1 error = 5 total)
         assert stats[0].tool_name == "bash"
         assert stats[0].total_calls == 5  # 4 completed + 1 error (running is excluded)
         assert stats[0].success_count == 4  # 3 from ses_test1 + 1 from ses_test2
         assert stats[0].failure_count == 1
         assert stats[0].success_rate == 80.0
-        
+
         # edit: 1 completed + 2 error = 3 total
         edit_stat = next(s for s in stats if s.tool_name == "edit")
         assert edit_stat.total_calls == 3
         assert edit_stat.success_count == 1
         assert edit_stat.failure_count == 2
         assert edit_stat.success_rate == pytest.approx(33.33, rel=0.01)
-        
+
         # read: 2 completed
         read_stat = next(s for s in stats if s.tool_name == "read")
         assert read_stat.total_calls == 2
@@ -161,10 +148,8 @@ class TestLoadToolUsageForSessions:
 
     def test_load_tool_usage_excludes_running_status(self, temp_db: Path):
         """Test that running status is excluded from stats."""
-        stats = SQLiteProcessor.load_tool_usage_for_sessions(
-            ["ses_test1"], temp_db
-        )
-        
+        stats = SQLiteProcessor.load_tool_usage_for_sessions(["ses_test1"], temp_db)
+
         # The running bash command should be excluded
         # ses_test1 has: 3 bash completed, 1 bash error, 1 bash running
         # So bash should have 4 total (3 completed + 1 error), not 5
@@ -185,7 +170,7 @@ class TestLoadToolUsageForSessions:
 
     def test_load_tool_usage_missing_db_path(self, tmp_path: Path):
         """Test that missing database path returns empty list."""
-        with patch.object(SQLiteProcessor, 'find_database_path', return_value=None):
+        with patch.object(SQLiteProcessor, "find_database_path", return_value=None):
             stats = SQLiteProcessor.load_tool_usage_for_sessions(["ses_test"])
             assert stats == []
 
@@ -194,7 +179,7 @@ class TestLoadToolUsageForSessions:
         stats = SQLiteProcessor.load_tool_usage_for_sessions(
             ["ses_test1", "ses_test2"], temp_db
         )
-        
+
         # Verify sorted by total_calls descending
         for i in range(len(stats) - 1):
             assert stats[i].total_calls >= stats[i + 1].total_calls
@@ -204,7 +189,7 @@ class TestLoadToolUsageForSessions:
         db_path = tmp_path / "test_malformed.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        
+
         # Create tables
         conn.execute("""
             CREATE TABLE session (
@@ -216,7 +201,7 @@ class TestLoadToolUsageForSessions:
                 time_updated INTEGER NOT NULL
             )
         """)
-        
+
         conn.execute("""
             CREATE TABLE part (
                 id TEXT PRIMARY KEY,
@@ -227,44 +212,47 @@ class TestLoadToolUsageForSessions:
                 data TEXT NOT NULL
             )
         """)
-        
+
         # Insert test session
         conn.execute(
             "INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
-            ("ses_malformed", "proj_1", None, "Malformed Test", 1000, 2000)
+            ("ses_malformed", "proj_1", None, "Malformed Test", 1000, 2000),
         )
-        
+
         # Insert valid tool
-        data = json.dumps({
-            "type": "tool",
-            "tool": "bash",
-            "state": {"status": "completed"}
-        })
+        data = json.dumps(
+            {"type": "tool", "tool": "bash", "state": {"status": "completed"}}
+        )
         conn.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_valid", "msg_1", "ses_malformed", 1000, 1000, data)
+            ("prt_valid", "msg_1", "ses_malformed", 1000, 1000, data),
         )
-        
+
         # Insert malformed JSON (should be ignored without error)
         conn.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_malformed", "msg_1", "ses_malformed", 2000, 2000, "{not valid json}")
+            ("prt_malformed", "msg_1", "ses_malformed", 2000, 2000, "{not valid json}"),
         )
-        
+
         # Insert malformed JSON that looks like tool (should be ignored)
         conn.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_malformed2", "msg_1", "ses_malformed", 3000, 3000, '{"type": "tool", "tool": "edit"')
+            (
+                "prt_malformed2",
+                "msg_1",
+                "ses_malformed",
+                3000,
+                3000,
+                '{"type": "tool", "tool": "edit"',
+            ),
         )
-        
+
         conn.commit()
         conn.close()
-        
+
         # Should not raise and should only count valid tool
-        stats = SQLiteProcessor.load_tool_usage_for_sessions(
-            ["ses_malformed"], db_path
-        )
-        
+        stats = SQLiteProcessor.load_tool_usage_for_sessions(["ses_malformed"], db_path)
+
         assert len(stats) == 1
         assert stats[0].tool_name == "bash"
         assert stats[0].total_calls == 1
@@ -274,7 +262,7 @@ class TestLoadToolUsageForSessions:
         db_path = tmp_path / "test_null_tool.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        
+
         # Create tables
         conn.execute("""
             CREATE TABLE session (
@@ -286,7 +274,7 @@ class TestLoadToolUsageForSessions:
                 time_updated INTEGER NOT NULL
             )
         """)
-        
+
         conn.execute("""
             CREATE TABLE part (
                 id TEXT PRIMARY KEY,
@@ -297,42 +285,35 @@ class TestLoadToolUsageForSessions:
                 data TEXT NOT NULL
             )
         """)
-        
+
         # Insert test session
         conn.execute(
             "INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
-            ("ses_null", "proj_1", None, "Null Tool Test", 1000, 2000)
+            ("ses_null", "proj_1", None, "Null Tool Test", 1000, 2000),
         )
-        
+
         # Insert valid tool
-        data = json.dumps({
-            "type": "tool",
-            "tool": "read",
-            "state": {"status": "completed"}
-        })
+        data = json.dumps(
+            {"type": "tool", "tool": "read", "state": {"status": "completed"}}
+        )
         conn.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_valid", "msg_1", "ses_null", 1000, 1000, data)
+            ("prt_valid", "msg_1", "ses_null", 1000, 1000, data),
         )
-        
+
         # Insert tool with null tool name (missing 'tool' field)
-        data = json.dumps({
-            "type": "tool",
-            "state": {"status": "completed"}
-        })
+        data = json.dumps({"type": "tool", "state": {"status": "completed"}})
         conn.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_null_tool", "msg_1", "ses_null", 2000, 2000, data)
+            ("prt_null_tool", "msg_1", "ses_null", 2000, 2000, data),
         )
-        
+
         conn.commit()
         conn.close()
-        
+
         # Should not raise and should only count valid tool
-        stats = SQLiteProcessor.load_tool_usage_for_sessions(
-            ["ses_null"], db_path
-        )
-        
+        stats = SQLiteProcessor.load_tool_usage_for_sessions(["ses_null"], db_path)
+
         assert len(stats) == 1
         assert stats[0].tool_name == "read"
 
@@ -343,10 +324,7 @@ class TestToolUsageStatsModel:
     def test_success_rate_calculation(self):
         """Test success rate is calculated correctly."""
         stats = ToolUsageStats(
-            tool_name="test",
-            total_calls=10,
-            success_count=8,
-            failure_count=2
+            tool_name="test", total_calls=10, success_count=8, failure_count=2
         )
         assert stats.success_rate == 80.0
 
@@ -372,7 +350,7 @@ class TestLoadToolUsageByModelForSessions:
         db_path = tmp_path / "test_opencode.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        
+
         conn.execute("""
             CREATE TABLE session (
                 id TEXT PRIMARY KEY,
@@ -383,7 +361,7 @@ class TestLoadToolUsageByModelForSessions:
                 time_updated INTEGER NOT NULL
             )
         """)
-        
+
         conn.execute("""
             CREATE TABLE message (
                 id TEXT PRIMARY KEY,
@@ -393,7 +371,7 @@ class TestLoadToolUsageByModelForSessions:
                 data TEXT NOT NULL
             )
         """)
-        
+
         conn.execute("""
             CREATE TABLE part (
                 id TEXT PRIMARY KEY,
@@ -404,117 +382,178 @@ class TestLoadToolUsageByModelForSessions:
                 data TEXT NOT NULL
             )
         """)
-        
+
         conn.execute(
             "INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
-            ("ses_model_test", "proj_1", None, "Model Test", 1000, 2000)
+            ("ses_model_test", "proj_1", None, "Model Test", 1000, 2000),
         )
-        
+
         conn.execute(
             "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
-            ("msg_1", "ses_model_test", 1000, 1000, json.dumps({"role": "assistant", "modelID": "claude-3-5-sonnet-20241022"}))
+            (
+                "msg_1",
+                "ses_model_test",
+                1000,
+                1000,
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "modelID": "claude-3-5-sonnet-20241022",
+                        "tokens": {
+                            "input": 500,
+                            "output": 250,
+                            "cache": {"read": 1000, "write": 50},
+                        },
+                    }
+                ),
+            ),
         )
-        
+
         conn.execute(
             "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
-            ("msg_2", "ses_model_test", 2000, 2000, json.dumps({"role": "assistant", "modelID": "claude-3-5-haiku-20240307"}))
+            (
+                "msg_2",
+                "ses_model_test",
+                2000,
+                2000,
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "modelID": "claude-3-5-haiku-20240307",
+                        "tokens": {
+                            "input": 90,
+                            "output": 30,
+                            "cache": {"read": 300, "write": 60},
+                        },
+                    }
+                ),
+            ),
         )
-        
+
         for i, status in enumerate(["completed", "completed", "error"]):
-            data = json.dumps({
-                "type": "tool",
-                "tool": "bash",
-                "state": {"status": status}
-            })
+            data = json.dumps(
+                {"type": "tool", "tool": "bash", "state": {"status": status}}
+            )
             conn.execute(
                 "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-                (f"prt_sonnet_bash_{i}", "msg_1", "ses_model_test", 1000 + i, 1000 + i, data)
+                (
+                    f"prt_sonnet_bash_{i}",
+                    "msg_1",
+                    "ses_model_test",
+                    1000 + i,
+                    1000 + i,
+                    data,
+                ),
             )
-        
+
         for i in range(2):
-            data = json.dumps({
-                "type": "tool",
-                "tool": "read",
-                "state": {"status": "completed"}
-            })
+            data = json.dumps(
+                {"type": "tool", "tool": "read", "state": {"status": "completed"}}
+            )
             conn.execute(
                 "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-                (f"prt_sonnet_read_{i}", "msg_1", "ses_model_test", 2000 + i, 2000 + i, data)
+                (
+                    f"prt_sonnet_read_{i}",
+                    "msg_1",
+                    "ses_model_test",
+                    2000 + i,
+                    2000 + i,
+                    data,
+                ),
             )
-        
+
         for i, status in enumerate(["completed", "error", "error"]):
-            data = json.dumps({
-                "type": "tool",
-                "tool": "edit",
-                "state": {"status": status}
-            })
+            data = json.dumps(
+                {"type": "tool", "tool": "edit", "state": {"status": status}}
+            )
             conn.execute(
                 "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-                (f"prt_haiku_edit_{i}", "msg_2", "ses_model_test", 3000 + i, 3000 + i, data)
+                (
+                    f"prt_haiku_edit_{i}",
+                    "msg_2",
+                    "ses_model_test",
+                    3000 + i,
+                    3000 + i,
+                    data,
+                ),
             )
-        
-        data = json.dumps({
-            "type": "tool",
-            "tool": "bash",
-            "state": {"status": "running"}
-        })
+
+        data = json.dumps(
+            {"type": "tool", "tool": "bash", "state": {"status": "running"}}
+        )
         conn.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_haiku_running", "msg_2", "ses_model_test", 4000, 4000, data)
+            ("prt_haiku_running", "msg_2", "ses_model_test", 4000, 4000, data),
         )
-        
+
         conn.commit()
         conn.close()
-        
+
         return db_path
 
     def test_groups_tools_by_model(self, temp_db_with_messages: Path):
         """Test that tools are grouped correctly by model."""
         from ocmonitor.utils.sqlite_utils import SQLiteProcessor
         from ocmonitor.models.tool_usage import ModelToolUsage
-        
+
         stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(
             ["ses_model_test"], temp_db_with_messages
         )
-        
+
         assert len(stats) == 2
-        
+
         stats_by_model = {s.model_name: s for s in stats}
-        
+
         assert "claude-3-5-sonnet-20241022" in stats_by_model
         sonnet = stats_by_model["claude-3-5-sonnet-20241022"]
         assert sonnet.total_calls == 5
         assert len(sonnet.tool_stats) == 2
-        
+
         sonnet_tools = {t.tool_name: t for t in sonnet.tool_stats}
         assert "bash" in sonnet_tools
         assert sonnet_tools["bash"].total_calls == 3
         assert sonnet_tools["bash"].success_count == 2
         assert sonnet_tools["bash"].failure_count == 1
-        
+        assert sonnet_tools["bash"].input_tokens == 300
+        assert sonnet_tools["bash"].output_tokens == 150
+        assert sonnet_tools["bash"].cache_read_tokens == 600
+        assert sonnet_tools["bash"].cache_write_tokens == 30
+        assert sonnet_tools["bash"].total_tokens == 1080
+
+        assert sonnet_tools["read"].input_tokens == 200
+        assert sonnet_tools["read"].output_tokens == 100
+        assert sonnet_tools["read"].cache_read_tokens == 400
+        assert sonnet_tools["read"].cache_write_tokens == 20
+        assert sonnet_tools["read"].total_tokens == 720
+
         assert "claude-3-5-haiku-20240307" in stats_by_model
         haiku = stats_by_model["claude-3-5-haiku-20240307"]
         assert haiku.total_calls == 3
         assert len(haiku.tool_stats) == 1
-        
+
         haiku_tools = {t.tool_name: t for t in haiku.tool_stats}
         assert "edit" in haiku_tools
         assert haiku_tools["edit"].total_calls == 3
         assert haiku_tools["edit"].success_count == 1
         assert haiku_tools["edit"].failure_count == 2
+        assert haiku_tools["edit"].input_tokens == 90
+        assert haiku_tools["edit"].output_tokens == 30
+        assert haiku_tools["edit"].cache_read_tokens == 300
+        assert haiku_tools["edit"].cache_write_tokens == 60
+        assert haiku_tools["edit"].total_tokens == 480
 
     def test_excludes_running_status(self, temp_db_with_messages: Path):
         """Test that running status tools are excluded."""
         from ocmonitor.utils.sqlite_utils import SQLiteProcessor
-        
+
         stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(
             ["ses_model_test"], temp_db_with_messages
         )
-        
+
         haiku = next(s for s in stats if s.model_name == "claude-3-5-haiku-20240307")
-        
+
         bash_stat = next((t for t in haiku.tool_stats if t.tool_name == "bash"), None)
-        
+
         assert bash_stat is None
 
     def test_handles_nested_modelID(self, tmp_path: Path):
@@ -522,7 +561,7 @@ class TestLoadToolUsageByModelForSessions:
         db_path = tmp_path / "test_nested.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        
+
         conn.execute("""
             CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, title TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)
         """)
@@ -532,53 +571,73 @@ class TestLoadToolUsageByModelForSessions:
         conn.execute("""
             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)
         """)
-        
-        conn.execute("INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
-            ("ses_nested", "proj_1", None, "Nested Test", 1000, 2000))
-        
-        conn.execute("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
-            ("msg_nested", "ses_nested", 1000, 1000, json.dumps({"role": "assistant", "model": {"modelID": "nested-model-v1"}})))
-        
-        data = json.dumps({"type": "tool", "tool": "bash", "state": {"status": "completed"}})
-        conn.execute("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_nested", "msg_nested", "ses_nested", 1000, 1000, data))
-        
+
+        conn.execute(
+            "INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
+            ("ses_nested", "proj_1", None, "Nested Test", 1000, 2000),
+        )
+
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+            (
+                "msg_nested",
+                "ses_nested",
+                1000,
+                1000,
+                json.dumps(
+                    {"role": "assistant", "model": {"modelID": "nested-model-v1"}}
+                ),
+            ),
+        )
+
+        data = json.dumps(
+            {"type": "tool", "tool": "bash", "state": {"status": "completed"}}
+        )
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
+            ("prt_nested", "msg_nested", "ses_nested", 1000, 1000, data),
+        )
+
         conn.commit()
         conn.close()
-        
+
         from ocmonitor.utils.sqlite_utils import SQLiteProcessor
-        
-        stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(["ses_nested"], db_path)
-        
+
+        stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(
+            ["ses_nested"], db_path
+        )
+
         assert len(stats) == 1
         assert stats[0].model_name == "nested-model-v1"
 
     def test_empty_sessions_returns_empty(self, tmp_path: Path):
         """Test that empty session list returns empty list."""
         from ocmonitor.utils.sqlite_utils import SQLiteProcessor
-        
-        stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions([], tmp_path / "test.db")
+
+        stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(
+            [], tmp_path / "test.db"
+        )
         assert stats == []
 
     def test_sorts_models_by_total_calls(self, temp_db_with_messages: Path):
         """Test that models are sorted by total calls descending."""
         from ocmonitor.utils.sqlite_utils import SQLiteProcessor
-        
+
         stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(
             ["ses_model_test"], temp_db_with_messages
         )
-        
+
         assert stats[0].model_name == "claude-3-5-sonnet-20241022"
         assert stats[1].model_name == "claude-3-5-haiku-20240307"
 
     def test_sorts_tools_within_model(self, temp_db_with_messages: Path):
         """Test that tools within a model are sorted by total_calls descending."""
         from ocmonitor.utils.sqlite_utils import SQLiteProcessor
-        
+
         stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(
             ["ses_model_test"], temp_db_with_messages
         )
-        
+
         sonnet = next(s for s in stats if s.model_name == "claude-3-5-sonnet-20241022")
         assert sonnet.tool_stats[0].tool_name == "bash"
         assert sonnet.tool_stats[1].tool_name == "read"
@@ -588,27 +647,49 @@ class TestLoadToolUsageByModelForSessions:
         db_path = tmp_path / "test_unknown.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        
-        conn.execute("CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, title TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)")
-        conn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
-        conn.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
-        
-        conn.execute("INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
-            ("ses_unknown", "proj_1", None, "Unknown Test", 1000, 2000))
-        
-        conn.execute("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
-            ("msg_unknown", "ses_unknown", 1000, 1000, json.dumps({"role": "assistant"})))
-        
-        data = json.dumps({"type": "tool", "tool": "bash", "state": {"status": "completed"}})
-        conn.execute("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
-            ("prt_unknown", "msg_unknown", "ses_unknown", 1000, 1000, data))
-        
+
+        conn.execute(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, title TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)"
+        )
+
+        conn.execute(
+            "INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
+            ("ses_unknown", "proj_1", None, "Unknown Test", 1000, 2000),
+        )
+
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+            (
+                "msg_unknown",
+                "ses_unknown",
+                1000,
+                1000,
+                json.dumps({"role": "assistant"}),
+            ),
+        )
+
+        data = json.dumps(
+            {"type": "tool", "tool": "bash", "state": {"status": "completed"}}
+        )
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
+            ("prt_unknown", "msg_unknown", "ses_unknown", 1000, 1000, data),
+        )
+
         conn.commit()
         conn.close()
-        
+
         from ocmonitor.utils.sqlite_utils import SQLiteProcessor
-        
-        stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(["ses_unknown"], db_path)
-        
+
+        stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(
+            ["ses_unknown"], db_path
+        )
+
         assert len(stats) == 1
         assert stats[0].model_name == "unknown"

@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ..models.session import SessionData
+from ..models.session import SessionData, TokenUsage
 from ..models.tool_usage import ToolUsageStats, ModelToolUsage
 from ..models.workflow import SessionWorkflow
 from ..utils.formatting import ColorFormatter
@@ -36,6 +36,33 @@ class DashboardUI:
         if self.currency_converter:
             return self.currency_converter.format(amount)
         return f"${amount:.2f}"
+
+    def _fmt_compact_count(self, value: float) -> str:
+        """Format a count compactly for dense dashboard rows."""
+        abs_value = abs(value)
+        if abs_value >= 1_000_000:
+            formatted = f"{value / 1_000_000:.1f}M"
+        elif abs_value >= 1_000:
+            formatted = f"{value / 1_000:.1f}k"
+        else:
+            formatted = f"{value:.0f}"
+        return formatted.replace(".0M", "M").replace(".0k", "k")
+
+    def _format_tool_token_suffix(self, stat: ToolUsageStats) -> str:
+        """Format compact attributed per-tool token details for a tool row."""
+        if stat.total_tokens <= 0:
+            return ""
+
+        avg_tokens = stat.total_tokens / stat.total_calls if stat.total_calls else 0.0
+
+        return (
+            f"  [metric.tokens]{self._fmt_compact_count(stat.total_tokens)}[/metric.tokens] tok"
+            f" avg [metric.value]{self._fmt_compact_count(avg_tokens)}[/metric.value]/call"
+            f" · I [metric.value]{self._fmt_compact_count(stat.input_tokens)}[/metric.value]"
+            f" O [metric.value]{self._fmt_compact_count(stat.output_tokens)}[/metric.value]"
+            f" CR [metric.value]{self._fmt_compact_count(stat.cache_read_tokens)}[/metric.value]"
+            f" CW [metric.value]{self._fmt_compact_count(stat.cache_write_tokens)}[/metric.value]"
+        )
 
     def create_header(
         self,
@@ -176,20 +203,24 @@ class DashboardUI:
         model_lines = []
         for model, stats in model_breakdown.items():
             model_name = model[:35] + "..." if len(model) > 38 else model
-            
+
             # Get context usage for this model
             context_info = per_model_context.get(model, {})
             context_pct = context_info.get("usage_percentage", 0.0)
             context_bar = self.create_compact_progress_bar(context_pct, 8)
-            
+
             # Get output rate for this model
             output_rate = per_model_output_rates.get(model, 0.0)
             rate_str = f" - {output_rate:.1f} tok/s" if output_rate > 0 else ""
-            
+
             model_lines.append(
-                f"[metric.label]{model_name}[/metric.label]  -  "
-                f"[metric.value]{stats['tokens'].total:,}[/metric.value] [metric.tokens]tok[/metric.tokens]  "
-                f"[metric.cost]{self._fmt_cost(stats['cost'])}[/metric.cost]  -  "
+                f"[metric.label]{model_name}[/metric.label]\n"
+                f"  └─ Tokens: [metric.value]{stats['tokens'].total:,}[/metric.value] tok "
+                f"(In: [metric.value]{stats['tokens'].input:,}[/metric.value] | "
+                f"Out: [metric.value]{stats['tokens'].output:,}[/metric.value] | "
+                f"CW: [metric.value]{stats['tokens'].cache_write:,}[/metric.value] | "
+                f"CR: [metric.value]{stats['tokens'].cache_read:,}[/metric.value])\n"
+                f"  └─ Cost: [metric.cost]{self._fmt_cost(stats['cost'])}[/metric.cost]  -  "
                 f"context {context_bar}{rate_str}"
             )
 
@@ -349,8 +380,7 @@ class DashboardUI:
             )
         else:
             time_section = (
-                f"[dashboard.header]Time[/dashboard.header]\n"
-                f"[dim]No timing data[/dim]"
+                f"[dashboard.header]Time[/dashboard.header]\n[dim]No timing data[/dim]"
             )
 
         status_text = (
@@ -412,8 +442,7 @@ class DashboardUI:
             )
         else:
             time_section = (
-                f"[dashboard.header]Time[/dashboard.header]\n"
-                f"[dim]No timing data[/dim]"
+                f"[dashboard.header]Time[/dashboard.header]\n[dim]No timing data[/dim]"
             )
 
         status_text = (
@@ -493,6 +522,7 @@ class DashboardUI:
                 f"[metric.label]{tool_name:<12}[/metric.label] "
                 f"[metric.value]{stat.total_calls:>4}[/metric.value] "
                 f"[{color}]{bar}[/{color}]"
+                f"{self._format_tool_token_suffix(stat)}"
             )
 
         tool_text = "\n".join(lines)
@@ -525,8 +555,12 @@ class DashboardUI:
         model_tool_usage: ModelToolUsage,
         max_tools: int = 15,
         model_tokens: Optional[int] = None,
+        model_token_details: Optional[Dict[str, int]] = None,
+        model_interactions: Optional[int] = None,
         model_cost: Optional[Decimal] = None,
         context_pct: Optional[float] = None,
+        context_size: Optional[int] = None,
+        context_window: Optional[int] = None,
         output_rate: Optional[float] = None,
     ) -> Panel:
         """Create a panel showing tool usage for a single model.
@@ -535,8 +569,12 @@ class DashboardUI:
             model_tool_usage: ModelToolUsage containing model name and tool stats
             max_tools: Maximum number of tools to display
             model_tokens: Optional token count for this model to display in header
+            model_token_details: Optional per-token-kind details for this model
+            model_interactions: Optional interaction/message count for this model
             model_cost: Optional cost for this model to display in header
             context_pct: Optional context usage percentage for this model
+            context_size: Optional recent context size for this model
+            context_window: Optional context window for this model
             output_rate: Optional output rate (tok/sec) for this model
 
         Returns:
@@ -559,22 +597,56 @@ class DashboardUI:
         lines = []
 
         if model_tokens is not None:
-            cost_str = f" [metric.cost]{self._fmt_cost(model_cost)}[/metric.cost]" if model_cost is not None else ""
-            
-            # Add context and output rate info
-            extra_info = []
+            details = model_token_details or {"total": model_tokens}
+            input_tokens = details.get("input", 0)
+            output_tokens = details.get("output", 0)
+            cache_read = details.get("cache_read", 0)
+            cache_write = details.get("cache_write", 0)
+            cache_total = cache_read + cache_write
+
+            lines.append(
+                f"[metric.label]Tokens:[/metric.label] "
+                f"[metric.value]{model_tokens:,}[/metric.value] [metric.tokens]total[/metric.tokens]"
+            )
+            if model_interactions is not None:
+                lines.append(
+                    f"  Interactions [metric.value]{model_interactions:,}[/metric.value]"
+                )
+            lines.append(
+                f"  Input [metric.value]{input_tokens:,}[/metric.value]  "
+                f"Output [metric.value]{output_tokens:,}[/metric.value]"
+            )
+            lines.append(
+                f"  Cache Read [metric.value]{cache_read:,}[/metric.value]  "
+                f"Write [metric.value]{cache_write:,}[/metric.value]"
+            )
+            lines.append(f"  Cache Total [metric.value]{cache_total:,}[/metric.value]")
+
+            if model_cost is not None or (output_rate is not None and output_rate > 0):
+                perf_parts = []
+                if model_cost is not None:
+                    perf_parts.append(
+                        f"Cost [metric.cost]{self._fmt_cost(model_cost)}[/metric.cost]"
+                    )
+                if output_rate is not None and output_rate > 0:
+                    perf_parts.append(
+                        f"Rate [metric.value]{output_rate:.1f}[/metric.value] tok/s"
+                    )
+                lines.append("  " + "  ".join(perf_parts))
+
             if context_pct is not None:
                 context_bar = self.create_compact_progress_bar(context_pct, 8)
-                extra_info.append(f"context {context_bar}")
-            if output_rate is not None and output_rate > 0:
-                extra_info.append(f"{output_rate:.1f} tok/s")
-            
-            extra_str = "  " + "  ".join(extra_info) if extra_info else ""
-            
+                if context_size is not None and context_window is not None:
+                    lines.append(
+                        f"  Ctx [metric.value]{context_size:,}[/metric.value]/"
+                        f"[metric.value]{context_window:,}[/metric.value] {context_bar}"
+                    )
+                else:
+                    lines.append(f"  Ctx {context_bar}")
+
             lines.append(
-                f"[metric.value]{model_tokens:,}[/metric.value] [metric.tokens]tokens[/metric.tokens]{cost_str}{extra_str}"
+                "[dashboard.border]────────────────────────[/dashboard.border]"
             )
-            lines.append("[dashboard.border]────────────────────────[/dashboard.border]")
 
         for stat in tool_stats:
             tool_name = stat.tool_name
@@ -589,6 +661,7 @@ class DashboardUI:
                 f"[metric.label]{tool_name:<12}[/metric.label] "
                 f"[metric.value]{stat.total_calls:>3}[/metric.value] "
                 f"[{color}]{bar}[/{color}]"
+                f"{self._format_tool_token_suffix(stat)}"
             )
 
         tool_text = "\n".join(lines)
@@ -633,20 +706,144 @@ class DashboardUI:
         per_model_output_rates = per_model_output_rates or {}
         per_model_context = per_model_context or {}
 
+        def _extract_token_details(tokens_value: Any) -> Dict[str, int]:
+            """Extract token kind totals from TokenUsage-like, dict, or numeric values."""
+
+            def _to_int(value: Any) -> int:
+                try:
+                    return int(value or 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            if hasattr(tokens_value, "total"):
+                return {
+                    "input": _to_int(getattr(tokens_value, "input", 0)),
+                    "output": _to_int(getattr(tokens_value, "output", 0)),
+                    "cache_read": _to_int(getattr(tokens_value, "cache_read", 0)),
+                    "cache_write": _to_int(getattr(tokens_value, "cache_write", 0)),
+                    "total": _to_int(getattr(tokens_value, "total", 0)),
+                }
+
+            if isinstance(tokens_value, dict):
+                input_tokens = _to_int(tokens_value.get("input", 0))
+                output_tokens = _to_int(tokens_value.get("output", 0))
+                cache_read = _to_int(tokens_value.get("cache_read", 0))
+                cache_write = _to_int(tokens_value.get("cache_write", 0))
+                total = _to_int(
+                    tokens_value.get(
+                        "total", input_tokens + output_tokens + cache_read + cache_write
+                    )
+                )
+                return {
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "cache_read": cache_read,
+                    "cache_write": cache_write,
+                    "total": total,
+                }
+
+            total = _to_int(tokens_value)
+
+            return {
+                "input": 0,
+                "output": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "total": total,
+            }
+
+        def _to_decimal(cost_value: Any) -> Decimal:
+            """Convert a cost value to Decimal safely."""
+            if isinstance(cost_value, Decimal):
+                return cost_value
+
+            try:
+                return Decimal(str(cost_value))
+            except (ArithmeticError, ValueError, TypeError):
+                return Decimal("0.0")
+
+        # Build bare-model fallbacks so SQLite tool rows (bare model IDs) can
+        # still match workflow model breakdown keys that are provider-prefixed.
+        model_breakdown_by_bare: Dict[str, Dict[str, Any]] = {}
+        for key, stats in model_breakdown.items():
+            if not isinstance(stats, dict):
+                continue
+
+            bare_model = key.split("/", 1)[-1]
+            bucket = model_breakdown_by_bare.setdefault(
+                bare_model,
+                {
+                    "token_details": {
+                        "input": 0,
+                        "output": 0,
+                        "cache_read": 0,
+                        "cache_write": 0,
+                        "total": 0,
+                    },
+                    "files": 0,
+                    "cost": Decimal("0.0"),
+                },
+            )
+            details = _extract_token_details(stats.get("tokens"))
+            for token_key, token_value in details.items():
+                bucket["token_details"][token_key] += token_value
+            bucket["files"] += int(stats.get("files", 0) or 0)
+            bucket["cost"] += _to_decimal(stats.get("cost", Decimal("0.0")))
+
+        per_model_context_by_bare: Dict[str, Dict[str, Any]] = {}
+        for key, context_info in per_model_context.items():
+            if isinstance(context_info, dict):
+                per_model_context_by_bare.setdefault(
+                    key.split("/", 1)[-1], context_info
+                )
+
+        per_model_output_rates_by_bare: Dict[str, float] = {}
+        for key, rate in per_model_output_rates.items():
+            per_model_output_rates_by_bare.setdefault(key.split("/", 1)[-1], rate)
+
         def get_model_info(model_name: str):
             """Return tokens, cost, context usage, and output rate for a model."""
-            if model_name in model_breakdown:
-                stats = model_breakdown[model_name]
-                tokens = stats.get("tokens", {}).total if hasattr(stats.get("tokens", {}), "total") else stats.get("tokens", 0)
-                cost = stats.get("cost")
+            bare_model = model_name.split("/", 1)[-1]
+
+            stats = model_breakdown.get(model_name)
+            if isinstance(stats, dict):
+                token_details = _extract_token_details(stats.get("tokens"))
+                tokens = token_details["total"]
+                interactions = int(stats.get("files", 0) or 0)
+                cost = _to_decimal(stats.get("cost", Decimal("0.0")))
             else:
-                tokens, cost = None, None
-            
-            context_info = per_model_context.get(model_name, {})
-            context_pct = context_info.get("usage_percentage")
-            output_rate = per_model_output_rates.get(model_name, 0.0)
-            
-            return tokens, cost, context_pct, output_rate
+                aggregate = model_breakdown_by_bare.get(bare_model)
+                if aggregate:
+                    token_details = aggregate["token_details"]
+                    tokens = token_details["total"]
+                    interactions = int(aggregate.get("files", 0) or 0)
+                    cost = aggregate["cost"]
+                else:
+                    tokens, token_details, interactions, cost = None, None, None, None
+
+            context_info = per_model_context.get(model_name)
+            if not isinstance(context_info, dict):
+                context_info = per_model_context_by_bare.get(bare_model, {})
+            context_pct = context_info.get("usage_percentage") if context_info else None
+            context_size = context_info.get("context_size") if context_info else None
+            context_window = (
+                context_info.get("context_window") if context_info else None
+            )
+
+            output_rate = per_model_output_rates.get(model_name)
+            if output_rate is None:
+                output_rate = per_model_output_rates_by_bare.get(bare_model, 0.0)
+
+            return (
+                tokens,
+                token_details,
+                interactions,
+                cost,
+                context_pct,
+                context_size,
+                context_window,
+                output_rate,
+            )
 
         left_models = []
         right_models = []
@@ -658,19 +855,55 @@ class DashboardUI:
 
         left_panels = []
         for model_usage in left_models:
-            model_tokens, model_cost, context_pct, output_rate = get_model_info(model_usage.model_name)
-            left_panels.append(self.create_model_tool_panel(
-                model_usage, model_tokens=model_tokens, model_cost=model_cost,
-                context_pct=context_pct, output_rate=output_rate
-            ))
+            (
+                model_tokens,
+                model_token_details,
+                model_interactions,
+                model_cost,
+                context_pct,
+                context_size,
+                context_window,
+                output_rate,
+            ) = get_model_info(model_usage.model_name)
+            left_panels.append(
+                self.create_model_tool_panel(
+                    model_usage,
+                    model_tokens=model_tokens,
+                    model_token_details=model_token_details,
+                    model_interactions=model_interactions,
+                    model_cost=model_cost,
+                    context_pct=context_pct,
+                    context_size=context_size,
+                    context_window=context_window,
+                    output_rate=output_rate,
+                )
+            )
 
         right_panels = []
         for model_usage in right_models:
-            model_tokens, model_cost, context_pct, output_rate = get_model_info(model_usage.model_name)
-            right_panels.append(self.create_model_tool_panel(
-                model_usage, model_tokens=model_tokens, model_cost=model_cost,
-                context_pct=context_pct, output_rate=output_rate
-            ))
+            (
+                model_tokens,
+                model_token_details,
+                model_interactions,
+                model_cost,
+                context_pct,
+                context_size,
+                context_window,
+                output_rate,
+            ) = get_model_info(model_usage.model_name)
+            right_panels.append(
+                self.create_model_tool_panel(
+                    model_usage,
+                    model_tokens=model_tokens,
+                    model_token_details=model_token_details,
+                    model_interactions=model_interactions,
+                    model_cost=model_cost,
+                    context_pct=context_pct,
+                    context_size=context_size,
+                    context_window=context_window,
+                    output_rate=output_rate,
+                )
+            )
 
         left_column = Layout()
         if left_panels:
@@ -722,7 +955,9 @@ class DashboardUI:
             # Create panels using workflow totals
             header = self.create_header(session, workflow)
             token_panel = self.create_workflow_token_panel(workflow, recent_file)
-            status_panel = self.create_workflow_status_panel(workflow, pricing_data, quota)
+            status_panel = self.create_workflow_status_panel(
+                workflow, pricing_data, quota
+            )
             model_panel = self.create_workflow_model_panel(
                 workflow, pricing_data, per_model_output_rates, per_model_context
             )
@@ -746,11 +981,27 @@ class DashboardUI:
         if use_grid:
             if workflow and workflow.has_sub_agents:
                 from collections import defaultdict
-                model_breakdown = defaultdict(lambda: {"tokens": 0, "cost": Decimal("0.0")})
+
+                model_breakdown = defaultdict(
+                    lambda: {
+                        "tokens": TokenUsage(),
+                        "files": 0,
+                        "cost": Decimal("0.0"),
+                    }
+                )
                 for sess in workflow.all_sessions:
                     sess_breakdown = sess.get_model_breakdown(pricing_data)
                     for model, stats in sess_breakdown.items():
-                        model_breakdown[model]["tokens"] += stats["tokens"].total
+                        model_tokens = stats["tokens"]
+                        model_breakdown[model]["tokens"].input += model_tokens.input
+                        model_breakdown[model]["tokens"].output += model_tokens.output
+                        model_breakdown[model][
+                            "tokens"
+                        ].cache_read += model_tokens.cache_read
+                        model_breakdown[model][
+                            "tokens"
+                        ].cache_write += model_tokens.cache_write
+                        model_breakdown[model]["files"] += stats.get("files", 0)
                         model_breakdown[model]["cost"] += stats["cost"]
                 model_breakdown = dict(model_breakdown)
             else:
@@ -782,14 +1033,18 @@ class DashboardUI:
             controls_panel = self.create_controls_panel(controls_hint)
             layout.split_column(
                 Layout(header, size=3),  # Compact header
-                Layout(name="metrics", size=12),  # Tokens + Status + Recent (single row)
+                Layout(
+                    name="metrics", size=12
+                ),  # Tokens + Status + Recent (single row)
                 Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
                 Layout(controls_panel, size=3),  # Persistent keybind visibility
             )
         else:
             layout.split_column(
                 Layout(header, size=3),  # Compact header
-                Layout(name="metrics", size=12),  # Tokens + Status + Recent (single row)
+                Layout(
+                    name="metrics", size=12
+                ),  # Tokens + Status + Recent (single row)
                 Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
             )
 
@@ -943,13 +1198,18 @@ class DashboardUI:
 
         # Aggregate model stats across all sessions
         model_data: Dict[str, Dict[str, Any]] = defaultdict(
-            lambda: {"tokens": 0, "cost": Decimal("0.0")}
+            lambda: {"tokens": TokenUsage(), "files": 0, "cost": Decimal("0.0")}
         )
 
         for session in workflow.all_sessions:
             model_breakdown = session.get_model_breakdown(pricing_data)
             for model, stats in model_breakdown.items():
-                model_data[model]["tokens"] += stats["tokens"].total
+                model_tokens = stats["tokens"]
+                model_data[model]["tokens"].input += model_tokens.input
+                model_data[model]["tokens"].output += model_tokens.output
+                model_data[model]["tokens"].cache_read += model_tokens.cache_read
+                model_data[model]["tokens"].cache_write += model_tokens.cache_write
+                model_data[model]["files"] += stats.get("files", 0)
                 model_data[model]["cost"] += stats["cost"]
 
         if not model_data:
@@ -964,21 +1224,41 @@ class DashboardUI:
             model_data.items(), key=lambda x: x[1]["cost"], reverse=True
         ):
             model_name = model[:35] + "..." if len(model) > 38 else model
-            
+            bare_model = model.split("/", 1)[-1]
+            token_usage = stats["tokens"]
+
             # Get context usage for this model
-            context_info = per_model_context.get(model, {})
+            context_info = per_model_context.get(model) or per_model_context.get(
+                bare_model, {}
+            )
             context_pct = context_info.get("usage_percentage", 0.0)
             context_bar = self.create_compact_progress_bar(context_pct, 8)
-            
+            context_size = context_info.get("context_size")
+            context_window = context_info.get("context_window")
+            if context_size is not None and context_window is not None:
+                context_str = (
+                    f"context [metric.value]{context_size:,}[/metric.value]/"
+                    f"[metric.value]{context_window:,}[/metric.value] {context_bar}"
+                )
+            else:
+                context_str = f"context {context_bar}"
+
             # Get output rate for this model
-            output_rate = per_model_output_rates.get(model, 0.0)
+            output_rate = per_model_output_rates.get(
+                model, per_model_output_rates.get(bare_model, 0.0)
+            )
             rate_str = f" - {output_rate:.1f} tok/s" if output_rate > 0 else ""
-            
+
             model_lines.append(
-                f"[metric.label]{model_name}[/metric.label]  -  "
-                f"[metric.value]{stats['tokens']:,}[/metric.value] [metric.tokens]tok[/metric.tokens]  "
-                f"[metric.cost]{self._fmt_cost(stats['cost'])}[/metric.cost]  -  "
-                f"context {context_bar}{rate_str}"
+                f"[metric.label]{model_name}[/metric.label]\n"
+                f"  └─ Tokens: [metric.value]{token_usage.total:,}[/metric.value] tok "
+                f"([metric.label]In:[/metric.label] [metric.value]{token_usage.input:,}[/metric.value] | "
+                f"[metric.label]Out:[/metric.label] [metric.value]{token_usage.output:,}[/metric.value] | "
+                f"[metric.label]CW:[/metric.label] [metric.value]{token_usage.cache_write:,}[/metric.value] | "
+                f"[metric.label]CR:[/metric.label] [metric.value]{token_usage.cache_read:,}[/metric.value])\n"
+                f"  └─ Interactions: [metric.value]{stats['files']:,}[/metric.value]  -  "
+                f"Cost: [metric.cost]{self._fmt_cost(stats['cost'])}[/metric.cost]  -  "
+                f"{context_str}{rate_str}"
             )
 
         model_text = "\n".join(model_lines)
