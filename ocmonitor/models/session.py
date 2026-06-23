@@ -294,8 +294,9 @@ class SessionData(BaseModel):
                 model_cost += file.calculate_cost(pricing_data, force_recalculate)
                 if file.time_data and file.time_data.duration_ms:
                     model_duration_ms += file.time_data.duration_ms
-                if file.is_rate_eligible:
-                    rate = file.tokens.output / (file.time_data.duration_ms / 1000)
+                duration_ms = file.time_data.duration_ms if file.time_data else None
+                if file.is_rate_eligible and duration_ms:
+                    rate = file.tokens.output / (duration_ms / 1000)
                     interaction_rates.append(rate)
 
             breakdown[display_model] = {
@@ -305,6 +306,48 @@ class SessionData(BaseModel):
                 'duration_ms': model_duration_ms,
                 'interaction_rates': interaction_rates,
             }
+
+        return breakdown
+
+    @staticmethod
+    def agent_model_key(agent: Optional[str], model: str) -> str:
+        """Build a stable live-dashboard grouping key for an agent/model pair."""
+        return f"{agent or 'main'}::{model}"
+
+    def get_agent_model_breakdown(self, pricing_data: Dict[str, Any], force_recalculate: bool = False) -> Dict[str, Dict[str, Any]]:
+        """Get live-dashboard usage breakdown by agent and model.
+
+        This leaves regular model reports unchanged while letting live dashboards
+        split the same model into separate agent-specific panes.
+        """
+        breakdown: Dict[str, Dict[str, Any]] = {}
+
+        for file in self.files:
+            key = self.agent_model_key(file.agent, file.display_model)
+            if key not in breakdown:
+                breakdown[key] = {
+                    'agent': file.agent or 'main',
+                    'model': file.display_model,
+                    'files': 0,
+                    'tokens': TokenUsage(),
+                    'cost': Decimal('0.0'),
+                    'duration_ms': 0,
+                    'interaction_rates': [],
+                }
+
+            stats = breakdown[key]
+            tokens = stats['tokens']
+            tokens.input += file.tokens.input
+            tokens.output += file.tokens.output
+            tokens.cache_write += file.tokens.cache_write
+            tokens.cache_read += file.tokens.cache_read
+            stats['files'] += 1
+            stats['cost'] += file.calculate_cost(pricing_data, force_recalculate)
+            if file.time_data and file.time_data.duration_ms:
+                stats['duration_ms'] += file.time_data.duration_ms
+            duration_ms = file.time_data.duration_ms if file.time_data else None
+            if file.is_rate_eligible and duration_ms:
+                stats['interaction_rates'].append(file.tokens.output / (duration_ms / 1000))
 
         return breakdown
 

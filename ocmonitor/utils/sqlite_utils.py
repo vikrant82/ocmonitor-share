@@ -865,6 +865,7 @@ class SQLiteProcessor:
                         json_extract(m.data, '$.model.modelID'),
                         'unknown'
                     ) as model_id,
+                    COALESCE(NULLIF(json_extract(m.data, '$.agent'), ''), 'main') as agent_name,
                     json_extract(p.data, '$.tool') as tool_name,
                     json_extract(p.data, '$.state.status') as status,
                     COUNT(*) as count
@@ -876,22 +877,29 @@ class SQLiteProcessor:
                   AND json_extract(p.data, '$.type') = 'tool'
                   AND json_extract(p.data, '$.tool') IS NOT NULL
                   AND json_extract(p.data, '$.state.status') IN ('completed', 'error')
-                GROUP BY model_id, tool_name, status
+                GROUP BY agent_name, model_id, tool_name, status
             """
 
             cursor = conn.execute(query, session_ids)
 
-            model_data: Dict[str, Dict[str, Dict[str, int]]] = {}
+            model_data: Dict[str, Dict[str, Any]] = {}
             for row in cursor:
                 model_id = row["model_id"]
+                agent_name = row["agent_name"]
+                group_key = SessionData.agent_model_key(agent_name, model_id)
                 tool_name = row["tool_name"]
                 status = row["status"]
                 count = row["count"]
 
-                if model_id not in model_data:
-                    model_data[model_id] = {}
-                if tool_name not in model_data[model_id]:
-                    model_data[model_id][tool_name] = {
+                if group_key not in model_data:
+                    model_data[group_key] = {
+                        "agent_name": agent_name,
+                        "model_name": model_id,
+                        "tools": {},
+                    }
+                tools = model_data[group_key]["tools"]
+                if tool_name not in tools:
+                    tools[tool_name] = {
                         "success": 0,
                         "failure": 0,
                         "input_tokens": 0,
@@ -901,9 +909,9 @@ class SQLiteProcessor:
                     }
 
                 if status == "completed":
-                    model_data[model_id][tool_name]["success"] += count
+                    tools[tool_name]["success"] += count
                 elif status == "error":
-                    model_data[model_id][tool_name]["failure"] += count
+                    tools[tool_name]["failure"] += count
 
             # Attribute message-level tokens to each model/tool pair. Tokens are
             # stored on assistant messages, not individual tool rows. Split a
@@ -919,6 +927,7 @@ class SQLiteProcessor:
                             json_extract(m.data, '$.model.modelID'),
                             'unknown'
                         ) as model_id,
+                        COALESCE(NULLIF(json_extract(m.data, '$.agent'), ''), 'main') as agent_name,
                         json_extract(p.data, '$.tool') as tool_name,
                         m.data as message_data
                     FROM part p
@@ -937,6 +946,7 @@ class SQLiteProcessor:
                 )
                 SELECT
                     t.model_id,
+                    t.agent_name,
                     t.tool_name,
                     SUM(COALESCE(json_extract(t.message_data, '$.tokens.input'), 0) * 1.0 / mtc.tool_count) as input_tokens,
                     SUM(COALESCE(json_extract(t.message_data, '$.tokens.output'), 0) * 1.0 / mtc.tool_count) as output_tokens,
@@ -946,32 +956,33 @@ class SQLiteProcessor:
                 JOIN message_tool_counts mtc
                   ON t.session_id = mtc.session_id
                  AND t.message_id = mtc.message_id
-                GROUP BY t.model_id, t.tool_name
+                GROUP BY t.agent_name, t.model_id, t.tool_name
             """
 
             token_cursor = conn.execute(token_query, session_ids)
             for row in token_cursor:
                 model_id = row["model_id"]
+                agent_name = row["agent_name"]
+                group_key = SessionData.agent_model_key(agent_name, model_id)
                 tool_name = row["tool_name"]
-                if model_id not in model_data or tool_name not in model_data[model_id]:
+                if group_key not in model_data:
                     continue
-                model_data[model_id][tool_name]["input_tokens"] = round(
-                    row["input_tokens"] or 0
-                )
-                model_data[model_id][tool_name]["output_tokens"] = round(
-                    row["output_tokens"] or 0
-                )
-                model_data[model_id][tool_name]["cache_read_tokens"] = round(
+                tools = model_data[group_key]["tools"]
+                if tool_name not in tools:
+                    continue
+                tools[tool_name]["input_tokens"] = round(row["input_tokens"] or 0)
+                tools[tool_name]["output_tokens"] = round(row["output_tokens"] or 0)
+                tools[tool_name]["cache_read_tokens"] = round(
                     row["cache_read_tokens"] or 0
                 )
-                model_data[model_id][tool_name]["cache_write_tokens"] = round(
+                tools[tool_name]["cache_write_tokens"] = round(
                     row["cache_write_tokens"] or 0
                 )
 
             result = []
-            for model_name, tools in model_data.items():
+            for group in model_data.values():
                 tool_stats = []
-                for tool_name, counts in tools.items():
+                for tool_name, counts in group["tools"].items():
                     total = counts["success"] + counts["failure"]
                     tool_stats.append(
                         ToolUsageStats(
@@ -987,7 +998,11 @@ class SQLiteProcessor:
                     )
                 tool_stats.sort(key=lambda s: s.total_calls, reverse=True)
                 result.append(
-                    ModelToolUsage(model_name=model_name, tool_stats=tool_stats)
+                    ModelToolUsage(
+                        model_name=group["model_name"],
+                        agent_name=group["agent_name"],
+                        tool_stats=tool_stats,
+                    )
                 )
 
             result.sort(key=lambda m: m.total_calls, reverse=True)
