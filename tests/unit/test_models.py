@@ -11,7 +11,7 @@ from ocmonitor.config import ModelPricing
 
 class TestTokenUsage:
     """Tests for TokenUsage model."""
-    
+
     def test_default_values(self):
         """Test default token usage values."""
         tokens = TokenUsage()
@@ -19,17 +19,17 @@ class TestTokenUsage:
         assert tokens.output == 0
         assert tokens.cache_write == 0
         assert tokens.cache_read == 0
-    
+
     def test_total_calculation(self):
         """Test total token calculation."""
         tokens = TokenUsage(input=1000, output=500, cache_write=200, cache_read=100)
         assert tokens.total == 1800
-    
+
     def test_negative_values_rejected(self):
         """Test that negative token values are rejected."""
         with pytest.raises(ValueError):
             TokenUsage(input=-1)
-    
+
     def test_zero_values_allowed(self):
         """Test that zero values are allowed."""
         tokens = TokenUsage(input=0, output=0, cache_write=0, cache_read=0)
@@ -38,34 +38,34 @@ class TestTokenUsage:
 
 class TestTimeData:
     """Tests for TimeData model."""
-    
+
     def test_duration_calculation(self):
         """Test duration calculation from timestamps."""
         time_data = TimeData(created=1000, completed=5000)
         assert time_data.duration_ms == 4000
-    
+
     def test_duration_none_when_missing_created(self):
         """Test that duration is None when created is missing."""
         time_data = TimeData(completed=5000)
         assert time_data.duration_ms is None
-    
+
     def test_duration_none_when_missing_completed(self):
         """Test that duration is None when completed is missing."""
         time_data = TimeData(created=1000)
         assert time_data.duration_ms is None
-    
+
     def test_created_datetime_conversion(self):
         """Test created timestamp to datetime conversion."""
         # Unix timestamp for 2024-01-01 00:00:00 UTC
         timestamp_ms = 1704067200000
         time_data = TimeData(created=timestamp_ms)
-        
+
         dt = time_data.created_datetime
         assert dt is not None
         assert dt.year == 2024
         assert dt.month == 1
         assert dt.day == 1
-    
+
     def test_datetime_none_when_timestamp_missing(self):
         """Test that datetime is None when timestamp is missing."""
         time_data = TimeData()
@@ -75,48 +75,43 @@ class TestTimeData:
 
 class TestInteractionFile:
     """Tests for InteractionFile model."""
-    
+
     def test_default_values(self):
         """Test default interaction file values."""
         file_path = Path("/tmp/test.json")
         interaction = InteractionFile(file_path=file_path, session_id="ses_test")
-        
+
         assert interaction.model_id == "unknown"
         assert interaction.tokens.total == 0
         assert interaction.time_data is None
         assert interaction.project_path is None
-    
+
     def test_file_path_validation_string(self):
         """Test that string file paths are converted to Path objects."""
-        interaction = InteractionFile(
-            file_path="/tmp/test.json",
-            session_id="ses_test"
-        )
+        interaction = InteractionFile(file_path="/tmp/test.json", session_id="ses_test")
         assert isinstance(interaction.file_path, Path)
-    
+
     def test_file_name_computed(self, tmp_path):
         """Test that file name is computed correctly."""
         test_file = tmp_path / "interaction.json"
         test_file.write_text("{}")
-        
+
         interaction = InteractionFile(file_path=test_file, session_id="ses_test")
         assert interaction.file_name == "interaction.json"
-    
+
     def test_project_name_with_path(self):
         """Test project name extraction from project path."""
         interaction = InteractionFile(
             file_path=Path("/tmp/test.json"),
             session_id="ses_test",
-            project_path="/home/user/myproject"
+            project_path="/home/user/myproject",
         )
         assert interaction.project_name == "myproject"
-    
+
     def test_project_name_unknown(self):
         """Test project name is 'Unknown' when project path is None."""
         interaction = InteractionFile(
-            file_path=Path("/tmp/test.json"),
-            session_id="ses_test",
-            project_path=None
+            file_path=Path("/tmp/test.json"), session_id="ses_test", project_path=None
         )
         assert interaction.project_name == "Unknown"
 
@@ -137,7 +132,9 @@ class TestCalculateCost:
             )
         }
 
-    def _make_interaction(self, tmp_path, raw_data=None, model_id="known-model", **tokens):
+    def _make_interaction(
+        self, tmp_path, raw_data=None, model_id="known-model", **tokens
+    ):
         f = tmp_path / "inter_0001.json"
         f.write_text("{}")
         return InteractionFile(
@@ -153,17 +150,21 @@ class TestCalculateCost:
         interaction = self._make_interaction(
             tmp_path,
             raw_data={"cost": 0.042},
-            input=1000000, output=1000000,
+            input=1000000,
+            output=1000000,
         )
         assert interaction.calculate_cost(pricing_data) == Decimal("0.042")
 
-    def test_stored_cost_used_for_model_not_in_local_pricing(self, tmp_path, pricing_data):
+    def test_stored_cost_used_for_model_not_in_local_pricing(
+        self, tmp_path, pricing_data
+    ):
         """Models not in local pricing (e.g. OpenRouter) use stored cost instead of returning $0.00."""
         interaction = self._make_interaction(
             tmp_path,
             raw_data={"cost": 0.0173},
             model_id="openrouter/anthropic/claude-opus-4.6",
-            input=5000, output=2000,
+            input=5000,
+            output=2000,
         )
         assert interaction.calculate_cost(pricing_data) == Decimal("0.0173")
 
@@ -178,7 +179,9 @@ class TestCalculateCost:
         # 1M input tokens at $1.00/1M = $1.00 (from models.json, not stored cost)
         assert interaction.calculate_cost(pricing_data) == Decimal("1.0")
 
-    def test_falls_back_to_local_pricing_when_no_stored_cost(self, tmp_path, pricing_data):
+    def test_falls_back_to_local_pricing_when_no_stored_cost(
+        self, tmp_path, pricing_data
+    ):
         """When raw_data has no cost, local pricing calculation is used."""
         interaction = self._make_interaction(
             tmp_path,
@@ -193,39 +196,52 @@ class TestCalculateCost:
         interaction = self._make_interaction(
             tmp_path,
             raw_data={"cost": 0.042},
-            input=1000000, output=1000000,
+            input=1000000,
+            output=1000000,
         )
         # With default behavior, returns stored cost
         assert interaction.calculate_cost(pricing_data) == Decimal("0.042")
         # With force_recalculate=True, returns calculated cost from pricing data
         # 1M input + 1M output at $1.00 + $2.00 per M = $3.00
-        assert interaction.calculate_cost(pricing_data, force_recalculate=True) == Decimal("3.0")
+        assert interaction.calculate_cost(
+            pricing_data, force_recalculate=True
+        ) == Decimal("3.0")
 
-    def test_force_recalculate_uses_current_pricing_for_historical_session(self, tmp_path, pricing_data):
+    def test_force_recalculate_uses_current_pricing_for_historical_session(
+        self, tmp_path, pricing_data
+    ):
         """force_recalculate=True recomputes costs using current pricing configuration."""
         interaction = self._make_interaction(
             tmp_path,
             raw_data={"cost": 0.042},
             model_id="known-model",
-            input=500000, output=500000,
+            input=500000,
+            output=500000,
         )
         # Default: uses stored cost
         assert interaction.calculate_cost(pricing_data) == Decimal("0.042")
         # Recalculate: 0.5M input at $1.00/M + 0.5M output at $2.00/M = $1.50
-        assert interaction.calculate_cost(pricing_data, force_recalculate=True) == Decimal("1.5")
+        assert interaction.calculate_cost(
+            pricing_data, force_recalculate=True
+        ) == Decimal("1.5")
 
-    def test_force_recalculate_returns_zero_for_unknown_model_without_pricing(self, tmp_path, pricing_data):
+    def test_force_recalculate_returns_zero_for_unknown_model_without_pricing(
+        self, tmp_path, pricing_data
+    ):
         """Unknown models with no pricing return $0.00 when force_recalculate=True."""
         interaction = self._make_interaction(
             tmp_path,
             raw_data={"cost": 0.042},
             model_id="completely-unknown-model-xyz",
-            input=1000000, output=1000000,
+            input=1000000,
+            output=1000000,
         )
         # Default: uses stored cost
         assert interaction.calculate_cost(pricing_data) == Decimal("0.042")
         # Recalculate: no pricing found, returns $0.00
-        assert interaction.calculate_cost(pricing_data, force_recalculate=True) == Decimal("0.0")
+        assert interaction.calculate_cost(
+            pricing_data, force_recalculate=True
+        ) == Decimal("0.0")
 
 
 class TestSessionData:
@@ -243,107 +259,107 @@ class TestSessionData:
                 sessionQuota=Decimal("5.0"),
             )
         }
-    
+
     def test_session_data_creation(self, tmp_path):
         """Test basic session data creation."""
         session_path = tmp_path / "ses_test"
         session_path.mkdir()
-        
+
         interaction = InteractionFile(
             file_path=session_path / "inter_0001.json",
             session_id="ses_test",
             model_id="test-model",
-            tokens=TokenUsage(input=1000, output=500)
+            tokens=TokenUsage(input=1000, output=500),
         )
-        
+
         session = SessionData(
             session_id="ses_test",
             session_path=session_path,
             files=[interaction],
-            session_title="Test Session"
+            session_title="Test Session",
         )
-        
+
         assert session.session_id == "ses_test"
         assert session.session_title == "Test Session"
         assert len(session.files) == 1
-    
+
     def test_total_tokens_aggregation(self, tmp_path):
         """Test that total tokens are aggregated across all interactions."""
         session_path = tmp_path / "ses_test"
         session_path.mkdir()
-        
+
         interaction1 = InteractionFile(
             file_path=session_path / "inter_0001.json",
             session_id="ses_test",
-            tokens=TokenUsage(input=1000, output=500, cache_write=200, cache_read=100)
+            tokens=TokenUsage(input=1000, output=500, cache_write=200, cache_read=100),
         )
-        
+
         interaction2 = InteractionFile(
             file_path=session_path / "inter_0002.json",
             session_id="ses_test",
-            tokens=TokenUsage(input=500, output=300, cache_write=100, cache_read=50)
+            tokens=TokenUsage(input=500, output=300, cache_write=100, cache_read=50),
         )
-        
+
         session = SessionData(
             session_id="ses_test",
             session_path=session_path,
-            files=[interaction1, interaction2]
+            files=[interaction1, interaction2],
         )
-        
+
         assert session.total_tokens.input == 1500
         assert session.total_tokens.output == 800
         assert session.total_tokens.cache_write == 300
         assert session.total_tokens.cache_read == 150
         assert session.total_tokens.total == 2750
-    
+
     def test_session_path_validation_string(self, tmp_path):
         """Test that string session paths are converted to Path objects."""
         session_path = tmp_path / "ses_test"
         session_path.mkdir()
-        
+
         session = SessionData(
-            session_id="ses_test",
-            session_path=str(session_path),
-            files=[]
+            session_id="ses_test", session_path=str(session_path), files=[]
         )
-        
+
         assert isinstance(session.session_path, Path)
-    
+
     def test_models_used_computed(self, tmp_path):
         """Test that models_used returns unique model IDs."""
         session_path = tmp_path / "ses_test"
         session_path.mkdir()
-        
+
         interaction1 = InteractionFile(
             file_path=session_path / "inter_0001.json",
             session_id="ses_test",
-            model_id="model-a"
+            model_id="model-a",
         )
-        
+
         interaction2 = InteractionFile(
             file_path=session_path / "inter_0002.json",
             session_id="ses_test",
-            model_id="model-b"
+            model_id="model-b",
         )
-        
+
         interaction3 = InteractionFile(
             file_path=session_path / "inter_0003.json",
             session_id="ses_test",
-            model_id="model-a"  # Duplicate
+            model_id="model-a",  # Duplicate
         )
-        
+
         session = SessionData(
             session_id="ses_test",
             session_path=session_path,
-            files=[interaction1, interaction2, interaction3]
+            files=[interaction1, interaction2, interaction3],
         )
-        
+
         models = session.models_used
         assert "model-a" in models
         assert "model-b" in models
         assert len(models) == 2  # Should only have 2 unique models
 
-    def test_session_total_cost_respects_force_recalculate(self, tmp_path, pricing_data):
+    def test_session_total_cost_respects_force_recalculate(
+        self, tmp_path, pricing_data
+    ):
         """Session total cost changes when force_recalculate=True for stored cost."""
         session_path = tmp_path / "ses_test"
         session_path.mkdir()
@@ -373,9 +389,13 @@ class TestSessionData:
         # Default: uses stored costs (0.05 + 0.10 = 0.15)
         assert session.calculate_total_cost(pricing_data) == Decimal("0.15")
         # Recalculate: uses pricing data (1M input at $1/M + 1M output at $2/M = 3.0)
-        assert session.calculate_total_cost(pricing_data, force_recalculate=True) == Decimal("3.0")
+        assert session.calculate_total_cost(
+            pricing_data, force_recalculate=True
+        ) == Decimal("3.0")
 
-    def test_session_model_breakdown_respects_force_recalculate(self, tmp_path, pricing_data):
+    def test_session_model_breakdown_respects_force_recalculate(
+        self, tmp_path, pricing_data
+    ):
         """Per-model cost totals in session model breakdown change with force_recalculate=True."""
         session_path = tmp_path / "ses_test"
         session_path.mkdir()
@@ -407,8 +427,51 @@ class TestSessionData:
         assert breakdown["known-model"]["cost"] == Decimal("0.15")
 
         # Recalculate: uses pricing data
-        breakdown_recalc = session.get_model_breakdown(pricing_data, force_recalculate=True)
+        breakdown_recalc = session.get_model_breakdown(
+            pricing_data, force_recalculate=True
+        )
         assert breakdown_recalc["known-model"]["cost"] == Decimal("3.0")
+
+    def test_agent_model_breakdown_splits_same_model_by_agent(self, tmp_path):
+        """Live dashboard helper splits one shared model into agent-specific groups."""
+        session_path = tmp_path / "ses_test"
+        session_path.mkdir()
+
+        build_file = InteractionFile(
+            file_path=session_path / "inter_build.json",
+            session_id="ses_test",
+            model_id="shared-model",
+            agent="build",
+            tokens=TokenUsage(input=100, output=50, cache_read=200, cache_write=25),
+            raw_data={"cost": 0.10},
+        )
+        lite_file = InteractionFile(
+            file_path=session_path / "inter_lite.json",
+            session_id="ses_test",
+            model_id="shared-model",
+            agent="lite-worker",
+            tokens=TokenUsage(input=300, output=75, cache_read=400, cache_write=10),
+            raw_data={"cost": 0.20},
+        )
+        session = SessionData(
+            session_id="ses_test",
+            session_path=session_path,
+            files=[build_file, lite_file],
+        )
+
+        regular_breakdown = session.get_model_breakdown({})
+        assert list(regular_breakdown) == ["shared-model"]
+        assert regular_breakdown["shared-model"]["tokens"].total == 1160
+
+        agent_breakdown = session.get_agent_model_breakdown({})
+        assert set(agent_breakdown) == {
+            "build::shared-model",
+            "lite-worker::shared-model",
+        }
+        assert agent_breakdown["build::shared-model"]["agent"] == "build"
+        assert agent_breakdown["build::shared-model"]["tokens"].total == 375
+        assert agent_breakdown["lite-worker::shared-model"]["agent"] == "lite-worker"
+        assert agent_breakdown["lite-worker::shared-model"]["tokens"].total == 785
 
 
 class TestAnalyticsForceRecalculate:
@@ -427,7 +490,14 @@ class TestAnalyticsForceRecalculate:
             )
         }
 
-    def _make_interaction(self, tmp_path, session_id="ses_test", raw_data=None, model_id="known-model", **tokens):
+    def _make_interaction(
+        self,
+        tmp_path,
+        session_id="ses_test",
+        raw_data=None,
+        model_id="known-model",
+        **tokens,
+    ):
         f = tmp_path / f"{session_id}_inter.json"
         f.write_text("{}")
         return InteractionFile(
@@ -438,7 +508,14 @@ class TestAnalyticsForceRecalculate:
             raw_data=raw_data or {},
         )
 
-    def _make_session(self, tmp_path, session_id="ses_test", raw_data=None, model_id="known-model", **tokens):
+    def _make_session(
+        self,
+        tmp_path,
+        session_id="ses_test",
+        raw_data=None,
+        model_id="known-model",
+        **tokens,
+    ):
         session_path = tmp_path / session_id
         session_path.mkdir(exist_ok=True)
         interaction = self._make_interaction(
@@ -450,7 +527,9 @@ class TestAnalyticsForceRecalculate:
             files=[interaction],
         )
 
-    def test_daily_usage_total_cost_respects_force_recalculate(self, tmp_path, pricing_data):
+    def test_daily_usage_total_cost_respects_force_recalculate(
+        self, tmp_path, pricing_data
+    ):
         """DailyUsage.calculate_total_cost changes with force_recalculate=True."""
         from ocmonitor.models.analytics import DailyUsage
         from datetime import date
@@ -468,9 +547,13 @@ class TestAnalyticsForceRecalculate:
         # Default: uses stored cost
         assert daily.calculate_total_cost(pricing_data) == Decimal("0.50")
         # Recalculate: 1M input at $1/M + 1M output at $2/M = $3.00
-        assert daily.calculate_total_cost(pricing_data, force_recalculate=True) == Decimal("3.0")
+        assert daily.calculate_total_cost(
+            pricing_data, force_recalculate=True
+        ) == Decimal("3.0")
 
-    def test_weekly_usage_total_cost_respects_force_recalculate(self, tmp_path, pricing_data):
+    def test_weekly_usage_total_cost_respects_force_recalculate(
+        self, tmp_path, pricing_data
+    ):
         """WeeklyUsage.calculate_total_cost changes with force_recalculate=True."""
         from ocmonitor.models.analytics import DailyUsage, WeeklyUsage
         from datetime import date
@@ -485,16 +568,23 @@ class TestAnalyticsForceRecalculate:
 
         daily = DailyUsage(date=date(2026, 4, 7), sessions=[session])
         weekly = WeeklyUsage(
-            year=2026, week=15, start_date=date(2026, 4, 6), end_date=date(2026, 4, 12),
+            year=2026,
+            week=15,
+            start_date=date(2026, 4, 6),
+            end_date=date(2026, 4, 12),
             daily_usage=[daily],
         )
 
         # Default: uses stored cost
         assert weekly.calculate_total_cost(pricing_data) == Decimal("0.50")
         # Recalculate: $3.00
-        assert weekly.calculate_total_cost(pricing_data, force_recalculate=True) == Decimal("3.0")
+        assert weekly.calculate_total_cost(
+            pricing_data, force_recalculate=True
+        ) == Decimal("3.0")
 
-    def test_monthly_usage_total_cost_respects_force_recalculate(self, tmp_path, pricing_data):
+    def test_monthly_usage_total_cost_respects_force_recalculate(
+        self, tmp_path, pricing_data
+    ):
         """MonthlyUsage.calculate_total_cost changes with force_recalculate=True."""
         from ocmonitor.models.analytics import DailyUsage, WeeklyUsage, MonthlyUsage
         from datetime import date
@@ -509,7 +599,10 @@ class TestAnalyticsForceRecalculate:
 
         daily = DailyUsage(date=date(2026, 4, 7), sessions=[session])
         weekly = WeeklyUsage(
-            year=2026, week=15, start_date=date(2026, 4, 6), end_date=date(2026, 4, 12),
+            year=2026,
+            week=15,
+            start_date=date(2026, 4, 6),
+            end_date=date(2026, 4, 12),
             daily_usage=[daily],
         )
         monthly = MonthlyUsage(year=2026, month=4, weekly_usage=[weekly])
@@ -517,9 +610,13 @@ class TestAnalyticsForceRecalculate:
         # Default: uses stored cost
         assert monthly.calculate_total_cost(pricing_data) == Decimal("0.50")
         # Recalculate: $3.00
-        assert monthly.calculate_total_cost(pricing_data, force_recalculate=True) == Decimal("3.0")
+        assert monthly.calculate_total_cost(
+            pricing_data, force_recalculate=True
+        ) == Decimal("3.0")
 
-    def test_create_model_breakdown_respects_force_recalculate(self, tmp_path, pricing_data):
+    def test_create_model_breakdown_respects_force_recalculate(
+        self, tmp_path, pricing_data
+    ):
         """TimeframeAnalyzer.create_model_breakdown changes with force_recalculate=True."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -541,7 +638,9 @@ class TestAnalyticsForceRecalculate:
         )
         assert report_recalc.total_cost == Decimal("3.0")
 
-    def test_create_project_breakdown_respects_force_recalculate(self, tmp_path, pricing_data):
+    def test_create_project_breakdown_respects_force_recalculate(
+        self, tmp_path, pricing_data
+    ):
         """TimeframeAnalyzer.create_project_breakdown changes with force_recalculate=True."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -580,7 +679,14 @@ class TestWorkflowForceRecalculate:
             )
         }
 
-    def _make_session(self, tmp_path, session_id="ses_test", raw_data=None, model_id="known-model", **tokens):
+    def _make_session(
+        self,
+        tmp_path,
+        session_id="ses_test",
+        raw_data=None,
+        model_id="known-model",
+        **tokens,
+    ):
         session_path = tmp_path / session_id
         session_path.mkdir(exist_ok=True)
         f = tmp_path / f"{session_id}_inter.json"
@@ -598,7 +704,9 @@ class TestWorkflowForceRecalculate:
             files=[interaction],
         )
 
-    def test_workflow_total_cost_respects_force_recalculate(self, tmp_path, pricing_data):
+    def test_workflow_total_cost_respects_force_recalculate(
+        self, tmp_path, pricing_data
+    ):
         """SessionWorkflow.calculate_total_cost changes with force_recalculate=True."""
         from ocmonitor.models.workflow import SessionWorkflow
 
@@ -629,13 +737,17 @@ class TestWorkflowForceRecalculate:
 
         # Recalculate: (1M input + 1M output at $3/M) + (0.5M input + 0.5M output at $3/M)
         # = $3.00 + $1.50 = $4.50
-        assert workflow.calculate_total_cost(pricing_data, force_recalculate=True) == Decimal("4.5")
+        assert workflow.calculate_total_cost(
+            pricing_data, force_recalculate=True
+        ) == Decimal("4.5")
 
 
 class TestReportGeneratorModelBreakdown:
     """Tests for ReportGenerator._get_model_breakdown_for_sessions provider-aware grouping."""
 
-    def _make_file(self, tmp_path, session_id, name, model_id, provider_id=None, **tokens):
+    def _make_file(
+        self, tmp_path, session_id, name, model_id, provider_id=None, **tokens
+    ):
         f = tmp_path / f"{name}.json"
         f.write_text("{}")
         return InteractionFile(
@@ -653,12 +765,22 @@ class TestReportGeneratorModelBreakdown:
         from ocmonitor.services.report_generator import ReportGenerator
 
         file_a = self._make_file(
-            tmp_path, "ses1", "file_a", model_id="claude-sonnet", provider_id="prov-a",
-            input=100, output=50,
+            tmp_path,
+            "ses1",
+            "file_a",
+            model_id="claude-sonnet",
+            provider_id="prov-a",
+            input=100,
+            output=50,
         )
         file_b = self._make_file(
-            tmp_path, "ses1", "file_b", model_id="claude-sonnet", provider_id="prov-b",
-            input=200, output=80,
+            tmp_path,
+            "ses1",
+            "file_b",
+            model_id="claude-sonnet",
+            provider_id="prov-b",
+            input=200,
+            output=80,
         )
 
         session = SessionData(
@@ -676,7 +798,9 @@ class TestReportGeneratorModelBreakdown:
         models_in_results = {r["model"] for r in results}
         assert "prov-a/claude-sonnet" in models_in_results, "prov-a entry missing"
         assert "prov-b/claude-sonnet" in models_in_results, "prov-b entry missing"
-        assert len(results) == 2, f"Expected 2 rows, got {len(results)}: {models_in_results}"
+        assert len(results) == 2, (
+            f"Expected 2 rows, got {len(results)}: {models_in_results}"
+        )
 
     def test_same_provider_same_model_id_are_merged(self, tmp_path):
         """Two files with the same provider+model_id must be aggregated into one row."""
@@ -684,12 +808,22 @@ class TestReportGeneratorModelBreakdown:
         from ocmonitor.services.report_generator import ReportGenerator
 
         file_a = self._make_file(
-            tmp_path, "ses1", "file_c", model_id="gpt-4o", provider_id="openai",
-            input=100, output=50,
+            tmp_path,
+            "ses1",
+            "file_c",
+            model_id="gpt-4o",
+            provider_id="openai",
+            input=100,
+            output=50,
         )
         file_b = self._make_file(
-            tmp_path, "ses1", "file_d", model_id="gpt-4o", provider_id="openai",
-            input=200, output=80,
+            tmp_path,
+            "ses1",
+            "file_d",
+            model_id="gpt-4o",
+            provider_id="openai",
+            input=200,
+            output=80,
         )
 
         session = SessionData(
@@ -726,7 +860,9 @@ class TestSessionAnalyzerProviderAwareRegressions:
             raw_data={},
         )
 
-    def test_filter_sessions_by_model_matches_bare_name_against_provider_model(self, tmp_path):
+    def test_filter_sessions_by_model_matches_bare_name_against_provider_model(
+        self, tmp_path
+    ):
         """Bare model filter should match provider/model display values for backward compatibility."""
         from ocmonitor.services.session_analyzer import SessionAnalyzer
 
@@ -749,7 +885,9 @@ class TestSessionAnalyzerProviderAwareRegressions:
 
         assert len(result) == 1
 
-    def test_validate_session_health_no_false_unknown_warning_for_bare_model(self, tmp_path):
+    def test_validate_session_health_no_false_unknown_warning_for_bare_model(
+        self, tmp_path
+    ):
         """Bare model should not be flagged unknown when pricing exists under provider/model key."""
         from ocmonitor.services.session_analyzer import SessionAnalyzer
 
@@ -782,7 +920,9 @@ class TestSessionAnalyzerProviderAwareRegressions:
         result = analyzer.validate_session_health(session)
 
         unknown_warnings = [
-            w for w in result.get("warnings", []) if "Unknown models with no pricing" in w
+            w
+            for w in result.get("warnings", [])
+            if "Unknown models with no pricing" in w
         ]
         assert unknown_warnings == []
 
@@ -899,7 +1039,9 @@ class TestSessionDataProviderAwareModelFields:
 
         assert session.models_used == ["prov-a/model-x"]
 
-    def test_models_used_keeps_same_model_under_different_providers_distinct(self, tmp_path):
+    def test_models_used_keeps_same_model_under_different_providers_distinct(
+        self, tmp_path
+    ):
         """Same bare model under different providers remains distinct."""
         file_a = self._make_file(
             tmp_path, "a", model_id="model-x", provider_id="prov-a"
@@ -985,7 +1127,9 @@ class TestInteractionDateAttribution:
             time_data=TimeData(created=int(created_dt.timestamp() * 1000)),
         )
 
-    def test_daily_breakdown_splits_one_session_across_interaction_dates(self, tmp_path):
+    def test_daily_breakdown_splits_one_session_across_interaction_dates(
+        self, tmp_path
+    ):
         """Daily usage should split a multi-day session by interaction date."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -1007,7 +1151,9 @@ class TestInteractionDateAttribution:
         assert [d.total_interactions for d in daily] == [1, 1]
         assert [d.total_tokens.input for d in daily] == [100, 200]
 
-    def test_weekly_and_monthly_total_sessions_are_unique_across_split_days(self, tmp_path):
+    def test_weekly_and_monthly_total_sessions_are_unique_across_split_days(
+        self, tmp_path
+    ):
         """Weekly and monthly session totals should not double count a split session."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -1032,7 +1178,9 @@ class TestInteractionDateAttribution:
         assert len(monthly) == 1
         assert monthly[0].total_sessions == 1
 
-    def test_model_breakdown_filters_by_interaction_date_not_session_start(self, tmp_path, pricing_data):
+    def test_model_breakdown_filters_by_interaction_date_not_session_start(
+        self, tmp_path, pricing_data
+    ):
         """Model breakdown should include only interactions in the date window."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -1059,7 +1207,9 @@ class TestInteractionDateAttribution:
         assert report.model_stats[0].total_interactions == 1
         assert report.model_stats[0].total_tokens.input == 700
 
-    def test_project_breakdown_filters_by_interaction_date_not_session_start(self, tmp_path, pricing_data):
+    def test_project_breakdown_filters_by_interaction_date_not_session_start(
+        self, tmp_path, pricing_data
+    ):
         """Project breakdown should count only in-window interactions and cost."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -1087,7 +1237,9 @@ class TestInteractionDateAttribution:
         assert report.project_stats[0].total_tokens.input == 700
         assert report.project_stats[0].total_cost == Decimal("0.0007")
 
-    def test_project_breakdown_buckets_filtered_files_by_file_project(self, tmp_path, pricing_data):
+    def test_project_breakdown_buckets_filtered_files_by_file_project(
+        self, tmp_path, pricing_data
+    ):
         """Project breakdown should bucket filtered interactions by each file's project path."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -1120,7 +1272,9 @@ class TestInteractionDateAttribution:
         assert by_project["project-b"].total_interactions == 1
         assert by_project["project-b"].total_sessions == 1
 
-    def test_model_last_used_does_not_fall_back_to_unfiltered_session_end(self, tmp_path, pricing_data):
+    def test_model_last_used_does_not_fall_back_to_unfiltered_session_end(
+        self, tmp_path, pricing_data
+    ):
         """Model last_used should not leak end time from unrelated filtered files."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -1153,7 +1307,9 @@ class TestInteractionDateAttribution:
         assert by_model["known-model"].last_used == session.start_time
         assert by_model["known-model"].last_used != session.end_time
 
-    def test_model_times_fall_back_to_session_start_when_file_timestamps_missing(self, tmp_path, pricing_data):
+    def test_model_times_fall_back_to_session_start_when_file_timestamps_missing(
+        self, tmp_path, pricing_data
+    ):
         """Model first/last used should fall back to session start for timestamp-less files."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -1194,7 +1350,9 @@ class TestInteractionDateAttribution:
         assert by_model["known-model"].first_used == session.start_time
         assert by_model["known-model"].last_used == session.start_time
 
-    def test_project_last_activity_does_not_fall_back_to_unfiltered_session_end(self, tmp_path, pricing_data):
+    def test_project_last_activity_does_not_fall_back_to_unfiltered_session_end(
+        self, tmp_path, pricing_data
+    ):
         """Project last_activity should not leak end time from other project files."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -1228,7 +1386,9 @@ class TestInteractionDateAttribution:
         assert by_project["project-a"].last_activity == session.start_time
         assert by_project["project-a"].last_activity != session.end_time
 
-    def test_project_times_fall_back_to_session_start_when_file_timestamps_missing(self, tmp_path, pricing_data):
+    def test_project_times_fall_back_to_session_start_when_file_timestamps_missing(
+        self, tmp_path, pricing_data
+    ):
         """Project first/last activity should fall back to session start for timestamp-less files."""
         from ocmonitor.models.analytics import TimeframeAnalyzer
 
@@ -1297,7 +1457,9 @@ class TestInteractionDateAttribution:
         assert len(filtered[0].files) == 1
         assert filtered[0].files[0].tokens.input == 700
 
-    def test_filter_sessions_by_date_falls_back_to_session_start_for_missing_timestamps(self, tmp_path):
+    def test_filter_sessions_by_date_falls_back_to_session_start_for_missing_timestamps(
+        self, tmp_path
+    ):
         """Date filtering should fall back to session start when interaction timestamp is missing."""
         from ocmonitor.services.session_analyzer import SessionAnalyzer
 

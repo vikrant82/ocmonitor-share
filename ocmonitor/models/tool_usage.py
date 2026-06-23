@@ -1,6 +1,6 @@
 """Tool usage models for OpenCode Monitor."""
 
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, computed_field
 
 
@@ -78,6 +78,7 @@ class ModelToolUsage(BaseModel):
     """Tool usage statistics grouped by model."""
 
     model_name: str
+    agent_name: Optional[str] = None
     tool_stats: List[ToolUsageStats] = []
 
     @computed_field

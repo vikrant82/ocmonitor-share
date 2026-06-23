@@ -506,6 +506,7 @@ class TestLoadToolUsageByModelForSessions:
 
         assert "claude-3-5-sonnet-20241022" in stats_by_model
         sonnet = stats_by_model["claude-3-5-sonnet-20241022"]
+        assert sonnet.agent_name == "main"
         assert sonnet.total_calls == 5
         assert len(sonnet.tool_stats) == 2
 
@@ -528,6 +529,7 @@ class TestLoadToolUsageByModelForSessions:
 
         assert "claude-3-5-haiku-20240307" in stats_by_model
         haiku = stats_by_model["claude-3-5-haiku-20240307"]
+        assert haiku.agent_name == "main"
         assert haiku.total_calls == 3
         assert len(haiku.tool_stats) == 1
 
@@ -541,6 +543,95 @@ class TestLoadToolUsageByModelForSessions:
         assert haiku_tools["edit"].cache_read_tokens == 300
         assert haiku_tools["edit"].cache_write_tokens == 60
         assert haiku_tools["edit"].total_tokens == 480
+
+    def test_splits_same_model_by_agent(self, tmp_path: Path):
+        """Test same-model tool stats are split into separate agent groups."""
+        db_path = tmp_path / "test_agent_model.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        conn.execute(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, title TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)"
+        )
+
+        conn.execute(
+            "INSERT INTO session (id, project_id, parent_id, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)",
+            ("ses_agents", "proj_1", None, "Agent Split", 1000, 3000),
+        )
+
+        messages = [
+            ("msg_build", "build", 100, 50, 1000, 25, "bash"),
+            ("msg_lite", "lite-worker", 300, 75, 2000, 40, "read"),
+        ]
+        for index, (
+            msg_id,
+            agent,
+            input_tokens,
+            output_tokens,
+            cache_read,
+            cache_write,
+            tool,
+        ) in enumerate(messages):
+            conn.execute(
+                "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+                (
+                    msg_id,
+                    "ses_agents",
+                    1000 + index,
+                    1000 + index,
+                    json.dumps(
+                        {
+                            "role": "assistant",
+                            "agent": agent,
+                            "modelID": "gpt-5.5",
+                            "tokens": {
+                                "input": input_tokens,
+                                "output": output_tokens,
+                                "cache": {"read": cache_read, "write": cache_write},
+                            },
+                        }
+                    ),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    f"prt_{agent}",
+                    msg_id,
+                    "ses_agents",
+                    2000 + index,
+                    2000 + index,
+                    json.dumps(
+                        {"type": "tool", "tool": tool, "state": {"status": "completed"}}
+                    ),
+                ),
+            )
+
+        conn.commit()
+        conn.close()
+
+        from ocmonitor.utils.sqlite_utils import SQLiteProcessor
+
+        stats = SQLiteProcessor.load_tool_usage_by_model_for_sessions(
+            ["ses_agents"], db_path
+        )
+
+        assert len(stats) == 2
+
+        by_agent = {s.agent_name: s for s in stats}
+        assert set(by_agent) == {"build", "lite-worker"}
+        assert by_agent["build"].model_name == "gpt-5.5"
+        assert by_agent["build"].tool_stats[0].tool_name == "bash"
+        assert by_agent["build"].tool_stats[0].total_tokens == 1175
+        assert by_agent["lite-worker"].model_name == "gpt-5.5"
+        assert by_agent["lite-worker"].tool_stats[0].tool_name == "read"
+        assert by_agent["lite-worker"].tool_stats[0].total_tokens == 2415
 
     def test_excludes_running_status(self, temp_db_with_messages: Path):
         """Test that running status tools are excluded."""
