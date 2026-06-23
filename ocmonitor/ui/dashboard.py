@@ -3,7 +3,7 @@
 import os
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from rich.console import Console
 from rich.layout import Layout
@@ -63,6 +63,40 @@ class DashboardUI:
             f" CR [metric.value]{self._fmt_compact_count(stat.cache_read_tokens)}[/metric.value]"
             f" CW [metric.value]{self._fmt_compact_count(stat.cache_write_tokens)}[/metric.value]"
         )
+
+    def _split_agent_model_key(self, key: str) -> Tuple[Optional[str], str]:
+        """Split an optional agent/model grouping key into display parts."""
+        if "::" in key:
+            agent, model = key.split("::", 1)
+            return agent or None, model
+        return None, key
+
+    def _agent_model_lookup_key(
+        self, agent_name: Optional[str], model_name: str
+    ) -> str:
+        """Build the canonical dashboard lookup key for an agent/model pair."""
+        return SessionData.agent_model_key(agent_name or "main", model_name)
+
+    def _bare_lookup_key(self, key: str) -> str:
+        """Return a provider-stripped lookup key while preserving agent scope."""
+        agent, model = self._split_agent_model_key(key)
+        bare_model = model.split("/", 1)[-1]
+        return self._agent_model_lookup_key(agent, bare_model)
+
+    def _format_agent_model_title(
+        self,
+        agent_name: Optional[str],
+        model_name: str,
+        include_agent: bool = True,
+        max_length: int = 60,
+    ) -> str:
+        """Format a compact title for an agent/model dashboard pane."""
+        title = (
+            f"{agent_name or 'main'} / {model_name}" if include_agent else model_name
+        )
+        if len(title) > max_length:
+            return title[: max_length - 3] + "..."
+        return title
 
     def create_header(
         self,
@@ -580,9 +614,12 @@ class DashboardUI:
         Returns:
             Panel with tool usage information for this model
         """
-        model_name = model_tool_usage.model_name
-        if len(model_name) > 35:
-            model_name = model_name[:32] + "..."
+        model_name = self._format_agent_model_title(
+            model_tool_usage.agent_name,
+            model_tool_usage.model_name,
+            include_agent=model_tool_usage.agent_name is not None,
+            max_length=35,
+        )
 
         tool_stats = model_tool_usage.tool_stats[:max_tools]
 
@@ -763,13 +800,14 @@ class DashboardUI:
                 return Decimal("0.0")
 
         # Build bare-model fallbacks so SQLite tool rows (bare model IDs) can
-        # still match workflow model breakdown keys that are provider-prefixed.
+        # still match workflow model breakdown keys that are provider-prefixed,
+        # while preserving any agent scope in composite agent::model keys.
         model_breakdown_by_bare: Dict[str, Dict[str, Any]] = {}
         for key, stats in model_breakdown.items():
             if not isinstance(stats, dict):
                 continue
 
-            bare_model = key.split("/", 1)[-1]
+            bare_model = self._bare_lookup_key(key)
             bucket = model_breakdown_by_bare.setdefault(
                 bare_model,
                 {
@@ -794,25 +832,33 @@ class DashboardUI:
         for key, context_info in per_model_context.items():
             if isinstance(context_info, dict):
                 per_model_context_by_bare.setdefault(
-                    key.split("/", 1)[-1], context_info
+                    self._bare_lookup_key(key), context_info
                 )
 
         per_model_output_rates_by_bare: Dict[str, float] = {}
         for key, rate in per_model_output_rates.items():
-            per_model_output_rates_by_bare.setdefault(key.split("/", 1)[-1], rate)
+            per_model_output_rates_by_bare.setdefault(self._bare_lookup_key(key), rate)
 
-        def get_model_info(model_name: str):
+        def get_model_info(model_usage: ModelToolUsage):
             """Return tokens, cost, context usage, and output rate for a model."""
-            bare_model = model_name.split("/", 1)[-1]
+            model_name = model_usage.model_name
+            direct_key = self._agent_model_lookup_key(
+                model_usage.agent_name, model_name
+            )
+            bare_key = self._bare_lookup_key(direct_key)
 
-            stats = model_breakdown.get(model_name)
+            stats = model_breakdown.get(direct_key) or model_breakdown.get(model_name)
             if isinstance(stats, dict):
                 token_details = _extract_token_details(stats.get("tokens"))
                 tokens = token_details["total"]
                 interactions = int(stats.get("files", 0) or 0)
                 cost = _to_decimal(stats.get("cost", Decimal("0.0")))
             else:
-                aggregate = model_breakdown_by_bare.get(bare_model)
+                aggregate = model_breakdown_by_bare.get(bare_key)
+                if not aggregate and model_usage.agent_name is None:
+                    aggregate = model_breakdown_by_bare.get(
+                        model_name.split("/", 1)[-1]
+                    )
                 if aggregate:
                     token_details = aggregate["token_details"]
                     tokens = token_details["total"]
@@ -821,18 +867,30 @@ class DashboardUI:
                 else:
                     tokens, token_details, interactions, cost = None, None, None, None
 
-            context_info = per_model_context.get(model_name)
+            context_info = per_model_context.get(direct_key) or per_model_context.get(
+                model_name
+            )
             if not isinstance(context_info, dict):
-                context_info = per_model_context_by_bare.get(bare_model, {})
+                context_info = per_model_context_by_bare.get(bare_key, {})
+                if not context_info and model_usage.agent_name is None:
+                    context_info = per_model_context_by_bare.get(
+                        model_name.split("/", 1)[-1], {}
+                    )
             context_pct = context_info.get("usage_percentage") if context_info else None
             context_size = context_info.get("context_size") if context_info else None
             context_window = (
                 context_info.get("context_window") if context_info else None
             )
 
-            output_rate = per_model_output_rates.get(model_name)
+            output_rate = per_model_output_rates.get(direct_key)
             if output_rate is None:
-                output_rate = per_model_output_rates_by_bare.get(bare_model, 0.0)
+                output_rate = per_model_output_rates.get(model_name)
+            if output_rate is None:
+                output_rate = per_model_output_rates_by_bare.get(bare_key, 0.0)
+            if output_rate is None and model_usage.agent_name is None:
+                output_rate = per_model_output_rates_by_bare.get(
+                    model_name.split("/", 1)[-1], 0.0
+                )
 
             return (
                 tokens,
@@ -864,7 +922,7 @@ class DashboardUI:
                 context_size,
                 context_window,
                 output_rate,
-            ) = get_model_info(model_usage.model_name)
+            ) = get_model_info(model_usage)
             left_panels.append(
                 self.create_model_tool_panel(
                     model_usage,
@@ -890,7 +948,7 @@ class DashboardUI:
                 context_size,
                 context_window,
                 output_rate,
-            ) = get_model_info(model_usage.model_name)
+            ) = get_model_info(model_usage)
             right_panels.append(
                 self.create_model_tool_panel(
                     model_usage,
@@ -990,7 +1048,7 @@ class DashboardUI:
                     }
                 )
                 for sess in workflow.all_sessions:
-                    sess_breakdown = sess.get_model_breakdown(pricing_data)
+                    sess_breakdown = sess.get_agent_model_breakdown(pricing_data)
                     for model, stats in sess_breakdown.items():
                         model_tokens = stats["tokens"]
                         model_breakdown[model]["tokens"].input += model_tokens.input
@@ -1202,7 +1260,7 @@ class DashboardUI:
         )
 
         for session in workflow.all_sessions:
-            model_breakdown = session.get_model_breakdown(pricing_data)
+            model_breakdown = session.get_agent_model_breakdown(pricing_data)
             for model, stats in model_breakdown.items():
                 model_tokens = stats["tokens"]
                 model_data[model]["tokens"].input += model_tokens.input
@@ -1223,8 +1281,14 @@ class DashboardUI:
         for model, stats in sorted(
             model_data.items(), key=lambda x: x[1]["cost"], reverse=True
         ):
-            model_name = model[:35] + "..." if len(model) > 38 else model
-            bare_model = model.split("/", 1)[-1]
+            agent_name, raw_model = self._split_agent_model_key(model)
+            model_name = self._format_agent_model_title(
+                agent_name,
+                raw_model,
+                include_agent=agent_name is not None,
+                max_length=38,
+            )
+            bare_model = self._bare_lookup_key(model)
             token_usage = stats["tokens"]
 
             # Get context usage for this model

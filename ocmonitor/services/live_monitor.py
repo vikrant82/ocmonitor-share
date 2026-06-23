@@ -1193,9 +1193,10 @@ class LiveMonitor:
         model_files: Dict[str, List[InteractionFile]] = {}
         for session in workflow.all_sessions:
             for f in session.non_zero_token_files:
-                if f.model_id not in model_files:
-                    model_files[f.model_id] = []
-                model_files[f.model_id].append(f)
+                key = SessionData.agent_model_key(f.agent, f.model_id)
+                if key not in model_files:
+                    model_files[key] = []
+                model_files[key].append(f)
 
         if not model_files:
             return {}
@@ -1228,10 +1229,11 @@ class LiveMonitor:
 
         model_most_recent: Dict[str, InteractionFile] = {}
         for f in all_files:
-            if f.model_id not in model_most_recent:
-                model_most_recent[f.model_id] = f
-            elif f.modification_time > model_most_recent[f.model_id].modification_time:
-                model_most_recent[f.model_id] = f
+            key = SessionData.agent_model_key(f.agent, f.model_id)
+            if key not in model_most_recent:
+                model_most_recent[key] = f
+            elif f.modification_time > model_most_recent[key].modification_time:
+                model_most_recent[key] = f
 
         result = {}
         default_context_window = 200000
@@ -1882,9 +1884,10 @@ class LiveMonitor:
         model_files: Dict[str, List[InteractionFile]] = {}
         for session in workflow["all_sessions"]:
             for f in session.non_zero_token_files:
-                if f.model_id not in model_files:
-                    model_files[f.model_id] = []
-                model_files[f.model_id].append(f)
+                key = SessionData.agent_model_key(f.agent, f.model_id)
+                if key not in model_files:
+                    model_files[key] = []
+                model_files[key].append(f)
 
         if not model_files:
             return {}
@@ -1917,17 +1920,18 @@ class LiveMonitor:
 
         model_most_recent: Dict[str, Any] = {}
         for f in all_files:
-            if f.model_id not in model_most_recent:
-                model_most_recent[f.model_id] = f
+            key = SessionData.agent_model_key(f.agent, f.model_id)
+            if key not in model_most_recent:
+                model_most_recent[key] = f
             elif f.time_data and f.time_data.created:
-                existing = model_most_recent[f.model_id]
+                existing = model_most_recent[key]
                 existing_time = (
                     existing.time_data.created
                     if existing.time_data and existing.time_data.created
                     else 0
                 )
                 if f.time_data.created > existing_time:
-                    model_most_recent[f.model_id] = f
+                    model_most_recent[key] = f
 
         result = {}
         default_context_window = 200000
