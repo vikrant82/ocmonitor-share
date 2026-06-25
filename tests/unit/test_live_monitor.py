@@ -887,6 +887,29 @@ class TestLiveMonitorSelection:
         )
         assert result == []
 
+    def test_file_loader_falls_back_to_recent_workflows(self, monkeypatch, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+
+        ended_workflows = [
+            SimpleNamespace(workflow_id=f"wf-{i}", end_time=1)
+            for i in range(10)
+        ]
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.FileProcessor.load_all_sessions",
+            lambda base_path, limit=50: [SimpleNamespace(session_id="ses_1")],
+        )
+        monkeypatch.setattr(
+            monitor.session_grouper,
+            "group_sessions",
+            lambda sessions: ended_workflows,
+        )
+
+        result = monitor._get_file_active_workflows(
+            str(tmp_path), allow_fallback=True
+        )
+        assert len(result) == 5
+        assert [w.workflow_id for w in result] == [f"wf-{i}" for i in range(5)]
+
     def test_sqlite_loader_disables_fallback_in_pinned_mode(self, monkeypatch, tmp_path):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
 
@@ -901,12 +924,34 @@ class TestLiveMonitorSelection:
             lambda _: [],
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_most_recent_workflow",
-            lambda _: {"workflow_id": "wf-ended"},
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_recent_workflows",
+            lambda _, limit=5: [{"workflow_id": "wf-ended"}],
         )
 
         result = monitor._get_sqlite_active_workflows(allow_fallback=False)
         assert result == []
+
+    def test_sqlite_loader_falls_back_to_recent_workflows(self, monkeypatch, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+
+        db_path = tmp_path / "opencode.db"
+        db_path.touch()
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: db_path,
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
+            lambda _: [],
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.get_recent_workflows",
+            lambda _, limit=5: [{"workflow_id": f"wf-{i}"} for i in range(limit)],
+        )
+
+        result = monitor._get_sqlite_active_workflows(allow_fallback=True)
+        assert len(result) == 5
+        assert [w["workflow_id"] for w in result] == [f"wf-{i}" for i in range(5)]
 
     def test_handle_live_switch_command_show_does_not_switch(self):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)

@@ -439,6 +439,109 @@ class SQLiteProcessor:
             conn.close()
 
     @classmethod
+    def get_recent_workflows(
+        cls, db_path: Optional[Path] = None, limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Get the most recent workflows (parent session + sub-agents).
+
+        Finds parent sessions that have actual message data (interactions),
+        skipping empty sessions, up to the specified limit.
+
+        Args:
+            db_path: Path to database (uses default if not provided)
+            limit: Maximum number of workflows to return
+
+        Returns:
+            List of dictionaries with workflow data compatible with SessionWorkflow.
+        """
+        if db_path is None:
+            db_path = cls.find_database_path()
+
+        if not db_path or not db_path.exists():
+            return []
+
+        conn = cls._get_connection(db_path)
+        try:
+            # Get recent parent sessions (no parent_id)
+            parent_rows = conn.execute("""
+                SELECT s.*, p.worktree as project_path, p.name as project_name
+                FROM session s
+                LEFT JOIN project p ON s.project_id = p.id
+                WHERE s.parent_id IS NULL
+                ORDER BY s.time_created DESC
+                LIMIT ?
+            """, (limit * 5,)).fetchall()
+
+            if not parent_rows:
+                return []
+
+            workflows = []
+            for parent_row in parent_rows:
+                session = cls.load_session_data(conn, parent_row)
+                if session and session.files:  # Has interactions
+                    workflows.append(cls._build_workflow_dict(conn, session))
+                    if len(workflows) >= limit:
+                        break
+
+            return workflows
+        finally:
+            conn.close()
+
+    @classmethod
+    def get_workflow_by_id(
+        cls, workflow_id: str, db_path: Optional[Path] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get a specific workflow by its ID (main session or sub-agent ID)."""
+        if db_path is None:
+            db_path = cls.find_database_path()
+
+        if not db_path or not db_path.exists():
+            return None
+
+        conn = cls._get_connection(db_path)
+        try:
+            # First, check if the session exists and get its parent_id
+            row = conn.execute(
+                """
+                SELECT s.*, p.worktree as project_path, p.name as project_name
+                FROM session s
+                LEFT JOIN project p ON s.project_id = p.id
+                WHERE s.id = ?
+            """,
+                (workflow_id,),
+            ).fetchone()
+
+            if not row:
+                return None
+
+            parent_id = row["parent_id"]
+            if parent_id:
+                # It's a sub-agent, load the parent session instead
+                parent_row = conn.execute(
+                    """
+                    SELECT s.*, p.worktree as project_path, p.name as project_name
+                    FROM session s
+                    LEFT JOIN project p ON s.project_id = p.id
+                    WHERE s.id = ?
+                """,
+                    (parent_id,),
+                ).fetchone()
+                if parent_row:
+                    main_session = cls.load_session_data(conn, parent_row)
+                else:
+                    # Parent not found (orphan), treat the sub-agent as its own main
+                    main_session = cls.load_session_data(conn, row)
+            else:
+                main_session = cls.load_session_data(conn, row)
+
+            if not main_session:
+                return None
+
+            return cls._build_workflow_dict(conn, main_session)
+        finally:
+            conn.close()
+
+    @classmethod
     def _build_workflow_dict(
         cls, conn: sqlite3.Connection, main_session: SessionData
     ) -> Dict[str, Any]:
