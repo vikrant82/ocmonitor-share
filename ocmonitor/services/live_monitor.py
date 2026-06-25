@@ -197,9 +197,12 @@ class LiveMonitor:
         return cast(Optional[ModelPricing], pricing)
 
     def _get_file_active_workflows(
-        self, base_path: str, allow_fallback: bool = True
+        self,
+        base_path: str,
+        allow_fallback: bool = True,
+        selected_session_id: Optional[str] = None,
     ) -> List[SessionWorkflow]:
-        """Load active file-based workflows, optionally falling back to most recent."""
+        """Load active file-based workflows, optionally falling back to most recent ones."""
         sessions = FileProcessor.load_all_sessions(base_path, limit=50)
         if not sessions:
             return []
@@ -209,27 +212,81 @@ class LiveMonitor:
             return []
 
         active_workflows = [w for w in workflows if w.end_time is None]
-        if active_workflows:
+
+        # Pinned mode should only consider active workflows plus the selected
+        # workflow itself. Do not pad with unrelated historical workflows.
+        if selected_session_id:
+            selected_wf = None
+            for w in workflows:
+                if w.workflow_id == selected_session_id or any(
+                    s.session_id == selected_session_id for s in w.all_sessions
+                ):
+                    selected_wf = w
+                    break
+
+            if selected_wf and selected_wf.workflow_id not in {
+                w.workflow_id for w in active_workflows
+            }:
+                return active_workflows + [selected_wf]
             return active_workflows
-        return workflows[:1] if allow_fallback else []
+
+        if not allow_fallback:
+            return active_workflows
+
+        # Combine active and all workflows, avoiding duplicates (by workflow_id)
+        seen_ids = {w.workflow_id for w in active_workflows}
+        for w in workflows:
+            if w.workflow_id not in seen_ids:
+                active_workflows.append(w)
+                seen_ids.add(w.workflow_id)
+
+        return active_workflows[:5]
 
     def _get_sqlite_active_workflows(
-        self, allow_fallback: bool = True
+        self,
+        allow_fallback: bool = True,
+        selected_session_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Load active SQLite workflows, optionally falling back to most recent."""
+        """Load active SQLite workflows, optionally falling back to most recent ones."""
         db_path = SQLiteProcessor.find_database_path()
         if not db_path:
             return []
 
         active_workflows = SQLiteProcessor.get_all_active_workflows(db_path)
-        if active_workflows:
+
+        # Pinned mode should only consider active workflows plus the selected
+        # workflow itself. Do not pad with unrelated historical workflows.
+        if selected_session_id:
+            already_active = any(
+                w["workflow_id"] == selected_session_id
+                or any(
+                    s.session_id == selected_session_id
+                    for s in w.get("all_sessions", [])
+                )
+                for w in active_workflows
+            )
+            if already_active:
+                return active_workflows
+
+            specific_wf = SQLiteProcessor.get_workflow_by_id(
+                selected_session_id, db_path
+            )
+            if specific_wf:
+                return active_workflows + [specific_wf]
             return active_workflows
 
         if not allow_fallback:
-            return []
+            return active_workflows
 
-        workflow = SQLiteProcessor.get_most_recent_workflow(db_path)
-        return [workflow] if workflow else []
+        # Combine active and recent workflows, avoiding duplicates (by workflow_id)
+        recent = SQLiteProcessor.get_recent_workflows(db_path, limit=5)
+        seen_ids = {w["workflow_id"] for w in active_workflows}
+        for r in recent:
+            if r["workflow_id"] not in seen_ids:
+                active_workflows.append(r)
+                seen_ids.add(r["workflow_id"])
+
+        return active_workflows[:5]
 
     def _get_latest_sqlite_activity_ts(self, workflow: Dict[str, Any]) -> float:
         """Get latest parent-session activity timestamp for SQLite workflow."""
@@ -834,7 +891,9 @@ class LiveMonitor:
         """
         try:
             active_workflows = self._get_file_active_workflows(
-                base_path, allow_fallback=not bool(selected_session_id)
+                base_path,
+                allow_fallback=not bool(selected_session_id),
+                selected_session_id=selected_session_id,
             )
             if not active_workflows:
                 self.console.print(
@@ -958,7 +1017,9 @@ class LiveMonitor:
                         continue
 
                     active_workflows = self._get_file_active_workflows(
-                        base_path, allow_fallback=not bool(selected_session_id)
+                        base_path,
+                        allow_fallback=not bool(selected_session_id),
+                        selected_session_id=selected_session_id,
                     )
                     descriptors = self._describe_file_workflows(active_workflows)
 
@@ -1504,7 +1565,8 @@ class LiveMonitor:
                 return
 
             active_workflows = self._get_sqlite_active_workflows(
-                allow_fallback=not bool(selected_session_id)
+                allow_fallback=not bool(selected_session_id),
+                selected_session_id=selected_session_id,
             )
             if not active_workflows:
                 self.console.print(
@@ -1690,7 +1752,8 @@ class LiveMonitor:
                         continue
 
                     active_workflows = self._get_sqlite_active_workflows(
-                        allow_fallback=not bool(selected_session_id)
+                        allow_fallback=not bool(selected_session_id),
+                        selected_session_id=selected_session_id,
                     )
                     descriptors = self._describe_sqlite_workflows(active_workflows)
 
