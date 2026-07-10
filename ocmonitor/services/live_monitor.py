@@ -1,13 +1,14 @@
 """Live monitoring service for OpenCode Monitor."""
 
 import os
+import json
 import select
 import sys
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple, cast
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, cast
 
 from rich.console import Console
 from rich.layout import Layout
@@ -99,6 +100,9 @@ class WorkflowWrapper:
 class LiveMonitor:
     """Service for live monitoring of OpenCode sessions."""
 
+    RECENT_TURN_LIMIT = 500
+    RECENT_TURN_PAGE_SIZE = 50
+
     def __init__(
         self,
         pricing_data: Dict[str, ModelPricing],
@@ -129,6 +133,8 @@ class LiveMonitor:
         self._stdin_termios_state: Optional[Any] = None
         self._input_buffer: str = ""
         self._live_status_line: Optional[str] = None
+        self._turn_part_cache: Dict[str, List[Any]] = {}
+        self._turn_user_cache: Dict[str, str] = {}
         if init_from_db:
             self._initialize_active_workflows()
 
@@ -491,12 +497,613 @@ class LiveMonitor:
         """Return optional controls hint shown in dashboard header."""
         if not interactive_switch:
             return None
-        base_hint = (
-            "Workflow switching keys: n=next, p=prev, l=list, 1..9=jump, q=quit."
-        )
+        base_hint = "Workflow keys: n=next, p=prev, l=list, t=turns, 1..9=jump, q=quit."
         if self._live_status_line:
             return f"{base_hint}  Status: {self._live_status_line}"
         return base_hint
+
+    def _get_turn_activity_ts(self, turn: InteractionFile) -> float:
+        """Return a comparable activity timestamp for an interaction turn."""
+        if turn.time_data:
+            if turn.time_data.completed is not None:
+                return turn.time_data.completed / 1000
+            if turn.time_data.created is not None:
+                return turn.time_data.created / 1000
+
+        for raw_key in ("_message_time_updated", "_message_time_created"):
+            raw_timestamp = (turn.raw_data or {}).get(raw_key)
+            if raw_timestamp is None:
+                continue
+            try:
+                return float(raw_timestamp) / 1000
+            except (TypeError, ValueError):
+                continue
+
+        try:
+            return turn.modification_time.timestamp()
+        except (FileNotFoundError, OSError, ValueError):
+            return 0.0
+
+    def _get_workflow_sessions(self, workflow: Any) -> List[SessionData]:
+        """Return all sessions for either file or SQLite workflow shapes."""
+        if isinstance(workflow, dict):
+            return list(workflow.get("all_sessions", []))
+        return list(getattr(workflow, "all_sessions", []) or [])
+
+    def _describe_recent_turns(
+        self, workflow: Any, limit: int = RECENT_TURN_LIMIT
+    ) -> List[Dict[str, Any]]:
+        """Build descriptors for recent non-zero-token turns in a workflow."""
+        turns: List[InteractionFile] = []
+        for session in self._get_workflow_sessions(workflow):
+            turns.extend(session.non_zero_token_files)
+
+        sorted_turns = sorted(turns, key=self._get_turn_activity_ts, reverse=True)[
+            :limit
+        ]
+
+        descriptors: List[Dict[str, Any]] = []
+        for turn in sorted_turns:
+            duration_ms = turn.time_data.duration_ms if turn.time_data else None
+            try:
+                cost = turn.calculate_cost(self.pricing_data)
+            except (TypeError, ValueError, AttributeError):
+                cost = Decimal("0.0")
+
+            descriptors.append(
+                {
+                    "turn": turn,
+                    "session_id": turn.session_id,
+                    "agent": turn.agent or "main",
+                    "model": turn.display_model,
+                    "tokens_input": turn.tokens.input,
+                    "tokens_output": turn.tokens.output,
+                    "tokens_cache_read": turn.tokens.cache_read,
+                    "tokens_cache_write": turn.tokens.cache_write,
+                    "tokens_total": turn.tokens.total,
+                    "duration_ms": duration_ms,
+                    "cost": cost,
+                    "finish_reason": turn.finish_reason or "unknown",
+                    "activity_ts": self._get_turn_activity_ts(turn),
+                }
+            )
+        return descriptors
+
+    def _truncate_turn_text(self, value: Any, max_length: int = 120) -> str:
+        """Return compact single-line text for message/tool previews."""
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            try:
+                value = json.dumps(value, ensure_ascii=False)
+            except TypeError:
+                value = str(value)
+        text = " ".join(value.split())
+        if len(text) <= max_length:
+            return text
+        return text[: max_length - 3] + "..."
+
+    def _extract_text_from_value(self, value: Any) -> List[str]:
+        """Extract human-readable text snippets from OpenCode message shapes."""
+        snippets: List[str] = []
+        if isinstance(value, str):
+            if value.strip():
+                snippets.append(value)
+            return snippets
+        if isinstance(value, list):
+            for item in value:
+                snippets.extend(self._extract_text_from_value(item))
+            return snippets
+        if not isinstance(value, dict):
+            return snippets
+
+        part_type = value.get("type") or value.get("kind")
+        if part_type in {"text", "reasoning", "user", "assistant"}:
+            for key in ("text", "content", "message", "input", "output"):
+                if isinstance(value.get(key), str):
+                    snippets.append(value[key])
+        elif isinstance(value.get("text"), str):
+            snippets.append(value["text"])
+
+        for key in ("content", "parts", "messages"):
+            child = value.get(key)
+            if child is not value:
+                snippets.extend(self._extract_text_from_value(child))
+        return snippets
+
+    def _extract_turn_message_summary(self, turn: InteractionFile) -> Dict[str, str]:
+        """Extract compact user/assistant text previews from turn raw data."""
+        raw = turn.raw_data or {}
+        role = str(raw.get("role") or "assistant")
+        text_sources: List[Any] = []
+        for key in ("text", "content", "parts", "message", "messages"):
+            if key in raw:
+                text_sources.append(raw[key])
+
+        snippets: List[str] = []
+        for source in text_sources:
+            snippets.extend(self._extract_text_from_value(source))
+
+        assistant_text = ""
+        user_text = ""
+        if role == "user":
+            user_text = self._truncate_turn_text("\n".join(snippets), 220)
+        else:
+            assistant_text = self._truncate_turn_text("\n".join(snippets), 220)
+
+        for key in ("user", "prompt", "request"):
+            if isinstance(raw.get(key), str):
+                user_text = self._truncate_turn_text(raw[key], 220)
+                break
+        for key in ("assistant", "response", "completion"):
+            if isinstance(raw.get(key), str):
+                assistant_text = self._truncate_turn_text(raw[key], 220)
+                break
+
+        sqlite_texts = self._load_sqlite_text_parts_for_turn(turn)
+        if sqlite_texts:
+            assistant_text = assistant_text or self._truncate_turn_text(
+                "\n".join(sqlite_texts), 220
+            )
+
+        sqlite_user_text = self._load_sqlite_user_text_for_turn(turn)
+        if sqlite_user_text:
+            user_text = user_text or self._truncate_turn_text(sqlite_user_text, 220)
+
+        return {
+            "role": role,
+            "user": user_text or "not available in this turn record",
+            "assistant": assistant_text or "not available in this turn record",
+        }
+
+    def _turn_message_id(self, turn: InteractionFile) -> Optional[str]:
+        """Return preserved SQLite message ID for a turn, if available."""
+        message_id = turn.raw_data.get("_message_id") if turn.raw_data else None
+        return str(message_id) if message_id else None
+
+    def _load_sqlite_part_payloads_for_turn(self, turn: InteractionFile) -> List[Any]:
+        """Load raw SQLite part payloads related to a selected message turn."""
+        message_id = self._turn_message_id(turn)
+        if not message_id:
+            return []
+        cache_key = f"{turn.session_id}:{message_id}"
+        if cache_key in self._turn_part_cache:
+            return self._turn_part_cache[cache_key]
+
+        db_path = SQLiteProcessor.find_database_path()
+        if not db_path or not db_path.exists():
+            self._turn_part_cache[cache_key] = []
+            return []
+
+        conn = SQLiteProcessor._get_connection(db_path)
+        try:
+            cursor = conn.execute(
+                """
+                SELECT data
+                FROM part
+                WHERE session_id = ? AND message_id = ?
+                ORDER BY time_created
+                """,
+                (turn.session_id, message_id),
+            )
+            payloads: List[Any] = []
+            for row in cursor:
+                try:
+                    payloads.append(json.loads(row["data"]))
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            self._turn_part_cache[cache_key] = payloads
+            return payloads
+        except Exception:
+            self._turn_part_cache[cache_key] = []
+            return []
+        finally:
+            conn.close()
+
+    def _load_sqlite_text_parts_for_turn(self, turn: InteractionFile) -> List[str]:
+        """Load text-like SQLite part snippets for a selected turn."""
+        snippets: List[str] = []
+        for payload in self._load_sqlite_part_payloads_for_turn(turn):
+            snippets.extend(self._extract_text_from_value(payload))
+        return snippets
+
+    def _load_sqlite_user_text_for_turn(self, turn: InteractionFile) -> str:
+        """Best-effort lookup of the latest user text before a SQLite assistant turn."""
+        message_id = self._turn_message_id(turn)
+        if not message_id:
+            return ""
+        cache_key = f"{turn.session_id}:{message_id}"
+        if cache_key in self._turn_user_cache:
+            return self._turn_user_cache[cache_key]
+
+        db_path = SQLiteProcessor.find_database_path()
+        if not db_path or not db_path.exists():
+            self._turn_user_cache[cache_key] = ""
+            return ""
+
+        raw_time = (turn.raw_data or {}).get("_message_time_created")
+        if raw_time is None:
+            message_time = None
+        else:
+            try:
+                message_time = int(raw_time)
+            except (TypeError, ValueError):
+                message_time = None
+        if message_time is None:
+            self._turn_user_cache[cache_key] = ""
+            return ""
+
+        conn = SQLiteProcessor._get_connection(db_path)
+        try:
+            cursor = conn.execute(
+                """
+                SELECT data
+                FROM message
+                WHERE session_id = ?
+                  AND time_created <= ?
+                  AND json_valid(data) = 1
+                  AND json_extract(data, '$.role') = 'user'
+                ORDER BY time_created DESC
+                LIMIT 1
+                """,
+                (turn.session_id, message_time),
+            )
+            row = cursor.fetchone()
+            if not row:
+                self._turn_user_cache[cache_key] = ""
+                return ""
+            try:
+                payload = json.loads(row["data"])
+            except (json.JSONDecodeError, TypeError):
+                self._turn_user_cache[cache_key] = ""
+                return ""
+            text = self._truncate_turn_text(
+                "\n".join(self._extract_text_from_value(payload)), 220
+            )
+            self._turn_user_cache[cache_key] = text
+            return text
+        except Exception:
+            self._turn_user_cache[cache_key] = ""
+            return ""
+        finally:
+            conn.close()
+
+    def _extract_tool_parts_from_value(self, value: Any) -> List[Dict[str, str]]:
+        """Extract tool-call summaries from nested raw message/part structures."""
+        tools: List[Dict[str, str]] = []
+        if isinstance(value, list):
+            for item in value:
+                tools.extend(self._extract_tool_parts_from_value(item))
+            return tools
+        if not isinstance(value, dict):
+            return tools
+
+        part_type = value.get("type") or value.get("kind")
+        tool_name = value.get("tool") or value.get("name") or value.get("toolName")
+        if (
+            part_type in {"tool", "tool_call", "tool-result", "tool_result"}
+            or tool_name
+        ):
+            state_raw = value.get("state")
+            state = state_raw if isinstance(state_raw, dict) else {}
+            status = value.get("status") or state.get("status") or value.get("state")
+            summary_source = (
+                value.get("text")
+                or value.get("input")
+                or value.get("output")
+                or value.get("error")
+                or state.get("input")
+                or state.get("output")
+                or state.get("error")
+            )
+            tools.append(
+                {
+                    "tool": str(tool_name or "unknown"),
+                    "status": str(status or "unknown"),
+                    "summary": self._truncate_turn_text(summary_source, 100),
+                }
+            )
+
+        for key in ("content", "parts", "messages", "state"):
+            child = value.get(key)
+            if child is not value:
+                tools.extend(self._extract_tool_parts_from_value(child))
+        return tools
+
+    def _load_sqlite_tool_parts_for_turn(
+        self, turn: InteractionFile
+    ) -> List[Dict[str, str]]:
+        """Load SQLite part-table tool rows related to a selected message turn."""
+        tools: List[Dict[str, str]] = []
+        for payload in self._load_sqlite_part_payloads_for_turn(turn):
+            tools.extend(self._extract_tool_parts_from_value(payload))
+        return tools
+
+    def _extract_turn_tool_summary(
+        self, turn: InteractionFile, max_tools: int = 8
+    ) -> List[Dict[str, str]]:
+        """Extract a compact list of tools used by a selected turn."""
+        tools = self._extract_tool_parts_from_value(turn.raw_data or {})
+        sqlite_tools = self._load_sqlite_tool_parts_for_turn(turn)
+        if sqlite_tools:
+            tools.extend(sqlite_tools)
+
+        deduped: List[Dict[str, str]] = []
+        seen = set()
+        for tool in tools:
+            key = (tool["tool"], tool["status"], tool["summary"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(tool)
+            if len(deduped) >= max_tools:
+                break
+        return deduped
+
+    def _format_turn_time(self, timestamp: float) -> str:
+        """Format a turn timestamp for compact picker/detail display."""
+        if timestamp <= 0:
+            return "unknown"
+        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _format_turn_duration(self, duration_ms: Optional[int]) -> str:
+        """Format an optional turn duration."""
+        if duration_ms is None:
+            return "unknown"
+        return self.dashboard_ui.format_duration(duration_ms)
+
+    def _print_recent_turn_picker_table(
+        self,
+        descriptors: List[Dict[str, Any]],
+        title: str,
+        page: int = 0,
+        page_size: int = RECENT_TURN_PAGE_SIZE,
+    ) -> None:
+        """Render a picker table for recent workflow turns."""
+        total_pages = max(1, (len(descriptors) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        page_start = page * page_size
+        page_descriptors = descriptors[page_start : page_start + page_size]
+
+        table = Table(
+            title=f"{title} (page {page + 1}/{total_pages}, {len(descriptors)} turns)",
+            show_header=True,
+        )
+        table.add_column("#", justify="right", style="metric.value")
+        table.add_column("When", style="table.row.time")
+        table.add_column("Agent", style="dashboard.info")
+        table.add_column("Model", style="table.row.main")
+        table.add_column("Input", justify="right", style="metric.tokens")
+        table.add_column("Output", justify="right", style="metric.tokens")
+        table.add_column("Cache Read", justify="right", style="metric.tokens")
+        table.add_column("Cache Write", justify="right", style="metric.tokens")
+        table.add_column("Turn Tokens", justify="right", style="metric.tokens")
+        table.add_column("Cost", justify="right", style="metric.cost")
+        table.add_column("Duration", justify="right", style="metric.value")
+
+        table.add_column("Preview", style="dim")
+
+        for offset, descriptor in enumerate(page_descriptors, start=1):
+            idx = page_start + offset
+            model = str(descriptor["model"])
+            if len(model) > 34:
+                model = model[:31] + "..."
+
+            turn = cast(InteractionFile, descriptor["turn"])
+            message_summary = self._extract_turn_message_summary(turn)
+            preview_parts = []
+            if message_summary["user"] != "not available in this turn record":
+                preview_parts.append(f"U: {message_summary['user']}")
+            if message_summary["assistant"] != "not available in this turn record":
+                preview_parts.append(f"A: {message_summary['assistant']}")
+            tools = self._extract_turn_tool_summary(turn, max_tools=3)
+            if tools:
+                tool_preview = ", ".join(
+                    f"{tool['tool']}:{tool['status']}" for tool in tools
+                )
+                preview_parts.append(f"Tools: {tool_preview}")
+            preview = " | ".join(preview_parts) or "No message/tool preview available"
+
+            table.add_row(
+                str(idx),
+                self._format_relative_time(descriptor["activity_ts"]),
+                str(descriptor["agent"]),
+                model,
+                f"{descriptor['tokens_input']:,}",
+                f"{descriptor['tokens_output']:,}",
+                f"{descriptor['tokens_cache_read']:,}",
+                f"{descriptor['tokens_cache_write']:,}",
+                f"{descriptor['tokens_total']:,}",
+                self.dashboard_ui._fmt_cost(descriptor["cost"]),
+                self._format_turn_duration(descriptor["duration_ms"]),
+                self._truncate_turn_text(preview, 120),
+            )
+        self.console.print(table)
+
+    def _prompt_for_recent_turn_selection(
+        self,
+        workflow: Any,
+        title: str,
+        limit: int = RECENT_TURN_LIMIT,
+        refresh_workflow: Optional[Callable[[], Any]] = None,
+    ) -> Optional[InteractionFile]:
+        """Prompt user to select a recent turn from the current workflow."""
+        current_workflow = workflow
+        descriptors = self._describe_recent_turns(current_workflow, limit)
+        if not descriptors:
+            self.console.print(
+                "[status.warning]No recent non-zero-token turns available.[/status.warning]"
+            )
+            self._live_status_line = "No recent turns available."
+            return None
+
+        page = 0
+        page_size = self.RECENT_TURN_PAGE_SIZE
+        while True:
+            total_pages = max(1, (len(descriptors) + page_size - 1) // page_size)
+            page = max(0, min(page, total_pages - 1))
+            self._print_recent_turn_picker_table(descriptors, title, page, page_size)
+            choice = (
+                self.console.input(
+                    "[metric.label]Select turn #, n/p page, r refresh, q back to live: [/metric.label]"
+                )
+                .strip()
+                .lower()
+            )
+
+            if not choice or choice in {"q", "quit", "back", "b"}:
+                self._live_status_line = "Turn history cancelled."
+                return None
+            if choice in {"n", "next"}:
+                if page < total_pages - 1:
+                    page += 1
+                else:
+                    self.console.print(
+                        "[status.info]Already on last page.[/status.info]"
+                    )
+                continue
+            if choice in {"p", "prev", "previous"}:
+                if page > 0:
+                    page -= 1
+                else:
+                    self.console.print(
+                        "[status.info]Already on first page.[/status.info]"
+                    )
+                continue
+            if choice in {"r", "refresh"}:
+                if refresh_workflow is not None:
+                    refreshed_workflow = refresh_workflow()
+                    if refreshed_workflow is not None:
+                        current_workflow = refreshed_workflow
+                descriptors = self._describe_recent_turns(current_workflow, limit)
+                if not descriptors:
+                    self.console.print(
+                        "[status.warning]No recent non-zero-token turns available after refresh.[/status.warning]"
+                    )
+                    self._live_status_line = "No recent turns available after refresh."
+                    return None
+                page = 0
+                self._live_status_line = f"Refreshed {len(descriptors)} recent turns."
+                continue
+            if not choice.isdigit():
+                self.console.print(
+                    "[status.warning]Enter a turn number, n/p to page, r to refresh, or q to leave history.[/status.warning]"
+                )
+                continue
+
+            selected_idx = int(choice)
+            if selected_idx < 1 or selected_idx > len(descriptors):
+                self.console.print(
+                    "[status.warning]Selection out of range.[/status.warning]"
+                )
+                continue
+            return cast(InteractionFile, descriptors[selected_idx - 1]["turn"])
+
+    def _print_turn_detail(self, turn: InteractionFile) -> None:
+        """Render detailed stats for one historical turn."""
+        duration_ms = turn.time_data.duration_ms if turn.time_data else None
+        output_rate = "unknown"
+        if duration_ms and duration_ms > 0 and turn.tokens.output > 0:
+            output_rate = f"{turn.tokens.output / (duration_ms / 1000):.1f} tok/s"
+
+        try:
+            cost = turn.calculate_cost(self.pricing_data)
+        except (TypeError, ValueError, AttributeError):
+            cost = Decimal("0.0")
+
+        message_summary = self._extract_turn_message_summary(turn)
+        tool_summary = self._extract_turn_tool_summary(turn)
+
+        detail = Table.grid(padding=(0, 2))
+        detail.add_column(style="metric.label")
+        detail.add_column(style="metric.value")
+        detail.add_row("Role", message_summary["role"])
+        detail.add_row("Session", turn.session_id)
+        detail.add_row("Agent", turn.agent or "main")
+        detail.add_row("Project", turn.project_name)
+        detail.add_row("Model", turn.display_model)
+        detail.add_row(
+            "Activity", self._format_turn_time(self._get_turn_activity_ts(turn))
+        )
+        detail.add_row("Duration", self._format_turn_duration(duration_ms))
+        detail.add_row("Finish", turn.finish_reason or "unknown")
+        detail.add_row("File", turn.file_name)
+        detail.add_row("Input", f"{turn.tokens.input:,}")
+        detail.add_row("Output", f"{turn.tokens.output:,}")
+        detail.add_row("Cache Read", f"{turn.tokens.cache_read:,}")
+        detail.add_row("Cache Write", f"{turn.tokens.cache_write:,}")
+        detail.add_row("Total Tokens", f"{turn.tokens.total:,}")
+        detail.add_row("Cost", self.dashboard_ui._fmt_cost(cost))
+        detail.add_row("Output Rate", output_rate)
+        detail.add_row("User", message_summary["user"])
+        detail.add_row("Assistant", message_summary["assistant"])
+
+        self.console.print(
+            Panel(
+                detail,
+                title="Turn Details",
+                title_align="left",
+                border_style="dashboard.border",
+            )
+        )
+
+        tool_table = Table(title="Turn Tool Calls", show_header=True)
+        tool_table.add_column("#", justify="right", style="metric.value")
+        tool_table.add_column("Tool", style="table.row.main")
+        tool_table.add_column("Status", style="dashboard.info")
+        tool_table.add_column("Preview", style="dim")
+        if tool_summary:
+            for idx, tool in enumerate(tool_summary, start=1):
+                tool_table.add_row(
+                    str(idx), tool["tool"], tool["status"], tool["summary"] or "—"
+                )
+        else:
+            tool_table.add_row("—", "No tool calls found", "—", "—")
+        self.console.print(tool_table)
+
+    def _inspect_recent_turns_during_live(
+        self,
+        live: Live,
+        workflow: Any,
+        title: str,
+        interactive_switch: bool,
+        limit: int = RECENT_TURN_LIMIT,
+        refresh_workflow: Optional[Callable[[], Any]] = None,
+    ) -> None:
+        """Pause live view, show recent-turn picker/details, then resume live view."""
+        raw_mode_was_enabled = self._stdin_fd is not None
+        if raw_mode_was_enabled:
+            self._disable_raw_input_mode()
+
+        try:
+            live.stop()
+            current_workflow = workflow
+
+            def refresh_current_workflow() -> Any:
+                nonlocal current_workflow
+                if refresh_workflow is not None:
+                    refreshed = refresh_workflow()
+                    if refreshed is not None:
+                        current_workflow = refreshed
+                return current_workflow
+
+            while True:
+                if refresh_workflow is not None:
+                    selected_turn = self._prompt_for_recent_turn_selection(
+                        current_workflow, title, limit, refresh_current_workflow
+                    )
+                else:
+                    selected_turn = self._prompt_for_recent_turn_selection(
+                        current_workflow, title, limit
+                    )
+                if not selected_turn:
+                    break
+                self._print_turn_detail(selected_turn)
+                self._live_status_line = f"Viewed turn {selected_turn.file_name}."
+        finally:
+            live.start(refresh=True)
+            if interactive_switch and raw_mode_was_enabled:
+                self._enable_raw_input_mode()
 
     def _handle_live_switch_command(
         self,
@@ -555,7 +1162,7 @@ class LiveMonitor:
             return None, False
 
         self.console.print(
-            "[status.warning]Unknown command. Use next/prev/list/<number>/quit (or n/p/l/q).[/status.warning]"
+            "[status.warning]Unknown command. Use next/prev/list/turns/<number>/quit (or n/p/l/t/q).[/status.warning]"
         )
         self._live_status_line = "Unknown command."
         return None, False
@@ -609,10 +1216,12 @@ class LiveMonitor:
                 return None
 
             # Fast path for ergonomic keybinds.
-            if ch in {"n", "p", "l", "q"} or ch.isdigit():
+            if ch in {"n", "p", "l", "t", "q"} or ch.isdigit():
                 self._input_buffer = ""
                 if ch == "l":
                     return "list"
+                if ch == "t":
+                    return "turns"
                 if ch == "q":
                     return "quit"
                 return ch
@@ -626,6 +1235,9 @@ class LiveMonitor:
                     "previous",
                     "list",
                     "show",
+                    "turn",
+                    "turns",
+                    "history",
                     "quit",
                     "exit",
                 }:
@@ -676,7 +1288,10 @@ class LiveMonitor:
             return
         try:
             import termios
+        except ImportError:
+            return
 
+        try:
             termios.tcsetattr(
                 self._stdin_fd, termios.TCSANOW, self._stdin_termios_state
             )
@@ -944,7 +1559,7 @@ class LiveMonitor:
                 raw_mode_enabled = self._enable_raw_input_mode()
                 self._live_status_line = "Ready."
                 self.console.print(
-                    "[status.info]Interactive switching enabled: press n/p/l/1..9/q[/status.info]"
+                    "[status.info]Interactive controls enabled: press n/p/l/t/1..9/q[/status.info]"
                 )
                 if not raw_mode_enabled:
                     self.console.print(
@@ -986,6 +1601,75 @@ class LiveMonitor:
                                 )
                                 if current_workflow_id != prev_workflow_id:
                                     next_refresh_at = time.time() + refresh_interval
+                                continue
+
+                            if command in {"t", "turn", "turns", "history"}:
+
+                                def refresh_current_turn_workflow() -> Any:
+                                    nonlocal \
+                                        active_workflows, \
+                                        descriptors, \
+                                        current_workflow, \
+                                        current_workflow_id
+                                    active_workflows = self._get_file_active_workflows(
+                                        base_path,
+                                        allow_fallback=not bool(selected_session_id),
+                                        selected_session_id=selected_session_id,
+                                    )
+                                    descriptors = self._describe_file_workflows(
+                                        active_workflows
+                                    )
+                                    if not active_workflows:
+                                        return current_workflow
+
+                                    if selected_session_id:
+                                        refreshed_current = (
+                                            self._resolve_selected_file_workflow(
+                                                active_workflows, selected_session_id
+                                            )
+                                        )
+                                    else:
+                                        refreshed_current = next(
+                                            (
+                                                workflow
+                                                for workflow in active_workflows
+                                                if workflow.workflow_id
+                                                == current_workflow_id
+                                            ),
+                                            None,
+                                        )
+                                    if refreshed_current is None:
+                                        refreshed_current = (
+                                            self._select_most_recent_file_workflow(
+                                                active_workflows
+                                            )
+                                        )
+
+                                    if refreshed_current:
+                                        current_workflow = refreshed_current
+                                        current_workflow_id = (
+                                            current_workflow.workflow_id
+                                        )
+                                        self.prev_tracked |= set(
+                                            s.session_id
+                                            for s in current_workflow.all_sessions
+                                        )
+                                    return current_workflow
+
+                                self._inspect_recent_turns_during_live(
+                                    live,
+                                    current_workflow,
+                                    "Recent Turns",
+                                    interactive_switch,
+                                    refresh_workflow=refresh_current_turn_workflow,
+                                )
+                                live.update(
+                                    self._generate_workflow_dashboard(
+                                        current_workflow,
+                                        self._controls_hint(interactive_switch),
+                                    )
+                                )
+                                next_refresh_at = time.time() + refresh_interval
                                 continue
 
                             (
@@ -1095,6 +1779,9 @@ class LiveMonitor:
         per_model_output_rates = self._calculate_session_output_rates(session)
         per_model_context = self._get_session_context_usage(session)
 
+        # Live output rate (tok/s) over the last 5 minutes for this session
+        burn_rate = self._calculate_output_rate(session)
+
         return self.dashboard_ui.create_dashboard_layout(
             session=session,
             recent_file=recent_file,
@@ -1102,6 +1789,7 @@ class LiveMonitor:
             quota=quota,
             per_model_output_rates=per_model_output_rates,
             per_model_context=per_model_context,
+            burn_rate=burn_rate,
         )
 
     def _calculate_session_output_rates(self, session: SessionData) -> Dict[str, float]:
@@ -1208,6 +1896,9 @@ class LiveMonitor:
         # Calculate per-model context usage
         per_model_context = self._get_per_model_context_usage(workflow)
 
+        # Workflow-wide live output rate (tok/s) for the Output Rate panel
+        burn_rate = self._calculate_workflow_output_rate(workflow.all_sessions)
+
         # Get model pricing for quota
         quota = None
         if recent_file:
@@ -1236,6 +1927,7 @@ class LiveMonitor:
             tool_stats=tool_stats,
             tool_stats_by_model=tool_stats_by_model,
             controls_hint=controls_hint,
+            burn_rate=burn_rate,
         )
 
     def _calculate_per_model_output_rates(
@@ -1364,6 +2056,59 @@ class LiveMonitor:
 
         total_duration_seconds = total_duration_ms / 1000
 
+        if total_duration_seconds > 0:
+            return total_output_tokens / total_duration_seconds
+
+        return 0.0
+
+    def _calculate_workflow_output_rate(
+        self, sessions: List[SessionData]
+    ) -> float:
+        """Calculate p50 output token rate over the last 5 minutes across sessions.
+
+        Pools interactions from every session in a workflow and mirrors the
+        single-session logic in _calculate_output_rate (p50 with a mean
+        fallback) so the live Output Rate panel reflects the whole workflow.
+
+        Args:
+            sessions: All sessions belonging to the workflow
+
+        Returns:
+            P50 output tokens per second over the last 5 minutes, or 0.0
+        """
+        all_files: List[InteractionFile] = []
+        for session in sessions:
+            all_files.extend(session.files)
+
+        if not all_files:
+            return 0.0
+
+        # Use the shared activity-timestamp resolver (time_data first, with a
+        # guarded mtime fallback) so this works for SQLite-sourced interactions
+        # whose file_path is a non-existent placeholder. A raw modification_time
+        # read would raise FileNotFoundError in SQLite mode.
+        cutoff_ts = (datetime.now() - timedelta(minutes=5)).timestamp()
+        recent_interactions = [
+            f for f in all_files if self._get_turn_activity_ts(f) >= cutoff_ts
+        ]
+
+        if not recent_interactions:
+            return 0.0
+
+        rate = compute_p50_output_rate(recent_interactions)
+        if rate > 0:
+            return rate
+
+        total_output_tokens = sum(f.tokens.output for f in recent_interactions)
+        if total_output_tokens == 0:
+            return 0.0
+
+        total_duration_ms = 0
+        for f in recent_interactions:
+            if f.time_data and f.time_data.duration_ms:
+                total_duration_ms += f.time_data.duration_ms
+
+        total_duration_seconds = total_duration_ms / 1000
         if total_duration_seconds > 0:
             return total_output_tokens / total_duration_seconds
 
@@ -1617,7 +2362,7 @@ class LiveMonitor:
                 raw_mode_enabled = self._enable_raw_input_mode()
                 self._live_status_line = "Ready."
                 self.console.print(
-                    "[status.info]Interactive switching enabled: press n/p/l/1..9/q[/status.info]"
+                    "[status.info]Interactive controls enabled: press n/p/l/t/1..9/q[/status.info]"
                 )
                 if not raw_mode_enabled:
                     self.console.print(
@@ -1695,6 +2440,78 @@ class LiveMonitor:
                                             next_refresh_at = (
                                                 time.time() + refresh_interval
                                             )
+                                continue
+
+                            if command in {"t", "turn", "turns", "history"}:
+
+                                def refresh_current_turn_workflow() -> Any:
+                                    nonlocal \
+                                        active_workflows, \
+                                        descriptors, \
+                                        current_workflow, \
+                                        current_workflow_id
+                                    active_workflows = (
+                                        self._get_sqlite_active_workflows(
+                                            allow_fallback=not bool(
+                                                selected_session_id
+                                            ),
+                                            selected_session_id=selected_session_id,
+                                        )
+                                    )
+                                    descriptors = self._describe_sqlite_workflows(
+                                        active_workflows
+                                    )
+                                    if not active_workflows:
+                                        return current_workflow
+
+                                    if selected_session_id:
+                                        refreshed_current = (
+                                            self._resolve_selected_sqlite_workflow(
+                                                active_workflows, selected_session_id
+                                            )
+                                        )
+                                    else:
+                                        refreshed_current = next(
+                                            (
+                                                workflow
+                                                for workflow in active_workflows
+                                                if workflow["workflow_id"]
+                                                == current_workflow_id
+                                            ),
+                                            None,
+                                        )
+                                    if refreshed_current is None:
+                                        refreshed_current = (
+                                            self._select_most_recent_workflow(
+                                                active_workflows
+                                            )
+                                        )
+
+                                    if refreshed_current:
+                                        current_workflow = refreshed_current
+                                        current_workflow_id = current_workflow[
+                                            "workflow_id"
+                                        ]
+                                        self.prev_tracked |= set(
+                                            s.session_id
+                                            for s in current_workflow["all_sessions"]
+                                        )
+                                    return current_workflow
+
+                                self._inspect_recent_turns_during_live(
+                                    live,
+                                    current_workflow,
+                                    "Recent Turns",
+                                    interactive_switch,
+                                    refresh_workflow=refresh_current_turn_workflow,
+                                )
+                                live.update(
+                                    self._generate_sqlite_workflow_dashboard(
+                                        current_workflow,
+                                        self._controls_hint(interactive_switch),
+                                    )
+                                )
+                                next_refresh_at = time.time() + refresh_interval
                                 continue
 
                             new_id, should_quit = self._handle_live_switch_command(
@@ -1897,6 +2714,9 @@ class LiveMonitor:
         # Calculate per-model context usage for SQLite workflow
         per_model_context = self._get_sqlite_per_model_context_usage(workflow)
 
+        # Workflow-wide live output rate (tok/s) for the Output Rate panel
+        burn_rate = self._calculate_workflow_output_rate(workflow["all_sessions"])
+
         # Get model pricing for quota
         quota = None
         if recent_file:
@@ -1929,6 +2749,7 @@ class LiveMonitor:
             tool_stats=tool_stats,
             tool_stats_by_model=tool_stats_by_model,
             controls_hint=controls_hint,
+            burn_rate=burn_rate,
         )
 
     def _calculate_sqlite_per_model_output_rates(

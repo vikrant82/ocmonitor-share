@@ -105,11 +105,28 @@ class TestParseMessageData:
 
     def test_nested_null_model_id_falls_back_to_unknown(self):
         """Null nested model.modelID in SQLite payload should fall back to unknown."""
-        message_data = json.dumps(
-            {"role": "assistant", "model": {"modelID": None}}
-        )
+        message_data = json.dumps({"role": "assistant", "model": {"modelID": None}})
 
         interaction = SQLiteProcessor.parse_message_data(message_data, "ses_test")
 
         assert interaction is not None
         assert interaction.model_id == "unknown"
+
+    def test_parse_message_data_preserves_sqlite_message_metadata(self):
+        """SQLite message metadata should be available for turn detail part lookup."""
+        message_data = json.dumps(
+            {"role": "assistant", "modelID": "test-model", "tokens": {"input": 1}}
+        )
+
+        interaction = SQLiteProcessor.parse_message_data(
+            message_data,
+            "ses_test",
+            message_id="msg_test",
+            time_created=123,
+            time_updated=456,
+        )
+
+        assert interaction is not None
+        assert interaction.raw_data["_message_id"] == "msg_test"
+        assert interaction.raw_data["_message_time_created"] == 123
+        assert interaction.raw_data["_message_time_updated"] == 456

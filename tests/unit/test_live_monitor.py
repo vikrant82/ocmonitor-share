@@ -796,7 +796,10 @@ class TestLiveMonitorSelection:
         workflow_a = {
             "workflow_id": "workflow-a",
             "main_session": MagicMock(session_id="main-a"),
-            "all_sessions": [MagicMock(session_id="main-a"), MagicMock(session_id="sub-a1")],
+            "all_sessions": [
+                MagicMock(session_id="main-a"),
+                MagicMock(session_id="sub-a1"),
+            ],
             "display_title": "Workflow A",
             "project_name": "proj-a",
             "session_count": 2,
@@ -882,17 +885,14 @@ class TestLiveMonitorSelection:
             lambda sessions: [ended_workflow],
         )
 
-        result = monitor._get_file_active_workflows(
-            str(tmp_path), allow_fallback=False
-        )
+        result = monitor._get_file_active_workflows(str(tmp_path), allow_fallback=False)
         assert result == []
 
     def test_file_loader_falls_back_to_recent_workflows(self, monkeypatch, tmp_path):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
 
         ended_workflows = [
-            SimpleNamespace(workflow_id=f"wf-{i}", end_time=1)
-            for i in range(10)
+            SimpleNamespace(workflow_id=f"wf-{i}", end_time=1) for i in range(10)
         ]
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.FileProcessor.load_all_sessions",
@@ -904,13 +904,13 @@ class TestLiveMonitorSelection:
             lambda sessions: ended_workflows,
         )
 
-        result = monitor._get_file_active_workflows(
-            str(tmp_path), allow_fallback=True
-        )
+        result = monitor._get_file_active_workflows(str(tmp_path), allow_fallback=True)
         assert len(result) == 5
         assert [w.workflow_id for w in result] == [f"wf-{i}" for i in range(5)]
 
-    def test_sqlite_loader_disables_fallback_in_pinned_mode(self, monkeypatch, tmp_path):
+    def test_sqlite_loader_disables_fallback_in_pinned_mode(
+        self, monkeypatch, tmp_path
+    ):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
 
         db_path = tmp_path / "opencode.db"
@@ -992,9 +992,7 @@ class TestLiveMonitorSelection:
     def test_apply_switch_command_selection_only_switches_on_new_id(self):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
 
-        selected, switched = monitor._apply_switch_command_selection(
-            None, "wf-1", None
-        )
+        selected, switched = monitor._apply_switch_command_selection(None, "wf-1", None)
         assert switched is False
         assert selected is None
 
@@ -1191,7 +1189,9 @@ class TestExecuteWorkflowSwitch:
 class TestHandleListCommand:
     """Tests for the _handle_list_command refactored method."""
 
-    def test_handle_list_command_returns_unchanged_when_no_picker_selection(self, tmp_path):
+    def test_handle_list_command_returns_unchanged_when_no_picker_selection(
+        self, tmp_path
+    ):
         """Should return unchanged state when picker returns None."""
         from ocmonitor.services.live_monitor import LiveMonitor
         from ocmonitor.config import PathsConfig
@@ -1271,16 +1271,18 @@ class TestHandleNavigationCommand:
         mock_workflow = MagicMock()
         mock_workflow.workflow_id = "wf-1"
 
-        should_quit, workflow_id, workflow, selected = monitor._handle_navigation_command(
-            command="q",
-            descriptors=[{"workflow_id": "wf-1"}],
-            selected_session_id="wf-1",
-            current_workflow_id="wf-1",
-            current_workflow=mock_workflow,
-            active_workflows=[mock_workflow],
-            live=MagicMock(),
-            interactive_switch=True,
-            refresh_interval=5,
+        should_quit, workflow_id, workflow, selected = (
+            monitor._handle_navigation_command(
+                command="q",
+                descriptors=[{"workflow_id": "wf-1"}],
+                selected_session_id="wf-1",
+                current_workflow_id="wf-1",
+                current_workflow=mock_workflow,
+                active_workflows=[mock_workflow],
+                live=MagicMock(),
+                interactive_switch=True,
+                refresh_interval=5,
+            )
         )
 
         assert should_quit is True
@@ -1309,16 +1311,18 @@ class TestHandleNavigationCommand:
 
         live_mock = MagicMock()
 
-        should_quit, workflow_id, workflow, selected = monitor._handle_navigation_command(
-            command="n",
-            descriptors=[{"workflow_id": "wf-1"}, {"workflow_id": "wf-2"}],
-            selected_session_id=None,
-            current_workflow_id="wf-1",
-            current_workflow=workflow_1,
-            active_workflows=[workflow_1, workflow_2],
-            live=live_mock,
-            interactive_switch=True,
-            refresh_interval=5,
+        should_quit, workflow_id, workflow, selected = (
+            monitor._handle_navigation_command(
+                command="n",
+                descriptors=[{"workflow_id": "wf-1"}, {"workflow_id": "wf-2"}],
+                selected_session_id=None,
+                current_workflow_id="wf-1",
+                current_workflow=workflow_1,
+                active_workflows=[workflow_1, workflow_2],
+                live=live_mock,
+                interactive_switch=True,
+                refresh_interval=5,
+            )
         )
 
         assert should_quit is False
@@ -1348,16 +1352,18 @@ class TestHandleNavigationCommand:
 
         live_mock = MagicMock()
 
-        should_quit, workflow_id, workflow, selected = monitor._handle_navigation_command(
-            command="p",
-            descriptors=[{"workflow_id": "wf-1"}, {"workflow_id": "wf-2"}],
-            selected_session_id=None,
-            current_workflow_id="wf-2",
-            current_workflow=workflow_2,
-            active_workflows=[workflow_1, workflow_2],
-            live=live_mock,
-            interactive_switch=True,
-            refresh_interval=5,
+        should_quit, workflow_id, workflow, selected = (
+            monitor._handle_navigation_command(
+                command="p",
+                descriptors=[{"workflow_id": "wf-1"}, {"workflow_id": "wf-2"}],
+                selected_session_id=None,
+                current_workflow_id="wf-2",
+                current_workflow=workflow_2,
+                active_workflows=[workflow_1, workflow_2],
+                live=live_mock,
+                interactive_switch=True,
+                refresh_interval=5,
+            )
         )
 
         assert should_quit is False
@@ -1390,20 +1396,22 @@ class TestHandleNavigationCommand:
 
         live_mock = MagicMock()
 
-        should_quit, workflow_id, workflow, selected = monitor._handle_navigation_command(
-            command="3",
-            descriptors=[
-                {"workflow_id": "wf-1"},
-                {"workflow_id": "wf-2"},
-                {"workflow_id": "wf-3"},
-            ],
-            selected_session_id=None,
-            current_workflow_id="wf-1",
-            current_workflow=workflow_1,
-            active_workflows=[workflow_1, workflow_2, workflow_3],
-            live=live_mock,
-            interactive_switch=True,
-            refresh_interval=5,
+        should_quit, workflow_id, workflow, selected = (
+            monitor._handle_navigation_command(
+                command="3",
+                descriptors=[
+                    {"workflow_id": "wf-1"},
+                    {"workflow_id": "wf-2"},
+                    {"workflow_id": "wf-3"},
+                ],
+                selected_session_id=None,
+                current_workflow_id="wf-1",
+                current_workflow=workflow_1,
+                active_workflows=[workflow_1, workflow_2, workflow_3],
+                live=live_mock,
+                interactive_switch=True,
+                refresh_interval=5,
+            )
         )
 
         assert should_quit is False
@@ -1432,7 +1440,10 @@ class TestLiveMonitorProviderAwareRegressions:
             )
         }
 
-        monitor = LiveMonitor(pricing_data=pricing_data, paths_config=PathsConfig(messages_dir=str(tmp_path)))
+        monitor = LiveMonitor(
+            pricing_data=pricing_data,
+            paths_config=PathsConfig(messages_dir=str(tmp_path)),
+        )
 
         inter_file = tmp_path / "inter_0001.json"
         inter_file.write_text("{}")
@@ -1454,3 +1465,253 @@ class TestLiveMonitorProviderAwareRegressions:
 
         assert "claude-sonnet-4.5" in result
         assert result["claude-sonnet-4.5"]["context_window"] == 100000
+
+
+class TestRecentTurnInspection:
+    """Tests for live-monitor recent-turn history inspection."""
+
+    def _make_turn(self, tmp_path, session_id, name, created, total_output=100):
+        from ocmonitor.models.session import InteractionFile, TimeData, TokenUsage
+
+        path = tmp_path / name
+        path.write_text("{}")
+        return InteractionFile(
+            file_path=path,
+            session_id=session_id,
+            model_id="claude-sonnet-4.5",
+            provider_id="github-copilot",
+            tokens=TokenUsage(
+                input=1000,
+                output=total_output,
+                cache_read=200,
+                cache_write=50,
+            ),
+            time_data=TimeData(created=created, completed=created + 2000),
+            project_path=str(tmp_path),
+            agent="build",
+            finish_reason="stop",
+            raw_data={
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": f"Assistant summary for {name}"},
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {"status": "completed", "input": "pytest -q"},
+                    },
+                ],
+                "user": f"User request for {name}",
+            },
+        )
+
+    def test_describe_recent_turns_orders_by_activity_and_limits(self, tmp_path):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        older = self._make_turn(tmp_path, "ses-1", "older.json", 1_000)
+        newer = self._make_turn(tmp_path, "ses-1", "newer.json", 3_000)
+        newest = self._make_turn(tmp_path, "ses-2", "newest.json", 5_000)
+        workflow = SimpleNamespace(
+            all_sessions=[
+                SessionData(session_id="ses-1", files=[older, newer]),
+                SessionData(session_id="ses-2", files=[newest]),
+            ]
+        )
+
+        descriptors = monitor._describe_recent_turns(workflow, limit=2)
+
+        assert [d["turn"].file_name for d in descriptors] == [
+            "newest.json",
+            "newer.json",
+        ]
+        assert descriptors[0]["tokens_total"] == newest.tokens.total
+
+    def test_prompt_for_recent_turn_selection_accepts_number(self, tmp_path):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1_000)
+        workflow = SimpleNamespace(
+            all_sessions=[SessionData(session_id="ses-1", files=[turn])]
+        )
+        monitor._print_recent_turn_picker_table = MagicMock()
+        monitor.console.input = MagicMock(return_value="1")
+
+        selected = monitor._prompt_for_recent_turn_selection(workflow, "Recent Turns")
+
+        assert selected is turn
+
+    def test_prompt_for_recent_turn_selection_paginates(self, tmp_path):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turns = [
+            self._make_turn(tmp_path, "ses-1", f"turn-{idx}.json", idx * 1000)
+            for idx in range(52)
+        ]
+        workflow = SimpleNamespace(
+            all_sessions=[SessionData(session_id="ses-1", files=turns)]
+        )
+        monitor._print_recent_turn_picker_table = MagicMock()
+        monitor.console.input = MagicMock(side_effect=["n", "51"])
+
+        selected = monitor._prompt_for_recent_turn_selection(workflow, "Recent Turns")
+
+        assert selected is turns[1]
+        assert monitor._print_recent_turn_picker_table.call_args_list[0].args[2] == 0
+        assert monitor._print_recent_turn_picker_table.call_args_list[1].args[2] == 1
+
+    def test_prompt_for_recent_turn_selection_refreshes_turns(self, tmp_path):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        old_turn = self._make_turn(tmp_path, "ses-1", "old.json", 1_000)
+        new_turn = self._make_turn(tmp_path, "ses-1", "new.json", 3_000)
+        workflow = SimpleNamespace(
+            all_sessions=[SessionData(session_id="ses-1", files=[old_turn])]
+        )
+        refreshed_workflow = SimpleNamespace(
+            all_sessions=[SessionData(session_id="ses-1", files=[new_turn])]
+        )
+        monitor._print_recent_turn_picker_table = MagicMock()
+        monitor.console.input = MagicMock(side_effect=["r", "1"])
+        refresh_workflow = MagicMock(return_value=refreshed_workflow)
+
+        selected = monitor._prompt_for_recent_turn_selection(
+            workflow, "Recent Turns", refresh_workflow=refresh_workflow
+        )
+
+        assert selected is new_turn
+        refresh_workflow.assert_called_once()
+        assert monitor._print_recent_turn_picker_table.call_count == 2
+
+    def test_turn_message_and_tool_summaries_use_raw_data(self, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1_000)
+
+        message = monitor._extract_turn_message_summary(turn)
+        tools = monitor._extract_turn_tool_summary(turn)
+
+        assert message["user"] == "User request for turn.json"
+        assert "Assistant summary" in message["assistant"]
+        assert tools == [
+            {"tool": "bash", "status": "completed", "summary": "pytest -q"}
+        ]
+
+    def test_turn_activity_uses_sqlite_message_metadata_fallback(self, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1_000)
+        turn.time_data = None
+        turn.raw_data["_message_time_created"] = 10_000
+        turn.raw_data["_message_time_updated"] = 12_000
+
+        assert monitor._get_turn_activity_ts(turn) == 12.0
+
+    def test_turn_message_summary_uses_sqlite_part_text_and_user_message(
+        self, tmp_path
+    ):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1_000)
+        turn.raw_data = {
+            "role": "assistant",
+            "_message_id": "msg-2",
+            "_message_time_created": 2_000,
+        }
+        monitor._load_sqlite_part_payloads_for_turn = MagicMock(
+            return_value=[{"type": "text", "text": "Assistant text from part"}]
+        )
+        monitor._load_sqlite_user_text_for_turn = MagicMock(
+            return_value="User text from previous message"
+        )
+
+        message = monitor._extract_turn_message_summary(turn)
+
+        assert message["user"] == "User text from previous message"
+        assert message["assistant"] == "Assistant text from part"
+
+    def test_recent_turn_picker_preview_includes_user_assistant_and_tools(
+        self, tmp_path
+    ):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1_000)
+        descriptors = monitor._describe_recent_turns(
+            SimpleNamespace(all_sessions=[SimpleNamespace(non_zero_token_files=[turn])])
+        )
+        monitor.console.print = MagicMock()
+
+        monitor._print_recent_turn_picker_table(descriptors, "Recent Turns")
+
+        table = monitor.console.print.call_args.args[0]
+        rendered_rows = [str(column._cells[0]) for column in table.columns]
+        headers = [column.header for column in table.columns]
+        assert "Session" not in headers
+        assert headers[4:9] == [
+            "Input",
+            "Output",
+            "Cache Read",
+            "Cache Write",
+            "Turn Tokens",
+        ]
+        assert "1,000" in rendered_rows
+        assert "100" in rendered_rows
+        assert "200" in rendered_rows
+        assert "50" in rendered_rows
+        assert "1,350" in rendered_rows
+        assert any("U: User request" in cell for cell in rendered_rows)
+        assert any("A: Assistant summary" in cell for cell in rendered_rows)
+        assert any("Tools: bash:completed" in cell for cell in rendered_rows)
+
+    def test_inspect_recent_turns_pauses_live_and_restores_raw_mode(self, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        live = MagicMock()
+        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1_000)
+        monitor._stdin_fd = 9
+        monitor._stdin_termios_state = object()
+        monitor._disable_raw_input_mode = MagicMock()
+        monitor._enable_raw_input_mode = MagicMock(return_value=True)
+        monitor._prompt_for_recent_turn_selection = MagicMock(side_effect=[turn, None])
+        monitor._print_turn_detail = MagicMock()
+
+        monitor._inspect_recent_turns_during_live(
+            live, SimpleNamespace(all_sessions=[]), "Recent Turns", True
+        )
+
+        live.stop.assert_called_once()
+        live.start.assert_called_once_with(refresh=True)
+        monitor._disable_raw_input_mode.assert_called_once()
+        monitor._enable_raw_input_mode.assert_called_once()
+        monitor._print_turn_detail.assert_called_once_with(turn)
+        assert monitor._live_status_line is not None
+        assert "Viewed turn turn.json" in monitor._live_status_line
+
+    def test_inspect_recent_turns_can_select_another_turn(self, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        live = MagicMock()
+        turn_1 = self._make_turn(tmp_path, "ses-1", "turn-1.json", 1_000)
+        turn_2 = self._make_turn(tmp_path, "ses-1", "turn-2.json", 2_000)
+        monitor._prompt_for_recent_turn_selection = MagicMock(
+            side_effect=[turn_1, turn_2, None]
+        )
+        monitor._print_turn_detail = MagicMock()
+
+        monitor._inspect_recent_turns_during_live(
+            live, SimpleNamespace(all_sessions=[]), "Recent Turns", True
+        )
+
+        assert monitor._print_turn_detail.call_args_list[0].args[0] is turn_1
+        assert monitor._print_turn_detail.call_args_list[1].args[0] is turn_2
+
+    def test_poll_live_switch_command_maps_t_to_turns(self, monkeypatch):
+        import os
+        import select
+        import sys
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        monitor._stdin_fd = 42
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(
+            select, "select", lambda *args, **kwargs: ([sys.stdin], [], [])
+        )
+        monkeypatch.setattr(os, "read", lambda fd, size: b"t")
+
+        assert monitor._poll_live_switch_command() == "turns"

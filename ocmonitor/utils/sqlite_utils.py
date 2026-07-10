@@ -128,13 +128,21 @@ class SQLiteProcessor:
 
     @classmethod
     def parse_message_data(
-        cls, message_data_str: str, session_id: str
+        cls,
+        message_data_str: str,
+        session_id: str,
+        message_id: Optional[str] = None,
+        time_created: Optional[int] = None,
+        time_updated: Optional[int] = None,
     ) -> Optional[InteractionFile]:
         """Parse a message data JSON string into an InteractionFile.
 
         Args:
             message_data_str: JSON string from message.data column
             session_id: ID of the session this message belongs to
+            message_id: Optional SQLite message ID for related part lookup
+            time_created: Optional SQLite message creation timestamp
+            time_updated: Optional SQLite message update timestamp
 
         Returns:
             InteractionFile object or None if parsing failed
@@ -159,6 +167,13 @@ class SQLiteProcessor:
         model_id = cls._extract_model_name(data).lower()
         provider_id = (data.get("providerID") or "").lower() or None
         finish_reason = data.get("finish")
+        raw_data = dict(data)
+        if message_id is not None:
+            raw_data["_message_id"] = message_id
+        if time_created is not None:
+            raw_data["_message_time_created"] = time_created
+        if time_updated is not None:
+            raw_data["_message_time_updated"] = time_updated
 
         return InteractionFile(
             file_path=Path("sqlite") / session_id,  # Placeholder path
@@ -170,7 +185,7 @@ class SQLiteProcessor:
             project_path=project_path,
             agent=agent,
             finish_reason=finish_reason,
-            raw_data=data,
+            raw_data=raw_data,
         )
 
     @classmethod
@@ -187,13 +202,19 @@ class SQLiteProcessor:
             List of InteractionFile objects
         """
         cursor = conn.execute(
-            "SELECT data FROM message WHERE session_id = ? ORDER BY time_created",
+            "SELECT id, time_created, time_updated, data FROM message WHERE session_id = ? ORDER BY time_created",
             (session_id,),
         )
 
         interactions = []
         for row in cursor:
-            interaction = cls.parse_message_data(row["data"], session_id)
+            interaction = cls.parse_message_data(
+                row["data"],
+                session_id,
+                message_id=row["id"],
+                time_created=row["time_created"],
+                time_updated=row["time_updated"],
+            )
             if interaction:
                 interactions.append(interaction)
 
@@ -463,14 +484,17 @@ class SQLiteProcessor:
         conn = cls._get_connection(db_path)
         try:
             # Get recent parent sessions (no parent_id)
-            parent_rows = conn.execute("""
+            parent_rows = conn.execute(
+                """
                 SELECT s.*, p.worktree as project_path, p.name as project_name
                 FROM session s
                 LEFT JOIN project p ON s.project_id = p.id
                 WHERE s.parent_id IS NULL
                 ORDER BY s.time_created DESC
                 LIMIT ?
-            """, (limit * 5,)).fetchall()
+            """,
+                (limit * 5,),
+            ).fetchall()
 
             if not parent_rows:
                 return []
