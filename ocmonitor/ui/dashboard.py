@@ -98,11 +98,78 @@ class DashboardUI:
             return title[: max_length - 3] + "..."
         return title
 
+    def _describe_activity(
+        self, last_activity_seconds: Optional[float]
+    ) -> Tuple[str, str]:
+        """Map seconds-since-last-activity to a (status_label, style) pair.
+
+        Mirrors the thresholds used by LiveMonitor.get_session_status so the
+        live header and the status API agree on what "active/idle" means.
+        """
+        if last_activity_seconds is None:
+            return "unknown", "dim"
+        if last_activity_seconds < 60:
+            return "active", "status.success"
+        if last_activity_seconds < 300:
+            return "recent", "status.info"
+        if last_activity_seconds < 1800:
+            return "idle", "status.warning"
+        return "inactive", "status.error"
+
+    def _format_activity_indicator(
+        self, last_activity_seconds: Optional[float]
+    ) -> str:
+        """Build a compact colored '● STATUS (Xs ago)' indicator for the header."""
+        label, style = self._describe_activity(last_activity_seconds)
+        if last_activity_seconds is None:
+            ago = "no activity yet"
+        else:
+            secs = int(last_activity_seconds)
+            if secs < 60:
+                ago = f"{secs}s ago"
+            elif secs < 3600:
+                ago = f"{secs // 60}m ago"
+            elif secs < 86400:
+                ago = f"{secs // 3600}h ago"
+            else:
+                ago = f"{secs // 86400}d ago"
+        return f"[{style}]● {label.upper()}[/{style}] [dim]({ago})[/dim]"
+
+    def _recent_activity_seconds(
+        self, recent_file: Optional[Any]
+    ) -> Optional[float]:
+        """Seconds since the most recent interaction, robust to placeholder paths.
+
+        Prefers embedded time_data (which is present for SQLite-sourced
+        interactions whose file_path is a non-existent placeholder) and only
+        falls back to the filesystem mtime for file-based interactions. A raw
+        modification_time read would raise FileNotFoundError in SQLite mode.
+        """
+        if recent_file is None:
+            return None
+
+        activity_ts: Optional[float] = None
+        time_data = getattr(recent_file, "time_data", None)
+        if time_data is not None:
+            if getattr(time_data, "completed", None) is not None:
+                activity_ts = time_data.completed / 1000
+            elif getattr(time_data, "created", None) is not None:
+                activity_ts = time_data.created / 1000
+
+        if activity_ts is None:
+            try:
+                activity_ts = recent_file.modification_time.timestamp()
+            except (FileNotFoundError, OSError, ValueError, AttributeError, TypeError):
+                return None
+
+        return max(0.0, datetime.now().timestamp() - activity_ts)
+
     def create_header(
         self,
         session: SessionData,
         workflow: Optional[SessionWorkflow] = None,
         controls_hint: Optional[str] = None,
+        activity_indicator: Optional[str] = None,
     ) -> Panel:
         """Create header panel with session info."""
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -124,6 +191,11 @@ class DashboardUI:
                 f"[metric.label]Session:[/metric.label] [dashboard.session]{session.display_title}[/dashboard.session]  "
                 f"[metric.label]Updated:[/metric.label] [metric.value]{current_time}[/metric.value]  "
                 f"[metric.label]Interactions:[/metric.label] [metric.value]{session.interaction_count}[/metric.value]"
+            )
+
+        if activity_indicator:
+            header_text += (
+                f"  [metric.label]Activity:[/metric.label] {activity_indicator}"
             )
 
         return Panel(
@@ -1000,6 +1072,7 @@ class DashboardUI:
         tool_stats: Optional[List[ToolUsageStats]] = None,
         tool_stats_by_model: Optional[List[ModelToolUsage]] = None,
         controls_hint: Optional[str] = None,
+        burn_rate: float = 0.0,
     ) -> Layout:
         """Create the complete dashboard layout."""
         layout = Layout()
@@ -1008,10 +1081,16 @@ class DashboardUI:
         per_model_output_rates = per_model_output_rates or {}
         per_model_context = per_model_context or {}
 
+        # Derive a live activity indicator from the most recent interaction.
+        last_activity_seconds = self._recent_activity_seconds(recent_file)
+        activity_indicator = self._format_activity_indicator(last_activity_seconds)
+
         # Use workflow data if available, otherwise use session data
         if workflow and workflow.has_sub_agents:
             # Create panels using workflow totals
-            header = self.create_header(session, workflow)
+            header = self.create_header(
+                session, workflow, activity_indicator=activity_indicator
+            )
             token_panel = self.create_workflow_token_panel(workflow, recent_file)
             status_panel = self.create_workflow_status_panel(
                 workflow, pricing_data, quota
@@ -1021,7 +1100,9 @@ class DashboardUI:
             )
         else:
             # Create panels using single session data
-            header = self.create_header(session)
+            header = self.create_header(
+                session, activity_indicator=activity_indicator
+            )
             token_panel = self.create_token_panel(session, recent_file)
             status_panel = self.create_status_panel(session, pricing_data, quota)
             model_panel = self.create_model_panel(
@@ -1029,6 +1110,7 @@ class DashboardUI:
             )
 
         recent_file_panel = self.create_recent_file_panel(recent_file)
+        burn_rate_panel = self.create_burn_rate_panel(burn_rate)
 
         # Determine which tool display to use based on model count
         by_model = tool_stats_by_model or []
@@ -1106,11 +1188,13 @@ class DashboardUI:
                 Layout(name="models_tools", minimum_size=4),  # Model + Tool breakdown
             )
 
-        # Metrics section: 3-column layout (Tokens 50% | Status 25% | Recent 25%)
+        # Metrics section: 4-column layout
+        # (Tokens 40% | Status 20% | Output Rate 20% | Recent 20%)
         layout["metrics"].split_row(
-            Layout(token_panel, ratio=2),  # 50% - token data (most content)
-            Layout(status_panel, ratio=1),  # 25% - cost + time combined
-            Layout(recent_file_panel, ratio=1),  # 25% - recent file info
+            Layout(token_panel, ratio=2),  # token data (most content)
+            Layout(status_panel, ratio=1),  # cost + time combined
+            Layout(burn_rate_panel, ratio=1),  # live output tok/s
+            Layout(recent_file_panel, ratio=1),  # recent file info
         )
 
         # Models + Tools section: Full width to tools when using grid (model info embedded in tool panels)
