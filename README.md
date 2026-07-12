@@ -10,6 +10,33 @@ Transform your OpenCode usage data into beautiful, actionable insights with comp
 
 **⚠️ Disclaimer** - This application is not affiliated with OpenCode AI. It is an independent community tool for monitoring OpenCode usage.
 
+---
+
+## 🍴 About This Fork
+
+This is a maintained fork of [Shlomob/ocmonitor-share](https://github.com/Shlomob/ocmonitor-share) with enhanced live monitoring capabilities, better workflow management, and improved token analytics.
+
+### What's New in This Fork
+
+| Feature | Description |
+|---------|-------------|
+| **Agent/Model Split Panes** | Live dashboard splits model panes by agent, so the same model used by different agents appears separately |
+| **Recent Workflow Picker** | Picker shows active + recent workflows (use `--last N` to limit, e.g. `--pick --last 10`) |
+| **Richer Token Details** | Live dashboard shows total, input, output, cache read/write, cost, context, and output-rate per model |
+| **Per-Tool Token Stats** | Attributed per-tool token statistics in SQLite-backed dashboards with double-count prevention |
+| **Activity Indicators** | Visual activity indicators on the live dashboard for better session awareness |
+| **Recent Turns Inspector** | Press `t` in live dashboard to inspect all individual turns with per-turn pricing, token breakdown, and detailed turn views |
+| **`ocmonitor.sh` Launcher** | Convenient shell script to run from checkout with local virtualenv |
+
+### Merged Enhancements
+
+- [#1](https://github.com/vikrant82/ocmonitor-share/pull/1) — Enhanced live dashboard token details and per-tool stats
+- [#2](https://github.com/vikrant82/ocmonitor-share/pull/2) — Split live dashboard model panes by agent
+- [#3](https://github.com/vikrant82/ocmonitor-share/pull/3) — Show recent workflows in live picker (with `--last N` limit)
+- [#4](https://github.com/vikrant82/ocmonitor-share/pull/4) — Live dashboard activity indicators, SQLite parsing improvements, and Recent Turns inspector
+
+---
+
 [![Sessions Summary Screenshot](screenshots/sessions-summary.png)](screenshots/sessions-summary.png)
 
 ## 🌟 Features
@@ -265,6 +292,9 @@ ocmonitor live --interval 10
 # (also enables interactive switching controls by default)
 ocmonitor live --pick
 
+# Limit picker to N most recent workflows
+ocmonitor live --pick --last 10
+
 # Pin live monitor to a specific workflow/session ID
 ocmonitor live --session-id ses_abc123
 
@@ -290,10 +320,46 @@ When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--sessi
 - 📝 Human-readable session titles instead of cryptic IDs
 - 🔗 **Workflow Tracking** - Automatically tracks entire workflow including sub-agents (explore, etc.)
 - 🔧 **Tool Usage Stats** - Shows success rates for tools (bash, read, edit, etc.) with color-coded progress bars
+- 🔍 **Recent Turns Inspector** - Press `t` to inspect all individual turns with per-turn pricing, token breakdown, and detailed turn views
+- 🎮 **Interactive Controls** - `n`=next, `p`=prev, `l`=list, `t`=turns, `1..9`=jump, `q`=quit
+
+**Interactive Controls:**
+- `n` / `p` - Next/previous workflow
+- `l` / `s` - List all workflows (picker)
+- `t` - Recent turns inspector (shows all turns with pricing)
+- `1`..`9` - Jump to workflow by number
+- `q` - Quit live monitoring
 
 [![Live Dashboard Screenshot](screenshots/live_dashboard.png)](screenshots/live_dashboard.png)
 
 *Click image to view full-size screenshot of the live monitoring dashboard*
+
+#### `t` — Recent Turns Inspector
+
+Press `t` during live monitoring to inspect all individual turns in the current workflow. This shows per-turn pricing, token breakdown, and duration for every assistant turn.
+
+```bash
+# During live monitoring, press 't' to open the turns inspector
+# Or use --pick to select a workflow first, then press 't'
+```
+
+**Turns List View:**
+- Paginated display (e.g., "page 1/4, 154 turns")
+- Columns: #, When, Agent, Model, Input, Output, Cache Read, Cache Write, Turn Tokens, Cost, Duration, Preview
+- Press `n`/`p` to navigate pages, `r` to refresh, `q` to return to live dashboard
+
+**Turn Detail View:**
+Select any turn number to see full details:
+- Role, Session ID, Agent, Project, Model
+- Activity timestamp, Duration, Finish reason
+- Full token breakdown (Input, Output, Cache Read, Cache Write, Total)
+- Cost and Output Rate (tok/s)
+- Assistant message preview
+- Tool calls with status and preview
+
+[![Recent Turns Inspector Screenshot](screenshots/recent_turns.png)](screenshots/recent_turns.png)
+
+*Click image to view full-size screenshot of the recent turns inspector*
 
 ### Model Usage Breakdown
 
