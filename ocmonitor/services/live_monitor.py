@@ -207,9 +207,20 @@ class LiveMonitor:
         base_path: str,
         allow_fallback: bool = True,
         selected_session_id: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> List[SessionWorkflow]:
-        """Load active file-based workflows, optionally falling back to most recent ones."""
-        sessions = FileProcessor.load_all_sessions(base_path, limit=50)
+        """Load active file-based workflows, optionally falling back to most recent ones.
+
+        Args:
+            base_path: Path to session directories.
+            allow_fallback: Whether to include recent historical workflows.
+            selected_session_id: Optional workflow ID to pin.
+            limit: Maximum number of workflows to return. Defaults to 5.
+        """
+        # Load enough sessions to produce the requested number of workflows.
+        # Since multiple sessions group into one workflow, scale up the session limit.
+        sessions_limit = (limit * 10) if limit is not None else 50
+        sessions = FileProcessor.load_all_sessions(base_path, limit=sessions_limit)
         if not sessions:
             return []
 
@@ -246,14 +257,23 @@ class LiveMonitor:
                 active_workflows.append(w)
                 seen_ids.add(w.workflow_id)
 
+        if limit is not None and limit > 0:
+            return active_workflows[:limit]
         return active_workflows[:5]
 
     def _get_sqlite_active_workflows(
         self,
         allow_fallback: bool = True,
         selected_session_id: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Load active SQLite workflows, optionally falling back to most recent ones."""
+        """Load active SQLite workflows, optionally falling back to most recent ones.
+
+        Args:
+            allow_fallback: Whether to include recent historical workflows.
+            selected_session_id: Optional workflow ID to pin.
+            limit: Maximum number of workflows to return. Defaults to 5.
+        """
         db_path = SQLiteProcessor.find_database_path()
         if not db_path:
             return []
@@ -285,13 +305,16 @@ class LiveMonitor:
             return active_workflows
 
         # Combine active and recent workflows, avoiding duplicates (by workflow_id)
-        recent = SQLiteProcessor.get_recent_workflows(db_path, limit=5)
+        recent_limit = limit if limit is not None else 5
+        recent = SQLiteProcessor.get_recent_workflows(db_path, limit=recent_limit)
         seen_ids = {w["workflow_id"] for w in active_workflows}
         for r in recent:
             if r["workflow_id"] not in seen_ids:
                 active_workflows.append(r)
                 seen_ids.add(r["workflow_id"])
 
+        if limit is not None and limit > 0:
+            return active_workflows[:limit]
         return active_workflows[:5]
 
     def _get_latest_sqlite_activity_ts(self, workflow: Dict[str, Any]) -> float:
@@ -477,17 +500,28 @@ class LiveMonitor:
                 continue
             return str(descriptors[selected_idx - 1]["workflow_id"])
 
-    def pick_sqlite_workflow(self) -> Optional[str]:
-        """Interactive SQLite workflow picker."""
-        workflows = self._get_sqlite_active_workflows()
+    def pick_sqlite_workflow(self, last: Optional[int] = None) -> Optional[str]:
+        """Interactive SQLite workflow picker.
+
+        Args:
+            last: Limit number of workflows shown (most recent N only).
+        """
+        workflows = self._get_sqlite_active_workflows(limit=last)
         descriptors = self._describe_sqlite_workflows(workflows)
         return self._prompt_for_workflow_selection(
             descriptors, "Select Workflow (SQLite Live Monitor)"
         )
 
-    def pick_file_workflow(self, base_path: str) -> Optional[str]:
-        """Interactive file workflow picker."""
-        workflows = self._get_file_active_workflows(base_path)
+    def pick_file_workflow(
+        self, base_path: str, last: Optional[int] = None
+    ) -> Optional[str]:
+        """Interactive file workflow picker.
+
+        Args:
+            base_path: Path to session directories.
+            last: Limit number of workflows shown (most recent N only).
+        """
+        workflows = self._get_file_active_workflows(base_path, limit=last)
         descriptors = self._describe_file_workflows(workflows)
         return self._prompt_for_workflow_selection(
             descriptors, "Select Workflow (File Live Monitor)"
@@ -2061,9 +2095,7 @@ class LiveMonitor:
 
         return 0.0
 
-    def _calculate_workflow_output_rate(
-        self, sessions: List[SessionData]
-    ) -> float:
+    def _calculate_workflow_output_rate(self, sessions: List[SessionData]) -> float:
         """Calculate p50 output token rate over the last 5 minutes across sessions.
 
         Pools interactions from every session in a workflow and mirrors the

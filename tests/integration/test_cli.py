@@ -656,6 +656,48 @@ class TestLiveCommand:
         assert captured["kwargs"]["selected_session_id"] == "explicit-session"
         assert captured["kwargs"]["interactive_switch"] is True
 
+    def test_live_last_limits_picker_workflows(self, mock_sessions_dir):
+        """Test --last flag is passed through to the workflow retrieval methods."""
+        runner = CliRunner()
+        captured_limit = {}
+
+        def fake_get_file_workflows(self, base_path, **kwargs):
+            captured_limit["limit"] = kwargs.get("limit")
+            return []
+
+        with patch(
+            "ocmonitor.services.live_monitor.LiveMonitor.validate_monitoring_setup",
+            return_value={
+                "valid": True,
+                "issues": [],
+                "warnings": [],
+                "info": {"sqlite": {"available": False}, "files": {"available": True}},
+            },
+        ), patch(
+            "ocmonitor.services.live_monitor.LiveMonitor._get_file_active_workflows",
+            new=fake_get_file_workflows,
+        ), patch(
+            "ocmonitor.services.live_monitor.LiveMonitor._prompt_for_workflow_selection",
+            return_value="picked-workflow",
+        ), patch(
+            "ocmonitor.services.live_monitor.LiveMonitor.start_monitoring",
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "live",
+                    str(mock_sessions_dir),
+                    "--source",
+                    "files",
+                    "--pick",
+                    "--last",
+                    "5",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert captured_limit.get("limit") == 5
+
 
 class TestMetricsCommand:
     """Tests for metrics CLI command."""
