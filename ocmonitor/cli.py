@@ -44,10 +44,14 @@ def parse_period(ctx, param, value):
     if value is not None:
         if param.name == "year":
             if not isinstance(value, str) or not value.isdigit() or len(value) != 4:
-                raise click.BadParameter("Year must be a valid YYYY format (e.g., 2024)")
+                raise click.BadParameter(
+                    "Year must be a valid YYYY format (e.g., 2024)"
+                )
             year_int = int(value)
             if year_int < 1:
-                raise click.BadParameter("Year must be a valid YYYY format (e.g., 2024)")
+                raise click.BadParameter(
+                    "Year must be a valid YYYY format (e.g., 2024)"
+                )
             return year_int
         return value
     return None
@@ -56,11 +60,11 @@ def parse_period(ctx, param, value):
 @contextmanager
 def cli_error_context(ctx: click.Context, operation_name: str):
     """Context manager for consistent CLI error handling across all commands.
-    
+
     Usage:
         with cli_error_context(ctx, "analyzing sessions"):
             result = perform_operation()
-    
+
     Args:
         ctx: Click context object containing verbose flag
         operation_name: Human-readable description of the operation (for error messages)
@@ -79,9 +83,9 @@ def cli_error_context(ctx: click.Context, operation_name: str):
 
 def handle_output_format(result: Any, output_format: str) -> None:
     """Handle output formatting for CLI results.
-    
+
     Centralizes JSON/CSV/table output logic used across multiple commands.
-    
+
     Args:
         result: The result data to output
         output_format: One of 'json', 'csv', or 'table'
@@ -96,21 +100,21 @@ def handle_output_format(result: Any, output_format: str) -> None:
 
 def resolve_path(path: Optional[str], default_to_messages_dir: bool = True) -> str:
     """Resolve path with appropriate default fallback.
-    
+
     Args:
         path: User-provided path or None
         default_to_messages_dir: If True, default to messages_dir; otherwise use cwd
-        
+
     Returns:
         Resolved path string
     """
     if path:
         return path
-    
+
     cfg = config_manager.config
     if default_to_messages_dir:
         return cfg.paths.messages_dir
-    
+
     return str(Path.cwd())
 
 
@@ -125,11 +129,19 @@ _REPORT_METHOD_MAP = {
     },
     "sessions": {
         "method": "generate_sessions_summary_report",
-        "params": {"base_path": _PATH_PLACEHOLDER, "limit": None, "output_format": "table"},
+        "params": {
+            "base_path": _PATH_PLACEHOLDER,
+            "limit": None,
+            "output_format": "table",
+        },
     },
     "daily": {
         "method": "generate_daily_report",
-        "params": {"base_path": _PATH_PLACEHOLDER, "month": None, "output_format": "table"},
+        "params": {
+            "base_path": _PATH_PLACEHOLDER,
+            "month": None,
+            "output_format": "table",
+        },
     },
     "weekly": {
         "method": "generate_weekly_report",
@@ -143,7 +155,11 @@ _REPORT_METHOD_MAP = {
     },
     "monthly": {
         "method": "generate_monthly_report",
-        "params": {"base_path": _PATH_PLACEHOLDER, "year": None, "output_format": "table"},
+        "params": {
+            "base_path": _PATH_PLACEHOLDER,
+            "year": None,
+            "output_format": "table",
+        },
     },
     "models": {
         "method": "generate_models_report",
@@ -174,7 +190,10 @@ _REPORT_METHOD_MAP = {
     "--config", "-c", type=click.Path(exists=True), help="Path to configuration file"
 )
 @click.option(
-    "--theme", "-t", type=click.Choice(["dark", "light"]), help="Set UI theme (overrides config)"
+    "--theme",
+    "-t",
+    type=click.Choice(["dark", "light"]),
+    help="Set UI theme (overrides config)",
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 @click.option(
@@ -219,11 +238,11 @@ def cli(
             config_manager.reload()
 
         cfg = config_manager.config
-        
+
         # Override theme if provided via CLI
         if theme:
             cfg.ui.theme = theme
-        
+
         # Resolve deprecated flag to the new split flags
         if no_remote:
             no_remote_pricing = True
@@ -232,7 +251,7 @@ def cli(
         # Store flags in context for later use
         ctx.obj["no_remote_pricing"] = no_remote_pricing
         ctx.obj["no_remote_rates"] = no_remote_rates
-            
+
         ctx.obj["config"] = cfg
         ctx.obj["pricing_data"] = config_manager.load_pricing_data(
             no_remote=no_remote_pricing
@@ -243,8 +262,10 @@ def cli(
         resolved_rate = None
         if currency_cfg.remote_rates and not no_remote_rates:
             from .services.rate_fetcher import get_exchange_rate
+
             resolved_rate = get_exchange_rate(currency_cfg)
         from .utils.currency import CurrencyConverter
+
         currency_converter = CurrencyConverter.from_config(currency_cfg, resolved_rate)
         ctx.obj["currency_converter"] = currency_converter
 
@@ -257,10 +278,17 @@ def cli(
         # Initialize services
         analyzer = SessionAnalyzer(ctx.obj["pricing_data"])
         ctx.obj["analyzer"] = analyzer
-        ctx.obj["report_generator"] = ReportGenerator(analyzer, console, currency_converter)
-        ctx.obj["export_service"] = ExportService(cfg.paths.export_dir, currency_converter)
+        ctx.obj["report_generator"] = ReportGenerator(
+            analyzer, console, currency_converter
+        )
+        ctx.obj["export_service"] = ExportService(
+            cfg.paths.export_dir, currency_converter
+        )
         ctx.obj["live_monitor"] = LiveMonitor(
-            ctx.obj["pricing_data"], console, paths_config=cfg.paths, currency_converter=currency_converter
+            ctx.obj["pricing_data"],
+            console,
+            paths_config=cfg.paths,
+            currency_converter=currency_converter,
         )
 
     except Exception as e:
@@ -287,7 +315,9 @@ def cli(
     help="Ignore stored OpenCode cost values and recalculate costs using current pricing config",
 )
 @click.pass_context
-def session(ctx: click.Context, path: Optional[str], output_format: str, recalculate: bool):
+def session(
+    ctx: click.Context, path: Optional[str], output_format: str, recalculate: bool
+):
     """Analyze a single OpenCode session directory.
 
     PATH: Path to session directory (defaults to current directory)
@@ -296,7 +326,9 @@ def session(ctx: click.Context, path: Optional[str], output_format: str, recalcu
 
     with cli_error_context(ctx, "analyzing session"):
         report_generator = ctx.obj["report_generator"]
-        result = report_generator.generate_single_session_report(path, output_format, recalculate)
+        result = report_generator.generate_single_session_report(
+            path, output_format, recalculate
+        )
 
         if result is None:
             click.echo(
@@ -324,10 +356,11 @@ def session(ctx: click.Context, path: Optional[str], output_format: str, recalcu
     "--no-group", is_flag=True, help="Show sessions without workflow grouping"
 )
 @click.option(
-    "--source", "-s",
+    "--source",
+    "-s",
     type=click.Choice(["auto", "sqlite", "files"]),
     default="auto",
-    help="Data source: auto (prefer SQLite), sqlite (v1.2.0+), or files (legacy)"
+    help="Data source: auto (prefer SQLite), sqlite (v1.2.0+), or files (legacy)",
 )
 @click.option(
     "--recalculate",
@@ -361,21 +394,33 @@ def sessions(
 
         # Get data source info
         source_info = analyzer.get_data_source_info()
-        console.print(f"[status.info]Using data source: {source_info['last_used'] or 'auto-detect'}[/status.info]")
+        console.print(
+            f"[status.info]Using data source: {source_info['last_used'] or 'auto-detect'}[/status.info]"
+        )
 
         if limit:
             sessions_list = analyzer.analyze_all_sessions(path, limit)
-            console.print(f"[status.info]Analyzing {len(sessions_list)} most recent sessions...[/status.info]")
+            console.print(
+                f"[status.info]Analyzing {len(sessions_list)} most recent sessions...[/status.info]"
+            )
         else:
             sessions_list = analyzer.analyze_all_sessions(path)
-            console.print(f"[status.info]Analyzing {len(sessions_list)} sessions...[/status.info]")
+            console.print(
+                f"[status.info]Analyzing {len(sessions_list)} sessions...[/status.info]"
+            )
 
         if not sessions_list:
-            console.print("[status.error]No sessions found in the specified directory.[/status.error]")
+            console.print(
+                "[status.error]No sessions found in the specified directory.[/status.error]"
+            )
             ctx.exit(1)
 
         result = report_generator.generate_sessions_summary_report(
-            path, limit, output_format, group_workflows=not no_group, force_recalculate=recalculate
+            path,
+            limit,
+            output_format,
+            group_workflows=not no_group,
+            force_recalculate=recalculate,
         )
 
         handle_output_format(result, output_format)
@@ -383,25 +428,27 @@ def sessions(
 
 def _determine_monitoring_source(source: str, validation: dict) -> tuple[bool, bool]:
     """Determine which monitoring source to use based on validation and user preference.
-    
+
     Args:
         source: User-specified source preference ("auto", "sqlite", or "files")
         validation: Validation result dict containing availability info
-        
+
     Returns:
         Tuple of (use_sqlite, use_files) booleans
     """
     sqlite_available = validation["info"]["sqlite"]["available"]
     files_available = validation["info"]["files"].get("available", False)
-    
+
     use_sqlite = (source == "sqlite") or (source == "auto" and sqlite_available)
-    use_files = (source == "files") or (source == "auto" and not sqlite_available and files_available)
-    
+    use_files = (source == "files") or (
+        source == "auto" and not sqlite_available and files_available
+    )
+
     return use_sqlite, use_files
 
 
 def _prompt_workflow_selection(
-    live_monitor: LiveMonitor,
+    live_monitor,
     use_sqlite: bool,
     use_files: bool,
     sqlite_available: bool,
@@ -411,9 +458,10 @@ def _prompt_workflow_selection(
     pick: bool,
     console,
     config,
+    last: Optional[int] = None,
 ) -> tuple[Optional[str], str]:
     """Prompt user to select a workflow for monitoring.
-    
+
     Args:
         live_monitor: LiveMonitor instance
         use_sqlite: Whether to use SQLite mode
@@ -425,7 +473,8 @@ def _prompt_workflow_selection(
         pick: Whether to prompt for workflow selection
         console: Rich console instance
         config: Configuration instance
-        
+        last: Limit number of workflows shown in picker (most recent N only)
+
     Returns:
         Tuple of (selected_session_id, mode) where mode is "sqlite", "files",
         "cancelled" (user dismissed picker), or "" (no data source available).
@@ -435,9 +484,11 @@ def _prompt_workflow_selection(
 
     if use_sqlite and sqlite_available:
         if pick and not selected_session_id:
-            selected_session_id = live_monitor.pick_sqlite_workflow()
+            selected_session_id = live_monitor.pick_sqlite_workflow(last=last)
             if not selected_session_id:
-                console.print("[status.warning]No workflow selected. Exiting.[/status.warning]")
+                console.print(
+                    "[status.warning]No workflow selected. Exiting.[/status.warning]"
+                )
                 return None, "cancelled"
         return selected_session_id, "sqlite"
 
@@ -446,9 +497,11 @@ def _prompt_workflow_selection(
             path = config.paths.messages_dir
         if pick and not selected_session_id:
             assert path is not None
-            selected_session_id = live_monitor.pick_file_workflow(path)
+            selected_session_id = live_monitor.pick_file_workflow(path, last=last)
             if not selected_session_id:
-                console.print("[status.warning]No workflow selected. Exiting.[/status.warning]")
+                console.print(
+                    "[status.warning]No workflow selected. Exiting.[/status.warning]"
+                )
                 return None, "cancelled"
         return selected_session_id, "files"
 
@@ -457,12 +510,12 @@ def _prompt_workflow_selection(
 
 def _display_validation_results(console, validation: dict, ctx) -> bool:
     """Display validation results and exit if critical errors found.
-    
+
     Args:
         console: Rich console instance
         validation: Validation result dict
         ctx: Click context for exiting
-        
+
     Returns:
         True if validation passed, False if ctx.exit was called
     """
@@ -471,11 +524,11 @@ def _display_validation_results(console, validation: dict, ctx) -> bool:
             console.print(f"[status.error]Error: {issue}[/status.error]")
         ctx.exit(1)
         return False
-    
+
     if validation["warnings"]:
         for warning in validation["warnings"]:
             console.print(f"[status.warning]Warning: {warning}[/status.warning]")
-    
+
     return True
 
 
@@ -501,10 +554,17 @@ def _display_validation_results(console, validation: dict, ctx) -> bool:
     help="Enable in-dashboard workflow switching controls (experimental)",
 )
 @click.option(
-    "--source", "-s",
+    "--source",
+    "-s",
     type=click.Choice(["auto", "sqlite", "files"]),
     default="auto",
-    help="Data source: auto (prefer SQLite), sqlite (v1.2.0+), or files (legacy)"
+    help="Data source: auto (prefer SQLite), sqlite (v1.2.0+), or files (legacy)",
+)
+@click.option(
+    "--last",
+    type=int,
+    default=None,
+    help="Limit the number of workflows shown in the picker (most recent N only)",
 )
 @click.pass_context
 def live(
@@ -516,6 +576,7 @@ def live(
     session_id: Optional[str],
     interactive_switch: bool,
     source: str,
+    last: Optional[int],
 ):
     """Start live dashboard for monitoring the current workflow.
 
@@ -546,10 +607,10 @@ def live(
 
         sqlite_available = validation["info"]["sqlite"]["available"]
         files_available = validation["info"]["files"].get("available", False)
-        
+
         # Determine which monitoring method to use
         use_sqlite, use_files = _determine_monitoring_source(source, validation)
-        
+
         # Prompt for workflow selection
         selected_session_id, mode = _prompt_workflow_selection(
             live_monitor,
@@ -562,10 +623,13 @@ def live(
             pick,
             console,
             config,
+            last=last,
         )
-        
+
         if mode == "":
-            console.print("[status.error]No data source available. Please check OpenCode installation.[/status.error]")
+            console.print(
+                "[status.error]No data source available. Please check OpenCode installation.[/status.error]"
+            )
             ctx.exit(1)
             return
 
@@ -582,7 +646,9 @@ def live(
         elif mode == "files":
             if not path:
                 path = config.paths.messages_dir
-            console.print("[status.success]Starting workflow live dashboard (legacy file mode)[/status.success]")
+            console.print(
+                "[status.success]Starting workflow live dashboard (legacy file mode)[/status.success]"
+            )
             console.print(f"[status.info]Monitoring: {path}[/status.info]")
             console.print(f"[status.info]Update interval: {interval}s[/status.info]")
             live_monitor.start_monitoring(
@@ -604,11 +670,23 @@ def live(
 
 @cli.command()
 @click.argument("path", type=click.Path(exists=True), required=False)
-@click.option("--month", is_flag=False, flag_value="LAST_N_DAYS", default=None, callback=parse_period,
-              help="Month to analyze (YYYY-MM format) or bare for last 30 days")
+@click.option(
+    "--month",
+    is_flag=False,
+    flag_value="LAST_N_DAYS",
+    default=None,
+    callback=parse_period,
+    help="Month to analyze (YYYY-MM format) or bare for last 30 days",
+)
 @click.option("--week", "last_week", is_flag=True, help="Show last 7 days")
-@click.option("--year", is_flag=False, flag_value="LAST_N_DAYS", default=None, callback=parse_period,
-              help="Year to analyze (YYYY) or bare for last 365 days")
+@click.option(
+    "--year",
+    is_flag=False,
+    flag_value="LAST_N_DAYS",
+    default=None,
+    callback=parse_period,
+    help="Year to analyze (YYYY) or bare for last 365 days",
+)
 @click.option(
     "--format",
     "-f",
@@ -654,7 +732,9 @@ def daily(
     if year is not None:
         period_opts += 1
     if period_opts > 1:
-        raise click.UsageError("Options --week, --month, and --year are mutually exclusive")
+        raise click.UsageError(
+            "Options --week, --month, and --year are mutually exclusive"
+        )
 
     last_n_days = None
     year_filter = None
@@ -670,7 +750,13 @@ def daily(
     with cli_error_context(ctx, "generating daily breakdown"):
         report_generator = ctx.obj["report_generator"]
         result = report_generator.generate_daily_report(
-            path, None if month == "LAST_N_DAYS" else month, output_format, breakdown, last_n_days, year_filter, recalculate
+            path,
+            None if month == "LAST_N_DAYS" else month,
+            output_format,
+            breakdown,
+            last_n_days,
+            year_filter,
+            recalculate,
         )
 
         handle_output_format(result, output_format)
@@ -678,10 +764,22 @@ def daily(
 
 @cli.command()
 @click.argument("path", type=click.Path(exists=True), required=False)
-@click.option("--year", is_flag=False, flag_value="LAST_N_DAYS", default=None, callback=parse_period,
-              help="Year to analyze (YYYY) or bare for last 365 days")
-@click.option("--month", is_flag=False, flag_value="LAST_N_DAYS", default=None, callback=parse_period,
-              help="Month to analyze (YYYY-MM) or bare for last 30 days")
+@click.option(
+    "--year",
+    is_flag=False,
+    flag_value="LAST_N_DAYS",
+    default=None,
+    callback=parse_period,
+    help="Year to analyze (YYYY) or bare for last 365 days",
+)
+@click.option(
+    "--month",
+    is_flag=False,
+    flag_value="LAST_N_DAYS",
+    default=None,
+    callback=parse_period,
+    help="Month to analyze (YYYY-MM) or bare for last 30 days",
+)
 @click.option(
     "--start-day",
     type=click.Choice(
@@ -750,7 +848,14 @@ def weekly(
     with cli_error_context(ctx, "generating weekly breakdown"):
         report_generator = ctx.obj["report_generator"]
         result = report_generator.generate_weekly_report(
-            path, year_filter, month_filter, output_format, breakdown, week_start_day, last_n_days, recalculate
+            path,
+            year_filter,
+            month_filter,
+            output_format,
+            breakdown,
+            week_start_day,
+            last_n_days,
+            recalculate,
         )
 
         handle_output_format(result, output_format)
@@ -758,8 +863,14 @@ def weekly(
 
 @cli.command()
 @click.argument("path", type=click.Path(exists=True), required=False)
-@click.option("--year", is_flag=False, flag_value="LAST_N_DAYS", default=None, callback=parse_period,
-              help="Year to analyze (YYYY) or bare for last 365 days")
+@click.option(
+    "--year",
+    is_flag=False,
+    flag_value="LAST_N_DAYS",
+    default=None,
+    callback=parse_period,
+    help="Year to analyze (YYYY) or bare for last 365 days",
+)
 @click.option(
     "--format",
     "-f",
@@ -938,46 +1049,48 @@ def projects(
         handle_output_format(result, output_format)
 
 
-def _generate_export_report(report_type: str, path: Optional[str], report_generator, force_recalculate: bool = False) -> Optional[dict]:
+def _generate_export_report(
+    report_type: str,
+    path: Optional[str],
+    report_generator,
+    force_recalculate: bool = False,
+) -> Optional[dict]:
     """Generate report data for export based on report type.
-    
+
     Args:
         report_type: Type of report to generate
         path: Path to analyze
         report_generator: ReportGenerator instance
         force_recalculate: If True, ignore stored costs and recalculate from pricing data
-        
+
     Returns:
         Report data dictionary or None if report type is invalid
     """
     if report_type not in _REPORT_METHOD_MAP:
         return None
-    
+
     report_config = _REPORT_METHOD_MAP[report_type]
     method_name = report_config["method"]
     params = report_config["params"].copy()
-    
+
     # Replace path placeholders with actual path value
     for key in params:
         if params[key] is _PATH_PLACEHOLDER:
             params[key] = path
-    
+
     # Add force_recalculate parameter
     params["force_recalculate"] = force_recalculate
-    
+
     # Get the method from report_generator and call it with unpacked params
     method = getattr(report_generator, method_name)
     return method(**params)
 
 
 def _display_export_summary(
-    console, 
-    output_path: str, 
-    export_service, 
-    report_type: str
+    console, output_path: str, export_service, report_type: str
 ) -> None:
     """Display export completion summary.
-    
+
     Args:
         console: Rich console instance
         output_path: Path to the exported file
@@ -986,10 +1099,16 @@ def _display_export_summary(
     """
     summary = export_service.get_export_summary(output_path)
     console.print(f"[status.success]✅ Export completed successfully![/status.success]")
-    console.print(f"[metric.label]File:[/metric.label] [metric.value]{output_path}[/metric.value]")
-    console.print(f"[metric.label]Size:[/metric.label] [metric.value]{summary.get('size_human', 'Unknown')}[/metric.value]")
+    console.print(
+        f"[metric.label]File:[/metric.label] [metric.value]{output_path}[/metric.value]"
+    )
+    console.print(
+        f"[metric.label]Size:[/metric.label] [metric.value]{summary.get('size_human', 'Unknown')}[/metric.value]"
+    )
     if "rows" in summary:
-        console.print(f"[metric.label]Rows:[/metric.label] [metric.value]{summary['rows']}[/metric.value]")
+        console.print(
+            f"[metric.label]Rows:[/metric.label] [metric.value]{summary['rows']}[/metric.value]"
+        )
 
 
 @cli.command()
@@ -1042,7 +1161,9 @@ def export(
         export_service = ctx.obj["export_service"]
 
         # Generate report data using method mapping
-        report_data = _generate_export_report(report_type, path, report_generator, recalculate)
+        report_data = _generate_export_report(
+            report_type, path, report_generator, recalculate
+        )
 
         if not report_data:
             console.print("[status.error]No data to export.[/status.error]")
@@ -1079,32 +1200,68 @@ def config_show(ctx: click.Context):
         console.print("[table.title]📋 Current Configuration:[/table.title]")
         console.print()
         console.print("[table.header]📁 Paths:[/table.header]")
-        console.print(f"  [metric.label]Database file:[/metric.label] [metric.value]{config.paths.database_file}[/metric.value]")
-        console.print(f"  [metric.label]Messages directory:[/metric.label] [metric.value]{config.paths.messages_dir}[/metric.value]")
-        console.print(f"  [metric.label]Export directory:[/metric.label] [metric.value]{config.paths.export_dir}[/metric.value]")
+        console.print(
+            f"  [metric.label]Database file:[/metric.label] [metric.value]{config.paths.database_file}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Messages directory:[/metric.label] [metric.value]{config.paths.messages_dir}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Export directory:[/metric.label] [metric.value]{config.paths.export_dir}[/metric.value]"
+        )
         console.print()
         console.print("[table.header]🎨 UI Settings:[/table.header]")
-        console.print(f"  [metric.label]Table style:[/metric.label] [metric.value]{config.ui.table_style}[/metric.value]")
-        console.print(f"  [metric.label]Theme:[/metric.label] [metric.value]{config.ui.theme}[/metric.value]")
-        console.print(f"  [metric.label]Progress bars:[/metric.label] [metric.value]{config.ui.progress_bars}[/metric.value]")
-        console.print(f"  [metric.label]Colors:[/metric.label] [metric.value]{config.ui.colors}[/metric.value]")
-        console.print(f"  [metric.label]Live refresh interval:[/metric.label] [metric.value]{config.ui.live_refresh_interval}s[/metric.value]")
+        console.print(
+            f"  [metric.label]Table style:[/metric.label] [metric.value]{config.ui.table_style}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Theme:[/metric.label] [metric.value]{config.ui.theme}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Progress bars:[/metric.label] [metric.value]{config.ui.progress_bars}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Colors:[/metric.label] [metric.value]{config.ui.colors}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Live refresh interval:[/metric.label] [metric.value]{config.ui.live_refresh_interval}s[/metric.value]"
+        )
         console.print()
         console.print("[table.header]📤 Export Settings:[/table.header]")
-        console.print(f"  [metric.label]Default format:[/metric.label] [metric.value]{config.export.default_format}[/metric.value]")
-        console.print(f"  [metric.label]Include metadata:[/metric.label] [metric.value]{config.export.include_metadata}[/metric.value]")
+        console.print(
+            f"  [metric.label]Default format:[/metric.label] [metric.value]{config.export.default_format}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Include metadata:[/metric.label] [metric.value]{config.export.include_metadata}[/metric.value]"
+        )
         console.print()
         console.print("[table.header]💱 Currency:[/table.header]")
-        console.print(f"  [metric.label]Code:[/metric.label] [metric.value]{config.currency.code}[/metric.value]")
-        console.print(f"  [metric.label]Symbol:[/metric.label] [metric.value]{config.currency.symbol}[/metric.value]")
-        console.print(f"  [metric.label]Rate (from USD):[/metric.label] [metric.value]{config.currency.rate}[/metric.value]")
-        console.print(f"  [metric.label]Display format:[/metric.label] [metric.value]{config.currency.display_format}[/metric.value]")
-        decimals_display = "auto" if config.currency.decimals is None else config.currency.decimals
-        console.print(f"  [metric.label]Decimals:[/metric.label] [metric.value]{decimals_display}[/metric.value]")
-        console.print(f"  [metric.label]Remote rates:[/metric.label] [metric.value]{config.currency.remote_rates}[/metric.value]")
+        console.print(
+            f"  [metric.label]Code:[/metric.label] [metric.value]{config.currency.code}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Symbol:[/metric.label] [metric.value]{config.currency.symbol}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Rate (from USD):[/metric.label] [metric.value]{config.currency.rate}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Display format:[/metric.label] [metric.value]{config.currency.display_format}[/metric.value]"
+        )
+        decimals_display = (
+            "auto" if config.currency.decimals is None else config.currency.decimals
+        )
+        console.print(
+            f"  [metric.label]Decimals:[/metric.label] [metric.value]{decimals_display}[/metric.value]"
+        )
+        console.print(
+            f"  [metric.label]Remote rates:[/metric.label] [metric.value]{config.currency.remote_rates}[/metric.value]"
+        )
         console.print()
         console.print("[table.header]🤖 Models:[/table.header]")
-        console.print(f"  [metric.label]Configured models:[/metric.label] [metric.value]{len(pricing_data)}[/metric.value]")
+        console.print(
+            f"  [metric.label]Configured models:[/metric.label] [metric.value]{len(pricing_data)}[/metric.value]"
+        )
         for model_name in sorted(pricing_data.keys()):
             console.print(f"    - [table.row.model]{model_name}[/table.row.model]")
 
@@ -1125,10 +1282,16 @@ def config_set(ctx: click.Context, key: str, value: str):
 
 
 @cli.command()
-@click.option("--port", "-p", type=int, default=None,
-              help="Port to serve metrics on (default: 9090)")
-@click.option("--host", type=str, default=None,
-              help="Host to bind to (default: 0.0.0.0)")
+@click.option(
+    "--port",
+    "-p",
+    type=int,
+    default=None,
+    help="Port to serve metrics on (default: 9090)",
+)
+@click.option(
+    "--host", type=str, default=None, help="Host to bind to (default: 0.0.0.0)"
+)
 @click.pass_context
 def metrics(ctx, port, host):
     """Start a Prometheus metrics endpoint.
@@ -1153,8 +1316,12 @@ def metrics(ctx, port, host):
         return
 
     try:
-        console.print(f"[status.success]Starting Prometheus metrics server...[/status.success]")
-        console.print(f"[metric.label]Endpoint:[/metric.label] [metric.value]http://{host}:{port}/metrics[/metric.value]")
+        console.print(
+            f"[status.success]Starting Prometheus metrics server...[/status.success]"
+        )
+        console.print(
+            f"[metric.label]Endpoint:[/metric.label] [metric.value]http://{host}:{port}/metrics[/metric.value]"
+        )
         console.print("[dim]Press Ctrl+C to stop.[/dim]")
 
         server = MetricsServer(ctx.obj["pricing_data"], host=host, port=port)
@@ -1163,7 +1330,10 @@ def metrics(ctx, port, host):
         console.print("\n[status.warning]Metrics server stopped.[/status.warning]")
     except OSError as e:
         if e.errno == errno.EADDRINUSE:
-            click.echo(f"Port {port} is already in use. Try a different port with --port.", err=True)
+            click.echo(
+                f"Port {port} is already in use. Try a different port with --port.",
+                err=True,
+            )
         else:
             click.echo(f"Error starting metrics server: {e}", err=True)
         ctx.exit(1)
@@ -1189,12 +1359,16 @@ def agents(ctx: click.Context):
         registry = AgentRegistry()
         console = ctx.obj["console"]
 
-        console.print("[table.header]Main agents[/table.header] [dim](stay in same session)[/dim]:")
+        console.print(
+            "[table.header]Main agents[/table.header] [dim](stay in same session)[/dim]:"
+        )
         for agent in sorted(registry.get_all_main_agents()):
             console.print(f"  - [table.row.main]{agent}[/table.row.main]")
 
         console.print()
-        console.print("[table.header]Sub-agents[/table.header] [dim](create separate sessions)[/dim]:")
+        console.print(
+            "[table.header]Sub-agents[/table.header] [dim](create separate sessions)[/dim]:"
+        )
         for agent in sorted(registry.get_all_sub_agents()):
             console.print(f"  - [table.row.model]{agent}[/table.row.model]")
 
