@@ -374,8 +374,17 @@ class DashboardUI:
             border_style="dashboard.border",
         )
 
-    def create_burn_rate_panel(self, burn_rate: float) -> Panel:
-        """Create output token rate panel (tokens per second)."""
+    def create_burn_rate_panel(
+        self,
+        burn_rate: float,
+        per_model_rates: Optional[Dict[str, float]] = None,
+    ) -> Panel:
+        """Create output token rate panel (tokens per second).
+
+        Shows the aggregate 5-minute p50 rate with a speed band, and — when
+        per-agent/model rates are supplied — a compact per-model breakdown so
+        the panel fills its column with useful signal instead of whitespace.
+        """
         if burn_rate == 0:
             burn_text = "[metric.label]No recent activity[/metric.label]"
         else:
@@ -389,10 +398,41 @@ class DashboardUI:
             else:
                 level = "[status.success]SLOW[/status.success]"
 
-            burn_text = (
-                f"[metric.value]{burn_rate:,.1f}[/metric.value] [metric.tokens]tok/sec[/metric.tokens]\n"
-                f"{level}"
+            lines = [
+                f"[metric.value]{burn_rate:,.1f}[/metric.value] "
+                f"[metric.tokens]tok/sec[/metric.tokens]  {level}",
+                "[dim]5-min p50 · workflow[/dim]",
+            ]
+
+            # Compact per-agent/model breakdown, highest rate first. These are
+            # each model's p50 (matching the Tools panel "Rate"), so the panel
+            # earns its column instead of trailing off into empty space.
+            ranked = sorted(
+                (
+                    (key, rate)
+                    for key, rate in (per_model_rates or {}).items()
+                    if rate and rate > 0
+                ),
+                key=lambda item: item[1],
+                reverse=True,
             )
+            if ranked:
+                lines.append(
+                    "[dashboard.border]" + "─" * 24 + "[/dashboard.border]"
+                )
+                lines.append("[dim]by model[/dim]")
+                for key, rate in ranked[:4]:
+                    agent, model = self._split_agent_model_key(key)
+                    bare_model = model.split("/", 1)[-1]
+                    label = f"{agent}/{bare_model}" if agent else bare_model
+                    if len(label) > 22:
+                        label = label[:19] + "..."
+                    lines.append(
+                        f"[metric.label]{label}[/metric.label] "
+                        f"[metric.value]{rate:.1f}[/metric.value] [dim]tok/s[/dim]"
+                    )
+
+            burn_text = "\n".join(lines)
 
         return Panel(
             burn_text,
@@ -1110,7 +1150,9 @@ class DashboardUI:
             )
 
         recent_file_panel = self.create_recent_file_panel(recent_file)
-        burn_rate_panel = self.create_burn_rate_panel(burn_rate)
+        burn_rate_panel = self.create_burn_rate_panel(
+            burn_rate, per_model_output_rates
+        )
 
         # Determine which tool display to use based on model count
         by_model = tool_stats_by_model or []
