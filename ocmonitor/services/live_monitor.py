@@ -244,8 +244,12 @@ class LiveMonitor:
             if selected_wf and selected_wf.workflow_id not in {
                 w.workflow_id for w in active_workflows
             }:
-                return active_workflows + [selected_wf]
-            return active_workflows
+                active_workflows.append(selected_wf)
+
+            # When limit is set, fall through to fallback+limit logic so the
+            # user can cycle through all picker workflows with n/p.
+            if limit is None:
+                return active_workflows
 
         if not allow_fallback:
             return active_workflows
@@ -291,15 +295,17 @@ class LiveMonitor:
                 )
                 for w in active_workflows
             )
-            if already_active:
-                return active_workflows
+            if not already_active:
+                specific_wf = SQLiteProcessor.get_workflow_by_id(
+                    selected_session_id, db_path
+                )
+                if specific_wf:
+                    active_workflows.append(specific_wf)
 
-            specific_wf = SQLiteProcessor.get_workflow_by_id(
-                selected_session_id, db_path
-            )
-            if specific_wf:
-                return active_workflows + [specific_wf]
-            return active_workflows
+            # When limit is set, fall through to fallback+limit logic so the
+            # user can cycle through all picker workflows with n/p.
+            if limit is None:
+                return active_workflows
 
         if not allow_fallback:
             return active_workflows
@@ -1527,6 +1533,7 @@ class LiveMonitor:
         refresh_interval: int = 5,
         selected_session_id: Optional[str] = None,
         interactive_switch: bool = False,
+        last: Optional[int] = None,
     ):
         """Start live monitoring of all active workflows (main session + sub-agents).
 
@@ -1541,8 +1548,9 @@ class LiveMonitor:
         try:
             active_workflows = self._get_file_active_workflows(
                 base_path,
-                allow_fallback=not bool(selected_session_id),
+                allow_fallback=not bool(selected_session_id) or last is not None,
                 selected_session_id=selected_session_id,
+                limit=last,
             )
             if not active_workflows:
                 self.console.print(
@@ -1647,8 +1655,9 @@ class LiveMonitor:
                                         current_workflow_id
                                     active_workflows = self._get_file_active_workflows(
                                         base_path,
-                                        allow_fallback=not bool(selected_session_id),
+                                        allow_fallback=not bool(selected_session_id) or last is not None,
                                         selected_session_id=selected_session_id,
+                                        limit=last,
                                     )
                                     descriptors = self._describe_file_workflows(
                                         active_workflows
@@ -1736,8 +1745,9 @@ class LiveMonitor:
 
                     active_workflows = self._get_file_active_workflows(
                         base_path,
-                        allow_fallback=not bool(selected_session_id),
+                        allow_fallback=not bool(selected_session_id) or last is not None,
                         selected_session_id=selected_session_id,
+                        limit=last,
                     )
                     descriptors = self._describe_file_workflows(active_workflows)
 
@@ -2321,6 +2331,7 @@ class LiveMonitor:
         refresh_interval: int = 5,
         selected_session_id: Optional[str] = None,
         interactive_switch: bool = False,
+        last: Optional[int] = None,
     ):
         """Start live monitoring of all active workflows from SQLite (v1.2.0+).
 
@@ -2342,8 +2353,9 @@ class LiveMonitor:
                 return
 
             active_workflows = self._get_sqlite_active_workflows(
-                allow_fallback=not bool(selected_session_id),
+                allow_fallback=not bool(selected_session_id) or last is not None,
                 selected_session_id=selected_session_id,
+                limit=last,
             )
             if not active_workflows:
                 self.console.print(
@@ -2486,8 +2498,9 @@ class LiveMonitor:
                                         self._get_sqlite_active_workflows(
                                             allow_fallback=not bool(
                                                 selected_session_id
-                                            ),
+                                            ) or last is not None,
                                             selected_session_id=selected_session_id,
+                                            limit=last,
                                         )
                                     )
                                     descriptors = self._describe_sqlite_workflows(
@@ -2601,8 +2614,9 @@ class LiveMonitor:
                         continue
 
                     active_workflows = self._get_sqlite_active_workflows(
-                        allow_fallback=not bool(selected_session_id),
+                        allow_fallback=not bool(selected_session_id) or last is not None,
                         selected_session_id=selected_session_id,
+                        limit=last,
                     )
                     descriptors = self._describe_sqlite_workflows(active_workflows)
 
