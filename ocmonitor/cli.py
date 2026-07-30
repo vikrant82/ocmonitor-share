@@ -642,6 +642,7 @@ def live(
                 interval,
                 selected_session_id=selected_session_id,
                 interactive_switch=interactive_switch,
+                last=last,
             )
         elif mode == "files":
             if not path:
@@ -656,6 +657,7 @@ def live(
                 interval,
                 selected_session_id=selected_session_id,
                 interactive_switch=interactive_switch,
+                last=last,
             )
 
     except KeyboardInterrupt:
