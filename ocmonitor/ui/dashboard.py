@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from rich.console import Console
 from rich.layout import Layout
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -47,6 +48,24 @@ class DashboardUI:
         else:
             formatted = f"{value:.0f}"
         return formatted.replace(".0M", "M").replace(".0k", "k")
+
+    def _format_completed_turn_summary(
+        self, completed_turn_counts: Optional[Dict[str, int]]
+    ) -> str:
+        """Format known completed-turn counts without inferring missing data."""
+        if completed_turn_counts is None:
+            counts = "Unavailable"
+        else:
+            counts = ", ".join(
+                f"{escape(agent)}: {count:,}"
+                for agent, count in sorted(completed_turn_counts.items())
+            ) or "None"
+        return (
+            "[metric.label]Completed stored prompts by agent:[/metric.label] "
+            f"[metric.value]{counts}[/metric.value]\n"
+            "[dim]Database-validated stored prompts with completed responses; "
+            "known synthetic excluded[/dim]"
+        )
 
     def _format_tool_token_suffix(self, stat: ToolUsageStats) -> str:
         """Format compact attributed per-tool token details for a tool row."""
@@ -293,14 +312,22 @@ class DashboardUI:
         pricing_data: Dict[str, Any],
         per_model_output_rates: Optional[Dict[str, float]] = None,
         per_model_context: Optional[Dict[str, Dict[str, Any]]] = None,
+        completed_turn_counts: Optional[Dict[str, int]] = None,
     ) -> Panel:
-        """Create model usage panel."""
+        """Create model usage panel.
+
+        ``completed_turn_counts`` maps agent names to validated completed-turn
+        counts; ``None`` means the metric is unavailable, while an empty mapping
+        is a known zero. This argument is display-only and does not affect usage
+        totals.
+        """
         model_breakdown = session.get_model_breakdown(pricing_data)
         per_model_output_rates = per_model_output_rates or {}
         per_model_context = per_model_context or {}
 
         if not model_breakdown:
             return Panel(
+                f"{self._format_completed_turn_summary(completed_turn_counts)}\n"
                 "[metric.label]No model data available[/metric.label]",
                 title=Text("Models", style="dashboard.title"),
                 border_style="dashboard.border",
@@ -330,7 +357,9 @@ class DashboardUI:
                 f"context {context_bar}{rate_str}"
             )
 
-        model_text = "\n".join(model_lines)
+        model_text = "\n".join(
+            [self._format_completed_turn_summary(completed_turn_counts), *model_lines]
+        )
 
         return Panel(
             model_text,
@@ -1113,8 +1142,14 @@ class DashboardUI:
         tool_stats_by_model: Optional[List[ModelToolUsage]] = None,
         controls_hint: Optional[str] = None,
         burn_rate: float = 0.0,
+        completed_turn_counts: Optional[Dict[str, int]] = None,
     ) -> Layout:
-        """Create the complete dashboard layout."""
+        """Create the complete dashboard layout.
+
+        ``completed_turn_counts`` is an optional per-agent count mapping passed
+        through to the model area; ``None`` is displayed as unavailable and an
+        empty mapping as no completed turns. The layout does not derive counts.
+        """
         layout = Layout()
 
         # Default empty dicts if not provided
@@ -1136,7 +1171,11 @@ class DashboardUI:
                 workflow, pricing_data, quota
             )
             model_panel = self.create_workflow_model_panel(
-                workflow, pricing_data, per_model_output_rates, per_model_context
+                workflow,
+                pricing_data,
+                per_model_output_rates,
+                per_model_context,
+                completed_turn_counts,
             )
         else:
             # Create panels using single session data
@@ -1146,7 +1185,11 @@ class DashboardUI:
             token_panel = self.create_token_panel(session, recent_file)
             status_panel = self.create_status_panel(session, pricing_data, quota)
             model_panel = self.create_model_panel(
-                session, pricing_data, per_model_output_rates, per_model_context
+                session,
+                pricing_data,
+                per_model_output_rates,
+                per_model_context,
+                completed_turn_counts,
             )
 
         recent_file_panel = self.create_recent_file_panel(recent_file)
@@ -1242,7 +1285,10 @@ class DashboardUI:
         # Models + Tools section: Full width to tools when using grid (model info embedded in tool panels)
         if use_grid:
             assert tool_grid_panel is not None
-            layout["models_tools"].split_column(tool_grid_panel)
+            layout["models_tools"].split_column(
+                Layout(Text.from_markup(self._format_completed_turn_summary(completed_turn_counts)), size=2),
+                tool_grid_panel,
+            )
         else:
             assert tool_panel is not None
             layout["models_tools"].split_row(
@@ -1373,8 +1419,15 @@ class DashboardUI:
         pricing_data: Dict[str, Any],
         per_model_output_rates: Optional[Dict[str, float]] = None,
         per_model_context: Optional[Dict[str, Dict[str, Any]]] = None,
+        completed_turn_counts: Optional[Dict[str, int]] = None,
     ) -> Panel:
-        """Create model usage panel for workflow."""
+        """Create model usage panel for workflow.
+
+        ``completed_turn_counts`` maps agents to externally validated counts;
+        ``None`` denotes unavailable data and an empty mapping denotes a known
+        zero. Counts are displayed alongside workflow model usage, not inferred
+        from its session totals.
+        """
         from collections import defaultdict
 
         per_model_output_rates = per_model_output_rates or {}
@@ -1396,9 +1449,15 @@ class DashboardUI:
                 model_data[model]["files"] += stats.get("files", 0)
                 model_data[model]["cost"] += stats["cost"]
 
+        turn_summary = self._format_completed_turn_summary(completed_turn_counts)
+
         if not model_data:
+            model_text = (
+                f"{turn_summary}\n"
+                "[metric.label]No model data available[/metric.label]"
+            )
             return Panel(
-                "[metric.label]No model data available[/metric.label]",
+                model_text,
                 title=Text("Models", style="dashboard.title"),
                 border_style="dashboard.border",
             )
@@ -1451,7 +1510,7 @@ class DashboardUI:
                 f"{context_str}{rate_str}"
             )
 
-        model_text = "\n".join(model_lines)
+        model_text = "\n".join([turn_summary, *model_lines])
 
         return Panel(
             model_text,

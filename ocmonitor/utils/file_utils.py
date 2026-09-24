@@ -3,11 +3,46 @@
 import json
 import os
 import re
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Generator
+from typing import Dict, List, Optional, Any, Generator, Set
 from datetime import datetime
 
 from ..models.session import SessionData, InteractionFile, TokenUsage, TimeData
+
+
+@dataclass(frozen=True)
+class SessionMetadata:
+    """Lightweight session fields needed for workflow discovery and picking.
+
+    Unlike ``SessionData``, this record never retains an interaction payload.
+    ``start_time``/``end_time`` are local datetimes converted from source
+    millisecond timestamps; ``last_activity_ts`` is a filesystem mtime in
+    Unix seconds (zero when it cannot be read).
+    """
+
+    session_id: str
+    session_path: Path
+    agent: Optional[str]
+    project_name: str
+    start_time: Optional[datetime]
+    end_time: Optional[datetime]
+    display_title: str
+    last_activity_ts: float
+
+
+@dataclass
+class SessionMetadataCache:
+    """Mutable lightweight metadata and directory mtimes for live refreshes.
+
+    The cache belongs to its caller and has no internal synchronization; do
+    not share it across concurrent refreshes. Directory mtimes are nanoseconds.
+    """
+
+    entries: Dict[str, SessionMetadata]
+    dir_mtimes_ns: Dict[str, int]
+    known_dir_ids: Optional[Set[str]] = None
 
 
 class FileProcessor:
@@ -386,6 +421,171 @@ class FileProcessor:
             session_title=session_title,
             agent=session_agent
         )
+
+    @staticmethod
+    def discover_session_metadata(
+        base_path: str, limit: Optional[int] = None
+    ) -> List[SessionMetadata]:
+        """Discover recent sessions using only grouping and picker metadata.
+
+        ``limit`` applies to the newest session-directory candidates before
+        parsing, matching ``load_all_sessions`` selection semantics. Each JSON
+        payload is parsed transiently; only session ID/path, agent, project,
+        start/end times, display title, and latest interaction mtime are kept.
+        Source timestamps are milliseconds; ``last_activity_ts`` is a file
+        mtime in Unix seconds. Malformed/unreadable files are skipped, and
+        sessions with no valid non-zero-token interactions are omitted.
+        """
+        session_dirs = FileProcessor.find_session_directories(base_path)
+        if limit:
+            session_dirs = session_dirs[:limit]
+
+        return [
+            metadata for session_dir in session_dirs
+            if (metadata := FileProcessor._discover_session_directory_metadata(session_dir)) is not None
+        ]
+
+    @staticmethod
+    def _discover_session_directory_metadata(session_dir: Path) -> Optional[SessionMetadata]:
+        """Extract grouping metadata from one session directory without retaining payloads."""
+        json_files = FileProcessor.find_json_files(session_dir)
+        interactions = []
+        for json_file in json_files:
+            data = FileProcessor.load_json_file(json_file)
+            if not data:
+                continue
+            try:
+                tokens = data.get("tokens", {})
+                cache = tokens.get("cache", {})
+                if sum((tokens.get(key, 0) or 0) for key in ("input", "output")) + sum(
+                    (cache.get(key, 0) or 0) for key in ("write", "read")
+                ) <= 0:
+                    continue
+
+                time_info = data.get("time") or {}
+                path_info = data.get("path") or {}
+                created = time_info.get("created")
+                completed = time_info.get("completed")
+                created_time = datetime.fromtimestamp(created / 1000) if created else None
+                completed_time = datetime.fromtimestamp(completed / 1000) if completed else None
+                project_path = path_info.get("cwd") or path_info.get("root")
+                interactions.append((json_file, data.get("agent"), project_path, created_time, completed_time))
+            except (AttributeError, TypeError, ValueError, OverflowError, OSError):
+                continue
+
+        if not interactions:
+            return None
+
+        first = min(interactions, key=lambda row: row[3] or datetime.min)
+        projects = [row[2] for row in interactions if row[2]]
+        project_path = Counter(projects).most_common(1)[0][0] if projects else None
+        try:
+            last_activity_ts = max(row[0].stat().st_mtime for row in interactions)
+        except OSError:
+            last_activity_ts = 0.0
+        start_times = [row[3] for row in interactions if row[3] is not None]
+        end_times = [row[4] for row in interactions if row[4] is not None]
+        return SessionMetadata(
+            session_id=session_dir.name,
+            session_path=session_dir,
+            agent=first[1],
+            project_name=Path(project_path).name if project_path else "Unknown",
+            start_time=min(start_times) if start_times else None,
+            end_time=max(end_times) if end_times else None,
+            display_title=FileProcessor.find_session_title(session_dir.name) or session_dir.name,
+            last_activity_ts=last_activity_ts,
+        )
+
+    @staticmethod
+    def refresh_session_metadata(
+        base_path: str,
+        existing_cache: Optional[SessionMetadataCache],
+        limit: Optional[int] = None,
+    ) -> SessionMetadataCache:
+        """Refresh candidate metadata by statting directories and parsing changed ones.
+
+        The newest ``limit`` directories are candidates on each call; directories
+        already present in the cache are also checked and retained, preserving the
+        original candidate window and any selected parent metadata. Removed
+        directories are discarded. Directory mtimes cannot detect edits to JSON
+        files in place when the containing directory mtime is unchanged. This
+        mutates and returns the caller-owned, unsynchronized cache; directories
+        that cannot be statted are skipped, and changed directories without valid
+        metadata are removed from its entries.
+        """
+        cache = existing_cache or SessionMetadataCache(entries={}, dir_mtimes_ns={})
+        base_dir = Path(base_path)
+        current_dirs = {}
+        try:
+            for path in base_dir.iterdir():
+                try:
+                    if not path.name.startswith("ses_") or not path.is_dir():
+                        continue
+                    try:
+                        current_dirs[path.name] = (path, path.stat().st_mtime_ns)
+                    except OSError:
+                        continue
+                except OSError:
+                    continue
+        except OSError:
+            pass
+
+        ordered = sorted(current_dirs.values(), key=lambda item: item[1], reverse=True)
+        candidate_ids = {path.name for path, _ in (ordered[:limit] if limit else ordered)}
+        current_ids = set(current_dirs)
+        newly_seen_ids = current_ids - cache.known_dir_ids if cache.known_dir_ids is not None else set()
+        refresh_ids = candidate_ids | (set(cache.entries) & current_ids) | newly_seen_ids
+        cache.entries = {key: value for key, value in cache.entries.items() if key in current_dirs}
+        cache.dir_mtimes_ns = {key: value for key, value in cache.dir_mtimes_ns.items() if key in current_dirs}
+
+        for session_id in refresh_ids:
+            session_dir, mtime_ns = current_dirs[session_id]
+            if cache.dir_mtimes_ns.get(session_id) != mtime_ns:
+                metadata = FileProcessor._discover_session_directory_metadata(session_dir)
+                if metadata is None:
+                    cache.entries.pop(session_id, None)
+                else:
+                    cache.entries[session_id] = metadata
+                cache.dir_mtimes_ns[session_id] = mtime_ns
+
+        cache.known_dir_ids = current_ids
+        return cache
+
+    @staticmethod
+    def list_session_directory_ids(base_path: str) -> Set[str]:
+        """List session directory names only, without reading interaction JSON."""
+        base_dir = Path(base_path)
+        session_ids = set()
+        try:
+            for path in base_dir.iterdir():
+                try:
+                    if path.name.startswith("ses_") and path.is_dir():
+                        session_ids.add(path.name)
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        return session_ids
+
+    @staticmethod
+    def load_sessions_by_id(base_path: str, session_ids: List[str]) -> List[SessionData]:
+        """Hydrate only the requested session directories after picker selection.
+
+        Missing IDs and sessions that fail normal loading are skipped. The
+        returned ``SessionData`` records use the existing full loader. Duplicate
+        IDs are loaded once, in first-requested order; this performs no shared
+        caching and returns an empty list when no requested session can load.
+        """
+        base_dir = Path(base_path)
+        sessions = []
+        for session_id in dict.fromkeys(session_ids):
+            session_path = base_dir / session_id
+            if not session_id.startswith("ses_") or session_path.parent != base_dir:
+                continue
+            session = FileProcessor.load_session_data(session_path)
+            if session is not None:
+                sessions.append(session)
+        return sessions
 
     @staticmethod
     def get_most_recent_session(base_path: str) -> Optional[SessionData]:

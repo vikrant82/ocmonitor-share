@@ -1,11 +1,63 @@
 """Session grouper for creating workflow groups."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Dict
 
 from ..models.session import SessionData
 from ..models.workflow import SessionWorkflow
+from ..utils.file_utils import SessionMetadata
 from .agent_registry import AgentRegistry
+
+
+@dataclass
+class MetadataWorkflow:
+    """Lightweight grouped sessions for discovery, without interaction payloads."""
+
+    workflow_id: str
+    main_session: SessionMetadata
+    sub_agent_sessions: List[SessionMetadata]
+
+    @property
+    def project_name(self) -> str:
+        return self.main_session.project_name
+
+    @property
+    def start_time(self):
+        times = [self.main_session.start_time] + [s.start_time for s in self.sub_agent_sessions]
+        valid = [time for time in times if time is not None]
+        return min(valid) if valid else None
+
+    @property
+    def end_time(self):
+        times = [self.main_session.end_time] + [s.end_time for s in self.sub_agent_sessions]
+        valid = [time for time in times if time is not None]
+        return max(valid) if valid else None
+
+    @property
+    def display_title(self) -> str:
+        return self.main_session.display_title
+
+    @property
+    def session_count(self) -> int:
+        return 1 + len(self.sub_agent_sessions)
+
+    @property
+    def sub_agent_count(self) -> int:
+        return len(self.sub_agent_sessions)
+
+    @property
+    def all_sessions(self) -> List[SessionMetadata]:
+        """Return member metadata in chronological order for ID hydration."""
+        return sorted(
+            [self.main_session] + self.sub_agent_sessions,
+            key=lambda session: session.start_time or datetime.min,
+        )
+
+    @property
+    def last_activity_ts(self) -> float:
+        """Match the picker activity timestamp: only the main session counts."""
+        return self.main_session.last_activity_ts
 
 
 class SessionGrouper:
@@ -82,6 +134,37 @@ class SessionGrouper:
             workflows.values(),
             key=lambda w: w.start_time or datetime.min,
             reverse=True
+        )
+
+    def group_session_metadata(self, sessions: List[SessionMetadata]) -> List[MetadataWorkflow]:
+        """Group lightweight discovery records using normal project/time rules."""
+        sub_agents = [session for session in sessions if self.agent_registry.is_sub_agent(session.agent)]
+        main_sessions = [session for session in sessions if not self.agent_registry.is_sub_agent(session.agent)]
+        main_sessions.sort(key=lambda session: session.start_time or datetime.min)
+        sub_agents.sort(key=lambda session: session.start_time or datetime.min)
+
+        workflows = {
+            session.session_id: MetadataWorkflow(session.session_id, session, [])
+            for session in main_sessions
+        }
+        for sub_agent in sub_agents:
+            candidates = [
+                main for main in main_sessions
+                if sub_agent.start_time is not None
+                and main.project_name == sub_agent.project_name
+                and main.start_time is not None
+                and main.start_time <= sub_agent.start_time
+            ]
+            parent = max(candidates, key=lambda session: session.start_time or datetime.min) if candidates else None
+            if parent and parent.session_id in workflows:
+                workflows[parent.session_id].sub_agent_sessions.append(sub_agent)
+            else:
+                workflows[sub_agent.session_id] = MetadataWorkflow(sub_agent.session_id, sub_agent, [])
+
+        return sorted(
+            workflows.values(),
+            key=lambda workflow: workflow.start_time or datetime.min,
+            reverse=True,
         )
 
     def _is_sub_agent(self, session: SessionData) -> bool:

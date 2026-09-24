@@ -11,10 +11,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, cast
 
 from rich.console import Console
+from rich.console import Group
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from ..config import ModelPricing, PathsConfig
 from ..models.session import InteractionFile, SessionData, TokenUsage
@@ -23,7 +25,7 @@ from ..models.workflow import SessionWorkflow
 from ..ui.dashboard import DashboardUI
 from ..ui.tables import TableFormatter
 from ..utils.data_loader import DataLoader
-from ..utils.file_utils import FileProcessor
+from ..utils.file_utils import FileProcessor, SessionMetadataCache
 from ..utils.sqlite_utils import SQLiteProcessor
 from ..utils.time_utils import compute_p50_output_rate
 from .session_grouper import SessionGrouper
@@ -135,25 +137,24 @@ class LiveMonitor:
         self._live_status_line: Optional[str] = None
         self._turn_part_cache: Dict[str, List[Any]] = {}
         self._turn_user_cache: Dict[str, str] = {}
+        self._completed_turn_count_cache: Dict[Any, Optional[Dict[str, int]]] = {}
         if init_from_db:
             self._initialize_active_workflows()
 
     def _initialize_active_workflows(self):
-        """Initialize tracking of active workflows from database."""
+        """Initialize lightweight active-workflow tracking without reading history."""
         db_path = SQLiteProcessor.find_database_path()
         if db_path:
-            workflows = SQLiteProcessor.get_all_active_workflows(db_path)
-            for wf in workflows:
-                wf_id = wf["workflow_id"]
-                self._active_workflows[wf_id] = wf
+            db_path = Path(db_path)
+            for workflow in SQLiteProcessor.list_active_workflow_metadata(db_path):
+                workflow_id = workflow["workflow_id"]
+                self._active_workflows[workflow_id] = workflow
             if self._active_workflows:
-                most_recent = self._select_most_recent_workflow(
-                    list(self._active_workflows.values())
+                most_recent = max(
+                    self._active_workflows.values(),
+                    key=lambda workflow: workflow.get("last_activity_ts") or 0,
                 )
                 self._displayed_workflow_id = most_recent["workflow_id"]
-                self.prev_tracked = set(
-                    s.session_id for s in most_recent["all_sessions"]
-                )
 
     def _get_tracked_workflow_ids(self) -> Set[str]:
         """Return set of tracked workflow IDs (for testing)."""
@@ -209,7 +210,7 @@ class LiveMonitor:
         selected_session_id: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[SessionWorkflow]:
-        """Load active file-based workflows, optionally falling back to most recent ones.
+        """Discover and hydrate only the requested file workflow.
 
         Args:
             base_path: Path to session directories.
@@ -217,53 +218,107 @@ class LiveMonitor:
             selected_session_id: Optional workflow ID to pin.
             limit: Maximum number of workflows to return. Defaults to 5.
         """
-        # Load enough sessions to produce the requested number of workflows.
-        # Since multiple sessions group into one workflow, scale up the session limit.
-        sessions_limit = (limit * 10) if limit is not None else 50
-        sessions = FileProcessor.load_all_sessions(base_path, limit=sessions_limit)
-        if not sessions:
-            return []
-
-        workflows = self.session_grouper.group_sessions(sessions)
-        if not workflows:
-            return []
-
-        active_workflows = [w for w in workflows if w.end_time is None]
-
-        # Pinned mode should only consider active workflows plus the selected
-        # workflow itself. Do not pad with unrelated historical workflows.
-        if selected_session_id:
-            selected_wf = None
-            for w in workflows:
-                if w.workflow_id == selected_session_id or any(
+        metadata = self._get_file_workflow_metadata(base_path, allow_fallback, limit)
+        selected = next(
+            (w for w in metadata if selected_session_id and
+             (w.workflow_id == selected_session_id or any(
+                 s.session_id == selected_session_id for s in w.all_sessions
+             ))),
+            None,
+        ) if selected_session_id else next(
+            (w for w in metadata if w.end_time is None),
+            metadata[0] if metadata else None,
+        )
+        if selected is None and selected_session_id:
+            expanded = self._get_file_workflow_metadata(base_path, True, None)
+            selected = next(
+                (w for w in expanded if w.workflow_id == selected_session_id or any(
                     s.session_id == selected_session_id for s in w.all_sessions
-                ):
-                    selected_wf = w
-                    break
+                )), None
+            )
+        if selected is None:
+            return []
+        workflow = self._hydrate_file_metadata_workflow(base_path, selected)
+        return [workflow] if workflow else []
 
-            if selected_wf and selected_wf.workflow_id not in {
-                w.workflow_id for w in active_workflows
-            }:
-                active_workflows.append(selected_wf)
+    def _get_file_workflow_metadata(
+        self, base_path: str, allow_fallback: bool = True, limit: Optional[int] = None
+    ):
+        """Return sorted metadata-only file workflow candidates for pickers."""
+        sessions_limit = (limit * 10) if limit is not None else 50
+        sessions = FileProcessor.discover_session_metadata(
+            base_path, limit=sessions_limit
+        )
+        workflows = self.session_grouper.group_session_metadata(sessions)
+        active = [workflow for workflow in workflows if workflow.end_time is None]
+        if allow_fallback:
+            seen = {workflow.workflow_id for workflow in active}
+            active.extend(
+                workflow for workflow in workflows
+                if workflow.workflow_id not in seen
+            )
+        return sorted(
+            active[:limit] if limit is not None and limit > 0 else active[:5],
+            key=lambda workflow: workflow.last_activity_ts,
+            reverse=True,
+        )
 
-            # When limit is set, fall through to fallback+limit logic so the
-            # user can cycle through all picker workflows with n/p.
-            if limit is None:
-                return active_workflows
+    def _hydrate_file_metadata_workflow(self, base_path: str, metadata: Any):
+        """Hydrate only the member sessions represented by one metadata workflow."""
+        sessions = FileProcessor.load_sessions_by_id(
+            base_path, [session.session_id for session in metadata.all_sessions]
+        )
+        workflows = self.session_grouper.group_sessions(sessions)
+        return next(
+            (workflow for workflow in workflows if workflow.workflow_id == metadata.workflow_id),
+            None,
+        )
 
-        if not allow_fallback:
-            return active_workflows
+    def _hydrate_sqlite_metadata_workflow(
+        self, metadata: Dict[str, Any], db_path: Optional[Path] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Hydrate only the selected SQLite workflow metadata and its members."""
+        return SQLiteProcessor.load_workflow_from_metadata(metadata, db_path)
 
-        # Combine active and all workflows, avoiding duplicates (by workflow_id)
-        seen_ids = {w.workflow_id for w in active_workflows}
-        for w in workflows:
-            if w.workflow_id not in seen_ids:
-                active_workflows.append(w)
-                seen_ids.add(w.workflow_id)
+    def _refresh_sqlite_workflow_metadata(
+        self, metadata: Dict[str, Any], db_path: Path
+    ) -> Optional[Dict[str, Any]]:
+        """Refresh metadata for only the selected root or orphan group.
 
-        if limit is not None and limit > 0:
-            return active_workflows[:limit]
-        return active_workflows[:5]
+        Orphans have synthetic parent IDs, so resolve them through their current
+        child main-session ID; this returns only that orphan group's metadata.
+        Return None if the fixed selection disappeared; callers must not hydrate
+        the prior snapshot and present stale session totals as current.
+        """
+        lookup_id = (
+            metadata.get("main_session_id")
+            if metadata.get("is_orphan")
+            else metadata.get("workflow_id")
+        )
+        refreshed = (
+            SQLiteProcessor.get_workflow_metadata_by_id(lookup_id, db_path)
+            if lookup_id else None
+        )
+        return refreshed
+
+    def _get_completed_turn_counts(self, workflow: Any, sqlite_mode: bool) -> Optional[Dict[str, int]]:
+        """Resolve completed-turn aggregates once per hydrated workflow snapshot."""
+        if not sqlite_mode:
+            return None
+        sessions = self._get_workflow_sessions(workflow)
+        session_ids = tuple(session.session_id for session in sessions)
+        key = (id(workflow), session_ids)
+        if key not in self._completed_turn_count_cache:
+            self._completed_turn_count_cache.clear()
+            db_path = SQLiteProcessor.find_database_path()
+            self._completed_turn_count_cache[key] = SQLiteProcessor.get_completed_turn_counts(
+                list(session_ids), Path(db_path) if db_path else None
+            )
+        return self._completed_turn_count_cache[key]
+
+    def _completed_turn_summary(self, counts: Optional[Dict[str, int]]) -> Text:
+        """Render the count summary using the dashboard's None/empty semantics."""
+        return Text.from_markup(self.dashboard_ui._format_completed_turn_summary(counts))
 
     def _get_sqlite_active_workflows(
         self,
@@ -271,7 +326,7 @@ class LiveMonitor:
         selected_session_id: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Load active SQLite workflows, optionally falling back to most recent ones.
+        """Discover and hydrate only the requested SQLite workflow.
 
         Args:
             allow_fallback: Whether to include recent historical workflows.
@@ -282,46 +337,44 @@ class LiveMonitor:
         if not db_path:
             return []
 
-        active_workflows = SQLiteProcessor.get_all_active_workflows(db_path)
-
-        # Pinned mode should only consider active workflows plus the selected
-        # workflow itself. Do not pad with unrelated historical workflows.
-        if selected_session_id:
-            already_active = any(
-                w["workflow_id"] == selected_session_id
-                or any(
-                    s.session_id == selected_session_id
-                    for s in w.get("all_sessions", [])
-                )
-                for w in active_workflows
+        metadata = self._get_sqlite_workflow_metadata(
+            db_path, allow_fallback=allow_fallback, limit=limit
+        )
+        selected = next(
+            (item for item in metadata if selected_session_id and
+             (item["workflow_id"] == selected_session_id or
+              selected_session_id in item.get("member_session_ids", []))),
+            None,
+        ) if selected_session_id else next(
+            (item for item in metadata if item.get("active")),
+            metadata[0] if metadata else None,
+        )
+        if selected is None and selected_session_id:
+            selected = SQLiteProcessor.get_workflow_metadata_by_id(
+                selected_session_id, db_path
             )
-            if not already_active:
-                specific_wf = SQLiteProcessor.get_workflow_by_id(
-                    selected_session_id, db_path
-                )
-                if specific_wf:
-                    active_workflows.append(specific_wf)
+        if not selected:
+            return []
+        workflow = self._hydrate_sqlite_metadata_workflow(selected, db_path)
+        return [workflow] if workflow else []
 
-            # When limit is set, fall through to fallback+limit logic so the
-            # user can cycle through all picker workflows with n/p.
-            if limit is None:
-                return active_workflows
-
-        if not allow_fallback:
-            return active_workflows
-
-        # Combine active and recent workflows, avoiding duplicates (by workflow_id)
-        recent_limit = limit if limit is not None else 5
-        recent = SQLiteProcessor.get_recent_workflows(db_path, limit=recent_limit)
-        seen_ids = {w["workflow_id"] for w in active_workflows}
-        for r in recent:
-            if r["workflow_id"] not in seen_ids:
-                active_workflows.append(r)
-                seen_ids.add(r["workflow_id"])
-
-        if limit is not None and limit > 0:
-            return active_workflows[:limit]
-        return active_workflows[:5]
+    def _get_sqlite_workflow_metadata(
+        self, db_path: Optional[Path] = None, allow_fallback: bool = True,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return metadata-only SQLite candidates, ordered by parent activity."""
+        db_path = db_path or SQLiteProcessor.find_database_path()
+        if not db_path:
+            return []
+        workflows = SQLiteProcessor.list_active_workflow_metadata(db_path)
+        if allow_fallback:
+            recent = SQLiteProcessor.list_recent_workflow_metadata(
+                db_path, limit=limit or 5
+            )
+            known = {item["workflow_id"] for item in workflows}
+            workflows.extend(item for item in recent if item["workflow_id"] not in known)
+        workflows.sort(key=lambda item: item.get("last_activity_ts") or 0, reverse=True)
+        return workflows[:limit] if limit is not None and limit > 0 else workflows[:5]
 
     def _get_latest_sqlite_activity_ts(self, workflow: Dict[str, Any]) -> float:
         """Get latest parent-session activity timestamp for SQLite workflow."""
@@ -413,23 +466,26 @@ class LiveMonitor:
         """Build human-readable descriptors for SQLite workflow selection."""
         descriptors = []
         for workflow in workflows:
+            main_session = workflow.get("main_session")
             descriptors.append(
                 {
                     "workflow_id": workflow["workflow_id"],
                     "display_title": workflow.get("display_title")
-                    or workflow["main_session"].display_title,
+                    or (main_session.display_title if main_session else ""),
                     "project_name": workflow.get("project_name")
-                    or workflow["main_session"].project_name,
+                    or (main_session.project_name if main_session else "Unknown"),
                     "session_count": workflow.get("session_count", 1),
                     "sub_agent_count": workflow.get("sub_agent_count", 0),
-                    "last_activity_ts": self._get_latest_sqlite_activity_ts(workflow),
+                    "last_activity_ts": ((workflow.get("last_activity_ts") or 0) / 1000.0)
+                    if not main_session
+                    else self._get_latest_sqlite_activity_ts(workflow),
                 }
             )
         descriptors.sort(key=lambda d: d["last_activity_ts"], reverse=True)
         return descriptors
 
     def _describe_file_workflows(
-        self, workflows: List[SessionWorkflow]
+        self, workflows: List[Any]
     ) -> List[Dict[str, Any]]:
         """Build human-readable descriptors for file workflow selection."""
         descriptors = []
@@ -441,7 +497,8 @@ class LiveMonitor:
                     "project_name": workflow.project_name,
                     "session_count": workflow.session_count,
                     "sub_agent_count": workflow.sub_agent_count,
-                    "last_activity_ts": self._get_latest_file_activity_ts(workflow),
+                    "last_activity_ts": getattr(workflow, "last_activity_ts", None)
+                    or self._get_latest_file_activity_ts(workflow),
                 }
             )
         descriptors.sort(key=lambda d: d["last_activity_ts"], reverse=True)
@@ -512,7 +569,7 @@ class LiveMonitor:
         Args:
             last: Limit number of workflows shown (most recent N only).
         """
-        workflows = self._get_sqlite_active_workflows(limit=last)
+        workflows = self._get_sqlite_workflow_metadata(limit=last)
         descriptors = self._describe_sqlite_workflows(workflows)
         return self._prompt_for_workflow_selection(
             descriptors, "Select Workflow (SQLite Live Monitor)"
@@ -527,7 +584,7 @@ class LiveMonitor:
             base_path: Path to session directories.
             last: Limit number of workflows shown (most recent N only).
         """
-        workflows = self._get_file_active_workflows(base_path, limit=last)
+        workflows = self._get_file_workflow_metadata(base_path, limit=last)
         descriptors = self._describe_file_workflows(workflows)
         return self._prompt_for_workflow_selection(
             descriptors, "Select Workflow (File Live Monitor)"
@@ -892,21 +949,24 @@ class LiveMonitor:
             return "unknown"
         return self.dashboard_ui.format_duration(duration_ms)
 
-    def _print_recent_turn_picker_table(
+    def _build_recent_turn_picker_table(
         self,
         descriptors: List[Dict[str, Any]],
         title: str,
         page: int = 0,
         page_size: int = RECENT_TURN_PAGE_SIZE,
-    ) -> None:
-        """Render a picker table for recent workflow turns."""
+        refresh_interval: Optional[int] = None,
+        active_filter: Optional[str] = None,
+    ) -> Table:
+        """Build the live Recent Turns renderable, marking cache misses explicitly."""
         total_pages = max(1, (len(descriptors) + page_size - 1) // page_size)
         page = max(0, min(page, total_pages - 1))
         page_start = page * page_size
         page_descriptors = descriptors[page_start : page_start + page_size]
+        filter_suffix = f" — {active_filter}" if active_filter else ""
 
         table = Table(
-            title=f"{title} (page {page + 1}/{total_pages}, {len(descriptors)} turns)",
+            title=f"{title}{filter_suffix} (page {page + 1}/{total_pages}, {len(descriptors)} turns)",
             show_header=True,
         )
         table.add_column("#", justify="right", style="metric.value")
@@ -918,9 +978,9 @@ class LiveMonitor:
         table.add_column("Cache Read", justify="right", style="metric.tokens")
         table.add_column("Cache Write", justify="right", style="metric.tokens")
         table.add_column("Turn Tokens", justify="right", style="metric.tokens")
+        table.add_column("Cache", justify="center")
         table.add_column("Cost", justify="right", style="metric.cost")
         table.add_column("Duration", justify="right", style="metric.value")
-
         table.add_column("Preview", style="dim")
 
         for offset, descriptor in enumerate(page_descriptors, start=1):
@@ -947,18 +1007,46 @@ class LiveMonitor:
             table.add_row(
                 str(idx),
                 self._format_relative_time(descriptor["activity_ts"]),
-                str(descriptor["agent"]),
+                Text(str(descriptor["agent"])),
                 model,
                 f"{descriptor['tokens_input']:,}",
                 f"{descriptor['tokens_output']:,}",
                 f"{descriptor['tokens_cache_read']:,}",
                 f"{descriptor['tokens_cache_write']:,}",
                 f"{descriptor['tokens_total']:,}",
+                "MISS" if descriptor["tokens_input"] > 0 and descriptor["tokens_cache_read"] == 0 else "—",
                 self.dashboard_ui._fmt_cost(descriptor["cost"]),
                 self._format_turn_duration(descriptor["duration_ms"]),
                 self._truncate_turn_text(preview, 120),
+                style="status.warning" if descriptor["tokens_input"] > 0 and descriptor["tokens_cache_read"] == 0 else "",
             )
-        self.console.print(table)
+        caption = (
+            "MISS rows are highlighted. Filters: b=build, x=bash-executor, l=lite-worker, "
+            "r=reviewer, e=explore. Keys: n/p page, number + Enter select, R refresh, q/back return."
+        )
+        if refresh_interval is not None:
+            if page == 0:
+                refresh_status = f"Auto-refresh every {refresh_interval}s (page 1)"
+            else:
+                refresh_status = (
+                    f"Auto-refresh paused on page {page + 1} "
+                    f"(every {refresh_interval}s on page 1)"
+                )
+            caption = f"{refresh_status}. {caption}"
+        table.caption = caption
+        return table
+
+    def _print_recent_turn_picker_table(
+        self,
+        descriptors: List[Dict[str, Any]],
+        title: str,
+        page: int = 0,
+        page_size: int = RECENT_TURN_PAGE_SIZE,
+    ) -> None:
+        """Render a picker table for recent workflow turns."""
+        self.console.print(
+            self._build_recent_turn_picker_table(descriptors, title, page, page_size)
+        )
 
     def _prompt_for_recent_turn_selection(
         self,
@@ -1041,6 +1129,12 @@ class LiveMonitor:
 
     def _print_turn_detail(self, turn: InteractionFile) -> None:
         """Render detailed stats for one historical turn."""
+        detail, tool_table = self._build_turn_detail_renderables(turn)
+        self.console.print(detail)
+        self.console.print(tool_table)
+
+    def _build_turn_detail_renderables(self, turn: InteractionFile) -> Tuple[Panel, Table]:
+        """Build the complete turn-detail panel and tool table for live or printed display."""
         duration_ms = turn.time_data.duration_ms if turn.time_data else None
         output_rate = "unknown"
         if duration_ms and duration_ms > 0 and turn.tokens.output > 0:
@@ -1078,15 +1172,12 @@ class LiveMonitor:
         detail.add_row("User", message_summary["user"])
         detail.add_row("Assistant", message_summary["assistant"])
 
-        self.console.print(
-            Panel(
-                detail,
-                title="Turn Details",
-                title_align="left",
-                border_style="dashboard.border",
-            )
+        detail_panel = Panel(
+            detail,
+            title="Turn Details",
+            title_align="left",
+            border_style="dashboard.border",
         )
-
         tool_table = Table(title="Turn Tool Calls", show_header=True)
         tool_table.add_column("#", justify="right", style="metric.value")
         tool_table.add_column("Tool", style="table.row.main")
@@ -1099,7 +1190,48 @@ class LiveMonitor:
                 )
         else:
             tool_table.add_row("—", "No tool calls found", "—", "—")
-        self.console.print(tool_table)
+        return detail_panel, tool_table
+
+    def _poll_recent_turn_command(self) -> Optional[str]:
+        """Poll Recent Turns keys without blocking the running live renderer."""
+        if not sys.stdin.isatty():
+            return None
+        try:
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+        except (OSError, ValueError):
+            return None
+        if not ready:
+            return None
+
+        if self._stdin_fd is not None:
+            try:
+                raw = os.read(self._stdin_fd, 1)
+            except OSError:
+                return None
+            if not raw:
+                return None
+            char = raw.decode(errors="ignore")
+            if char == "\x03":
+                raise KeyboardInterrupt
+            if char in {"\r", "\n"}:
+                choice, self._input_buffer = self._input_buffer, ""
+                return choice or None
+            if char in {"\x7f", "\b"}:
+                self._input_buffer = self._input_buffer[:-1]
+                return None
+            if char.isdigit():
+                self._input_buffer += char
+                return None
+            if char in {"n", "p", "q", "b", "x", "l", "r", "e", "R"}:
+                self._input_buffer = ""
+                return char
+            return None
+
+        try:
+            line = sys.stdin.readline()
+        except (OSError, ValueError):
+            return None
+        return line.strip() or None
 
     def _inspect_recent_turns_during_live(
         self,
@@ -1109,41 +1241,175 @@ class LiveMonitor:
         interactive_switch: bool,
         limit: int = RECENT_TURN_LIMIT,
         refresh_workflow: Optional[Callable[[], Any]] = None,
-    ) -> None:
-        """Pause live view, show recent-turn picker/details, then resume live view."""
-        raw_mode_was_enabled = self._stdin_fd is not None
-        if raw_mode_was_enabled:
-            self._disable_raw_input_mode()
+        refresh_interval: int = 5,
+        resolve_completed_turn_counts: Optional[Callable[[Any], Optional[Dict[str, int]]]] = None,
+    ) -> bool:
+        """Show a persistent turn table and optional selected-workflow count summary."""
+        current_workflow = workflow
+        all_descriptors = self._describe_recent_turns(current_workflow, limit)
+        filter_options = {
+            "b": ("build", {"build"}),
+            "x": ("bash-executor", {"bash-executor"}),
+            "l": ("lite-worker", {"lite-worker", "liteworker"}),
+            "r": ("reviewer", {"reviewer"}),
+            "e": ("explore", {"explore", "explorer"}),
+        }
+        active_filter: Optional[str] = None
+        active_filter_agents: Optional[set] = None
 
+        def filtered_descriptors() -> List[Dict[str, Any]]:
+            if active_filter_agents is None:
+                return all_descriptors
+            return [
+                descriptor for descriptor in all_descriptors
+                if str(descriptor.get("agent", "main")).casefold() in active_filter_agents
+            ]
+
+        descriptors = filtered_descriptors()
+        completed_turn_counts = (
+            resolve_completed_turn_counts(current_workflow)
+            if resolve_completed_turn_counts else None
+        )
+        page = 0
+        page_size = self.RECENT_TURN_PAGE_SIZE
+        workflow_summary = Group(
+            Text("Workflow-wide completed prompt count"),
+            self._completed_turn_summary(completed_turn_counts),
+        )
+        if not sys.stdin.isatty():
+            self._live_status_line = "Recent Turns requires an interactive terminal."
+            live.update(
+                Group(
+                    workflow_summary,
+                    self._build_recent_turn_picker_table(
+                        descriptors, title, page, page_size, active_filter=active_filter
+                    ),
+                )
+            )
+            return True
+
+        self._live_status_line = (
+            "Recent Turns — b/x/l/r/e filter, n/p page, number + Enter select, "
+            "R refresh, q return."
+        )
+        live.update(
+            Group(
+                workflow_summary,
+                self._build_recent_turn_picker_table(
+                    descriptors, title, page, page_size,
+                    refresh_interval=refresh_interval, active_filter=active_filter,
+                ),
+            )
+        )
+        next_refresh_at = time.monotonic() + max(0, refresh_interval)
+        showing_detail = False
+        force_refresh = False
+        selection_unavailable = False
         try:
-            live.stop()
-            current_workflow = workflow
-
-            def refresh_current_workflow() -> Any:
-                nonlocal current_workflow
-                if refresh_workflow is not None:
-                    refreshed = refresh_workflow()
-                    if refreshed is not None:
-                        current_workflow = refreshed
-                return current_workflow
-
             while True:
-                if refresh_workflow is not None:
-                    selected_turn = self._prompt_for_recent_turn_selection(
-                        current_workflow, title, limit, refresh_current_workflow
+                command = self._poll_recent_turn_command()
+                if showing_detail and command:
+                    showing_detail = False
+                    self._live_status_line = (
+                        "Recent Turns — b/x/l/r/e filter, n/p page, number + Enter select, "
+                        "R refresh, q return."
                     )
-                else:
-                    selected_turn = self._prompt_for_recent_turn_selection(
-                        current_workflow, title, limit
-                    )
-                if not selected_turn:
+                    if command in {"q", "quit", "back"}:
+                        break
+                    command = None
+                if command in {"q", "quit", "back"}:
                     break
-                self._print_turn_detail(selected_turn)
-                self._live_status_line = f"Viewed turn {selected_turn.file_name}."
+                if command in filter_options:
+                    label, agents = filter_options[command]
+                    if active_filter == label:
+                        active_filter = None
+                        active_filter_agents = None
+                    else:
+                        active_filter = label
+                        active_filter_agents = agents
+                    descriptors = filtered_descriptors()
+                    page = 0
+                elif command in {"n", "next"}:
+                    page += 1
+                elif command in {"p", "prev", "previous"}:
+                    page -= 1
+                elif command in {"R", "refresh"}:
+                    force_refresh = True
+                elif command and command.isdigit():
+                    selected_idx = int(command)
+                    if 1 <= selected_idx <= len(descriptors):
+                        selected = cast(InteractionFile, descriptors[selected_idx - 1]["turn"])
+                        detail_panel, tool_table = self._build_turn_detail_renderables(selected)
+                        live.update(
+                            Group(
+                                detail_panel,
+                                tool_table,
+                                "[dim]Press any key to return to Recent Turns.[/dim]",
+                            )
+                        )
+                        showing_detail = True
+                        self._live_status_line = f"Viewed turn {selected.file_name}."
+                        time.sleep(0.05)
+                        continue
+                now = time.monotonic()
+                if not selection_unavailable and (
+                    force_refresh or (page == 0 and now >= next_refresh_at)
+                ):
+                    if refresh_workflow is not None:
+                        refreshed = refresh_workflow()
+                        if refreshed is None:
+                            selection_unavailable = True
+                            self._live_status_line = "Selected workflow is no longer available. Live monitoring will stop."
+                            all_descriptors = []
+                            descriptors = []
+                            completed_turn_counts = None
+                            workflow_summary = (
+                                "[status.error]Selected workflow is no longer available. Live monitoring will stop.[/status.error]"
+                            )
+                            page = 0
+                            force_refresh = False
+                            next_refresh_at = float("inf")
+                            live.update(
+                                Group(
+                                    workflow_summary,
+                                    self._build_recent_turn_picker_table(
+                                        [], title, 0, page_size, active_filter=active_filter
+                                    ),
+                                )
+                            )
+                            time.sleep(0.05)
+                            continue
+                        current_workflow = refreshed
+                        if resolve_completed_turn_counts:
+                            completed_turn_counts = resolve_completed_turn_counts(current_workflow)
+                        workflow_summary = Group(
+                            Text("Workflow-wide completed prompt count"),
+                            self._completed_turn_summary(completed_turn_counts),
+                        )
+                    all_descriptors = self._describe_recent_turns(current_workflow, limit)
+                    descriptors = filtered_descriptors()
+                    page = 0
+                    next_refresh_at = now + max(0, refresh_interval)
+                    force_refresh = False
+                total_pages = max(1, (len(descriptors) + page_size - 1) // page_size)
+                page = max(0, min(page, total_pages - 1))
+                if not showing_detail:
+                    live.update(
+                        Group(
+                            workflow_summary,
+                            self._build_recent_turn_picker_table(
+                                descriptors, title, page, page_size,
+                                refresh_interval=refresh_interval,
+                                active_filter=active_filter,
+                            ),
+                        )
+                    )
+                time.sleep(0.05)
         finally:
-            live.start(refresh=True)
-            if interactive_switch and raw_mode_was_enabled:
-                self._enable_raw_input_mode()
+            self._input_buffer = ""
+            if "no longer available" not in self._live_status_line.lower():
+                self._live_status_line = "Ready."
+        return "no longer available" not in self._live_status_line.lower()
 
     def _handle_live_switch_command(
         self,
@@ -1535,262 +1801,177 @@ class LiveMonitor:
         interactive_switch: bool = False,
         last: Optional[int] = None,
     ):
-        """Start live monitoring of all active workflows (main session + sub-agents).
+        """Monitor one file workflow, hydrating its members on each refresh.
 
-        Tracks all active (ongoing) workflows and displays the one with most recent activity.
-
-        Args:
-            base_path: Path to directory containing sessions
-            refresh_interval: Update interval in seconds
-            selected_session_id: Optional workflow/main/sub-agent ID to pin
-            interactive_switch: Enable command-driven live workflow switching
+        Picker metadata is retained between refreshes. Only explicit picker/navigation
+        actions rediscover candidate metadata; timer and Recent Turns refreshes hydrate
+        the currently selected workflow only.
         """
         try:
-            active_workflows = self._get_file_active_workflows(
-                base_path,
-                allow_fallback=not bool(selected_session_id) or last is not None,
-                selected_session_id=selected_session_id,
-                limit=last,
+            candidates = self._get_file_workflow_metadata(
+                base_path, allow_fallback=True, limit=last
             )
-            if not active_workflows:
-                self.console.print(
-                    f"[status.error]No sessions found in {base_path}[/status.error]"
+            selected_metadata = next(
+                (item for item in candidates if selected_session_id and
+                 (item.workflow_id == selected_session_id or any(
+                     member.session_id == selected_session_id for member in item.all_sessions
+                 ))),
+                None,
+            ) if selected_session_id else (candidates[0] if candidates else None)
+            if selected_metadata is None and selected_session_id:
+                expanded = self._get_file_workflow_metadata(base_path, True, None)
+                selected_metadata = next(
+                    (item for item in expanded if item.workflow_id == selected_session_id or any(
+                        member.session_id == selected_session_id for member in item.all_sessions
+                    )), None
                 )
+            current_workflow = (
+                self._hydrate_file_metadata_workflow(base_path, selected_metadata)
+                if selected_metadata else None
+            )
+            if current_workflow is None:
+                self.console.print(f"[status.error]No sessions found in {base_path}[/status.error]")
                 return
+            selected_anchor_id = selected_session_id or current_workflow.workflow_id
+            metadata_cache = SessionMetadataCache(
+                entries={
+                    member.session_id: member
+                    for candidate in [*candidates, selected_metadata]
+                    for member in candidate.all_sessions
+                },
+                dir_mtimes_ns={},
+                known_dir_ids=FileProcessor.list_session_directory_ids(base_path),
+            )
+            for session_id, metadata in metadata_cache.entries.items():
+                try:
+                    metadata_cache.dir_mtimes_ns[session_id] = metadata.session_path.stat().st_mtime_ns
+                except (AttributeError, OSError):
+                    pass
 
-            if selected_session_id:
-                current_workflow = self._resolve_selected_file_workflow(
-                    active_workflows, selected_session_id
+            def refresh_selected_metadata():
+                nonlocal selected_metadata, metadata_cache
+                candidate_limit = last * 10 if last is not None and last > 0 else 50
+                metadata_cache = FileProcessor.refresh_session_metadata(
+                    base_path, metadata_cache, limit=candidate_limit
                 )
-                if not current_workflow:
-                    self.console.print(
-                        f"[status.error]Selected session/workflow '{selected_session_id}' is not available.[/status.error]"
-                    )
-                    return
-            else:
-                current_workflow = self._select_most_recent_file_workflow(
-                    active_workflows
+                refreshed_candidates = self.session_grouper.group_session_metadata(
+                    list(metadata_cache.entries.values())
                 )
+                refreshed_selected = next(
+                    (item for item in refreshed_candidates
+                     if item.workflow_id == selected_anchor_id or any(
+                         member.session_id == selected_anchor_id
+                         for member in item.all_sessions
+                     )),
+                    None,
+                )
+                selected_metadata = refreshed_selected
+                return selected_metadata
 
             current_workflow_id = current_workflow.workflow_id
-            self.prev_tracked = set(s.session_id for s in current_workflow.all_sessions)
-
+            self.prev_tracked = {s.session_id for s in current_workflow.all_sessions}
             self.console.print(
                 f"[status.success]Starting live monitoring of workflow: {current_workflow.main_session.session_id}[/status.success]"
             )
-            if selected_session_id:
-                self.console.print(
-                    f"[status.info]Pinned mode: tracking selected ID [metric.value]{selected_session_id}[/metric.value][/status.info]"
-                )
-            else:
-                self.console.print(
-                    "[status.info]Auto mode: showing most recently active workflow[/status.info]"
-                )
+            self.console.print(
+                "[status.info]Pinned mode: tracking selected workflow[/status.info]"
+                if selected_session_id else
+                "[status.info]Auto mode: monitoring the workflow selected at startup (selection stays fixed)[/status.info]"
+            )
             if current_workflow.has_sub_agents:
                 self.console.print(
                     f"[status.info]Tracking {current_workflow.session_count} sessions (1 main + {current_workflow.sub_agent_count} sub-agents)[/status.info]"
                 )
-            if len(active_workflows) > 1:
-                self.console.print(
-                    f"[status.info]Monitoring {len(active_workflows)} active workflows[/status.info]"
-                )
-            self.console.print(
-                f"[status.info]Update interval: {refresh_interval} seconds[/status.info]"
-            )
+            self.console.print(f"[status.info]Update interval: {refresh_interval} seconds[/status.info]")
             if interactive_switch:
                 raw_mode_enabled = self._enable_raw_input_mode()
                 self._live_status_line = "Ready."
-                self.console.print(
-                    "[status.info]Interactive controls enabled: press n/p/l/t/1..9/q[/status.info]"
-                )
+                self.console.print("[status.info]Interactive controls enabled: press n/p/l/t/1..9/q[/status.info]")
                 if not raw_mode_enabled:
-                    self.console.print(
-                        "[status.warning]Raw key mode unavailable; fallback requires Enter.[/status.warning]"
-                    )
-                    self._live_status_line = (
-                        "Raw-key mode unavailable; commands require Enter."
-                    )
+                    self.console.print("[status.warning]Raw-key mode unavailable; fallback requires Enter.[/status.warning]")
+                    self._live_status_line = "Raw-key mode unavailable; commands require Enter."
             self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
 
-            with Live(
-                self._generate_workflow_dashboard(
-                    current_workflow, self._controls_hint(interactive_switch)
-                ),
-                refresh_per_second=10,
-                console=self.console,
-            ) as live:
-                descriptors = self._describe_file_workflows(active_workflows)
+            with Live(self._generate_workflow_dashboard(current_workflow, self._controls_hint(interactive_switch)),
+                      refresh_per_second=10, console=self.console) as live:
+                descriptors = self._describe_file_workflows(candidates)
                 next_refresh_at = time.time() + refresh_interval
                 while True:
                     if interactive_switch:
                         command = self._poll_live_switch_command()
-                        if command:
-                            prev_workflow_id = current_workflow_id
-                            if command in {"l", "list", "s", "show"}:
-                                (
-                                    current_workflow_id,
-                                    current_workflow,
-                                    selected_session_id,
-                                ) = self._handle_list_command(
-                                    live,
-                                    descriptors,
-                                    selected_session_id,
-                                    current_workflow_id,
-                                    current_workflow,
-                                    active_workflows,
-                                    interactive_switch,
-                                    refresh_interval,
-                                )
-                                if current_workflow_id != prev_workflow_id:
-                                    next_refresh_at = time.time() + refresh_interval
-                                continue
-
-                            if command in {"t", "turn", "turns", "history"}:
-
-                                def refresh_current_turn_workflow() -> Any:
-                                    nonlocal \
-                                        active_workflows, \
-                                        descriptors, \
-                                        current_workflow, \
-                                        current_workflow_id
-                                    active_workflows = self._get_file_active_workflows(
-                                        base_path,
-                                        allow_fallback=not bool(selected_session_id) or last is not None,
-                                        selected_session_id=selected_session_id,
-                                        limit=last,
-                                    )
-                                    descriptors = self._describe_file_workflows(
-                                        active_workflows
-                                    )
-                                    if not active_workflows:
-                                        return current_workflow
-
-                                    if selected_session_id:
-                                        refreshed_current = (
-                                            self._resolve_selected_file_workflow(
-                                                active_workflows, selected_session_id
-                                            )
-                                        )
-                                    else:
-                                        refreshed_current = next(
-                                            (
-                                                workflow
-                                                for workflow in active_workflows
-                                                if workflow.workflow_id
-                                                == current_workflow_id
-                                            ),
-                                            None,
-                                        )
-                                    if refreshed_current is None:
-                                        refreshed_current = (
-                                            self._select_most_recent_file_workflow(
-                                                active_workflows
-                                            )
-                                        )
-
-                                    if refreshed_current:
-                                        current_workflow = refreshed_current
-                                        current_workflow_id = (
-                                            current_workflow.workflow_id
-                                        )
-                                        self.prev_tracked |= set(
-                                            s.session_id
-                                            for s in current_workflow.all_sessions
-                                        )
-                                    return current_workflow
-
-                                self._inspect_recent_turns_during_live(
-                                    live,
-                                    current_workflow,
-                                    "Recent Turns",
-                                    interactive_switch,
-                                    refresh_workflow=refresh_current_turn_workflow,
-                                )
-                                live.update(
-                                    self._generate_workflow_dashboard(
-                                        current_workflow,
-                                        self._controls_hint(interactive_switch),
-                                    )
-                                )
-                                next_refresh_at = time.time() + refresh_interval
-                                continue
-
-                            (
-                                should_quit,
-                                current_workflow_id,
-                                current_workflow,
-                                selected_session_id,
-                            ) = self._handle_navigation_command(
-                                command,
-                                descriptors,
-                                selected_session_id,
-                                current_workflow_id,
-                                current_workflow,
-                                active_workflows,
-                                live,
-                                interactive_switch,
-                                refresh_interval,
+                        if command in {"q", "quit", "exit"}:
+                            break
+                        if command in {"t", "turn", "turns", "history"}:
+                            def refresh_current_turn_workflow():
+                                nonlocal current_workflow
+                                refreshed_metadata = refresh_selected_metadata()
+                                if refreshed_metadata is None:
+                                    return None
+                                refreshed = self._hydrate_file_metadata_workflow(base_path, refreshed_metadata)
+                                if refreshed is None:
+                                    return None
+                                current_workflow = refreshed
+                                self.prev_tracked |= {s.session_id for s in refreshed.all_sessions}
+                                return refreshed
+                            available = self._inspect_recent_turns_during_live(
+                                live, current_workflow, "Recent Turns", interactive_switch,
+                                refresh_workflow=refresh_current_turn_workflow,
+                                refresh_interval=refresh_interval,
+                                resolve_completed_turn_counts=lambda selected: self._get_completed_turn_counts(
+                                    selected, sqlite_mode=False
+                                ),
                             )
-                            if current_workflow_id != prev_workflow_id:
-                                next_refresh_at = time.time() + refresh_interval
-                            if should_quit:
-                                self.console.print(
-                                    "\n[status.warning]Live monitoring stopped.[/status.warning]"
-                                )
+                            if not available:
                                 break
-
+                            live.update(self._generate_workflow_dashboard(current_workflow, self._controls_hint(interactive_switch)))
+                            next_refresh_at = time.time() + refresh_interval
+                            continue
+                        if command in {"l", "list", "s", "show", "n", "next", "p", "prev", "previous"} or (command and command.isdigit()):
+                            candidates = self._get_file_workflow_metadata(base_path, True, last)
+                            descriptors = self._describe_file_workflows(candidates)
+                            if command in {"l", "list", "s", "show"}:
+                                target_id = self._pick_workflow_during_live(live, descriptors, "Live Workflow Switcher", interactive_switch)
+                            else:
+                                target_id, quit_requested = self._handle_live_switch_command(command, descriptors, current_workflow_id)
+                                if quit_requested:
+                                    break
+                            target_metadata = next((item for item in candidates if item.workflow_id == target_id or any(member.session_id == target_id for member in item.all_sessions)), None)
+                            if target_metadata:
+                                selected_anchor_id = target_id
+                                for member in target_metadata.all_sessions:
+                                    metadata_cache.entries[member.session_id] = member
+                                    try:
+                                        metadata_cache.dir_mtimes_ns[member.session_id] = member.session_path.stat().st_mtime_ns
+                                    except (AttributeError, OSError):
+                                        pass
+                                refreshed = self._hydrate_file_metadata_workflow(base_path, target_metadata)
+                                if refreshed:
+                                    selected_metadata = target_metadata
+                                    selected_session_id = target_id
+                                    selected_anchor_id = target_id
+                                    current_workflow = refreshed
+                                    current_workflow_id = refreshed.workflow_id
+                                    self.prev_tracked = {s.session_id for s in refreshed.all_sessions}
+                                    live.update(self._generate_workflow_dashboard(refreshed, self._controls_hint(interactive_switch)))
+                                    next_refresh_at = time.time() + refresh_interval
+                            continue
                     if time.time() < next_refresh_at:
                         time.sleep(0.05)
                         continue
-
-                    active_workflows = self._get_file_active_workflows(
-                        base_path,
-                        allow_fallback=not bool(selected_session_id) or last is not None,
-                        selected_session_id=selected_session_id,
-                        limit=last,
+                    refreshed_metadata = refresh_selected_metadata()
+                    refreshed = (
+                        self._hydrate_file_metadata_workflow(base_path, refreshed_metadata)
+                        if refreshed_metadata is not None else None
                     )
-                    descriptors = self._describe_file_workflows(active_workflows)
-
-                    if not active_workflows:
-                        self.console.print(
-                            "[status.warning]No workflows available to monitor.[/status.warning]"
-                        )
+                    if refreshed is None:
+                        self.console.print("[status.warning]Selected workflow is no longer available.[/status.warning]")
                         break
-
-                    if selected_session_id:
-                        new_current = self._resolve_selected_file_workflow(
-                            active_workflows, selected_session_id
-                        )
-                        if not new_current:
-                            self.console.print(
-                                f"[status.warning]Selected session/workflow '{selected_session_id}' is no longer active. Stopping monitor.[/status.warning]"
-                            )
-                            break
-                    else:
-                        new_current = self._select_most_recent_file_workflow(
-                            active_workflows
-                        )
-
-                    if new_current.workflow_id != current_workflow_id:
-                        current_workflow_id = new_current.workflow_id
-                        self.prev_tracked = set()
-                    current_workflow = new_current
-
-                    self.prev_tracked |= set(
-                        s.session_id for s in current_workflow.all_sessions
-                    )
-
-                    live.update(
-                        self._generate_workflow_dashboard(
-                            current_workflow, self._controls_hint(interactive_switch)
-                        )
-                    )
+                    current_workflow = refreshed
+                    self.prev_tracked |= {s.session_id for s in refreshed.all_sessions}
+                    live.update(self._generate_workflow_dashboard(refreshed, self._controls_hint(interactive_switch)))
                     next_refresh_at = time.time() + refresh_interval
-
         except KeyboardInterrupt:
-            self.console.print(
-                "\n[status.warning]Live monitoring stopped.[/status.warning]"
-            )
+            self.console.print("\n[status.warning]Live monitoring stopped.[/status.warning]")
         finally:
             self._disable_raw_input_mode()
 
@@ -1972,6 +2153,7 @@ class LiveMonitor:
             tool_stats_by_model=tool_stats_by_model,
             controls_hint=controls_hint,
             burn_rate=burn_rate,
+            completed_turn_counts=None,
         )
 
     def _calculate_per_model_output_rates(
@@ -2333,332 +2515,134 @@ class LiveMonitor:
         interactive_switch: bool = False,
         last: Optional[int] = None,
     ):
-        """Start live monitoring of all active workflows from SQLite (v1.2.0+).
+        """Monitor one SQLite workflow, hydrating only its selected members.
 
-        Tracks all active (ongoing) workflows and displays the one with most recent activity.
-        Shows the current workflow (main session + sub-agents) with detailed metrics.
-
-        Args:
-            refresh_interval: Update interval in seconds
-            selected_session_id: Optional workflow/main/sub-agent ID to pin
-            interactive_switch: Enable command-driven live workflow switching
+        Candidate metadata is held stable across timer refreshes. Explicit picker
+        and navigation commands refresh candidate metadata; Recent Turns and timer
+        refreshes load messages only for the selected workflow.
         """
         try:
-            # Check if SQLite is available
             db_path = SQLiteProcessor.find_database_path()
             if not db_path:
-                self.console.print(
-                    "[status.error]SQLite database not found.[/status.error]"
-                )
+                self.console.print("[status.error]SQLite database not found.[/status.error]")
                 return
-
-            active_workflows = self._get_sqlite_active_workflows(
-                allow_fallback=not bool(selected_session_id) or last is not None,
-                selected_session_id=selected_session_id,
-                limit=last,
-            )
-            if not active_workflows:
-                self.console.print(
-                    "[status.error]No sessions found in database.[/status.error]"
-                )
+            candidates = self._get_sqlite_workflow_metadata(db_path, True, last)
+            selected_metadata = next(
+                (item for item in candidates if selected_session_id and
+                 (item["workflow_id"] == selected_session_id or
+                  selected_session_id in item.get("member_session_ids", []))),
+                None,
+            ) if selected_session_id else (candidates[0] if candidates else None)
+            if selected_metadata is None and selected_session_id:
+                selected_metadata = SQLiteProcessor.get_workflow_metadata_by_id(selected_session_id, db_path)
+            current_workflow = self._hydrate_sqlite_metadata_workflow(selected_metadata, db_path) if selected_metadata else None
+            if current_workflow is None:
+                self.console.print("[status.error]No sessions found in database.[/status.error]")
                 return
-
-            if selected_session_id:
-                current_workflow = self._resolve_selected_sqlite_workflow(
-                    active_workflows, selected_session_id
-                )
-                if not current_workflow:
-                    self.console.print(
-                        f"[status.error]Selected session/workflow '{selected_session_id}' is not available.[/status.error]"
-                    )
-                    return
-            else:
-                current_workflow = self._select_most_recent_workflow(active_workflows)
-
+            if selected_metadata is None:
+                return
+            selected_workflow_id = selected_metadata["workflow_id"]
             current_workflow_id = current_workflow["workflow_id"]
-            self.prev_tracked = set(
-                s.session_id for s in current_workflow["all_sessions"]
-            )
-
-            self.console.print(
-                f"[status.success]Starting live monitoring of workflow: {current_workflow_id}[/status.success]"
-            )
+            self.prev_tracked = {s.session_id for s in current_workflow["all_sessions"]}
+            self.console.print(f"[status.success]Starting live monitoring of workflow: {current_workflow_id}[/status.success]")
             if selected_session_id:
-                self.console.print(
-                    f"[status.info]Pinned mode: tracking selected ID [metric.value]{selected_session_id}[/metric.value][/status.info]"
-                )
+                self.console.print(f"[status.info]Pinned mode: tracking selected ID [metric.value]{selected_session_id}[/metric.value][/status.info]")
             else:
-                self.console.print(
-                    "[status.info]Auto mode: showing most recently active workflow[/status.info]"
-                )
+                self.console.print("[status.info]Auto mode: monitoring the workflow selected at startup (selection stays fixed)[/status.info]")
             if current_workflow["has_sub_agents"]:
-                self.console.print(
-                    f"[status.info]Tracking {current_workflow['session_count']} sessions (1 main + {current_workflow['sub_agent_count']} sub-agents)[/status.info]"
-                )
-            if len(active_workflows) > 1:
-                self.console.print(
-                    f"[status.info]Monitoring {len(active_workflows)} active workflows[/status.info]"
-                )
-            self.console.print(
-                f"[status.info]Update interval: {refresh_interval} seconds[/status.info]"
-            )
+                self.console.print(f"[status.info]Tracking {current_workflow['session_count']} sessions (1 main + {current_workflow['sub_agent_count']} sub-agents)[/status.info]")
+            self.console.print(f"[status.info]Update interval: {refresh_interval} seconds[/status.info]")
             if interactive_switch:
                 raw_mode_enabled = self._enable_raw_input_mode()
                 self._live_status_line = "Ready."
-                self.console.print(
-                    "[status.info]Interactive controls enabled: press n/p/l/t/1..9/q[/status.info]"
-                )
+                self.console.print("[status.info]Interactive controls enabled: press n/p/l/t/1..9/q[/status.info]")
                 if not raw_mode_enabled:
-                    self.console.print(
-                        "[status.warning]Raw key mode unavailable; fallback requires Enter.[/status.warning]"
-                    )
-                    self._live_status_line = (
-                        "Raw-key mode unavailable; commands require Enter."
-                    )
+                    self.console.print("[status.warning]Raw-key mode unavailable; fallback requires Enter.[/status.warning]")
+                    self._live_status_line = "Raw-key mode unavailable; commands require Enter."
             self.console.print("[dim]Press Ctrl+C to exit[/dim]\n")
-
-            # Start live monitoring
-            with Live(
-                self._generate_sqlite_workflow_dashboard(
-                    current_workflow, self._controls_hint(interactive_switch)
-                ),
-                refresh_per_second=10,
-                console=self.console,
-            ) as live:
-                descriptors = self._describe_sqlite_workflows(active_workflows)
+            with Live(self._generate_sqlite_workflow_dashboard(current_workflow, self._controls_hint(interactive_switch)),
+                      refresh_per_second=10, console=self.console) as live:
+                descriptors = self._describe_sqlite_workflows(candidates)
                 next_refresh_at = time.time() + refresh_interval
                 while True:
                     if interactive_switch:
                         command = self._poll_live_switch_command()
-                        if command:
-                            if command in {"l", "list", "s", "show"}:
-                                selected_from_picker = self._pick_workflow_during_live(
-                                    live,
-                                    descriptors,
-                                    "Live Workflow Switcher",
-                                    interactive_switch,
+                        if command in {"q", "quit", "exit"}:
+                            break
+                        if command in {"t", "turn", "turns", "history"}:
+                            def refresh_current_turn_workflow():
+                                nonlocal current_workflow, selected_metadata
+                                if selected_metadata is None:
+                                    return None
+                                selected_metadata = self._refresh_sqlite_workflow_metadata(
+                                    selected_metadata, db_path
                                 )
-                                if selected_from_picker:
-                                    selected_session_id, switched = (
-                                        self._apply_switch_command_selection(
-                                            selected_session_id,
-                                            current_workflow_id,
-                                            selected_from_picker,
-                                        )
-                                    )
-                                    if switched and selected_session_id:
-                                        self.prev_tracked = set()
-                                        self._live_status_line = f"Switched to workflow {selected_session_id}."
-                                        self.console.print(
-                                            f"[status.info]Switched to workflow [metric.value]{selected_session_id}[/metric.value][/status.info]"
-                                        )
-                                        immediate_current = (
-                                            self._resolve_selected_sqlite_workflow(
-                                                active_workflows, selected_session_id
-                                            )
-                                        )
-                                        if immediate_current:
-                                            if (
-                                                immediate_current["workflow_id"]
-                                                != current_workflow_id
-                                            ):
-                                                current_workflow_id = immediate_current[
-                                                    "workflow_id"
-                                                ]
-                                                self.prev_tracked = set()
-                                            current_workflow = immediate_current
-                                            self.prev_tracked |= set(
-                                                s.session_id
-                                                for s in current_workflow[
-                                                    "all_sessions"
-                                                ]
-                                            )
-                                            live.update(
-                                                self._generate_sqlite_workflow_dashboard(
-                                                    current_workflow,
-                                                    self._controls_hint(
-                                                        interactive_switch
-                                                    ),
-                                                )
-                                            )
-                                            next_refresh_at = (
-                                                time.time() + refresh_interval
-                                            )
-                                continue
-
-                            if command in {"t", "turn", "turns", "history"}:
-
-                                def refresh_current_turn_workflow() -> Any:
-                                    nonlocal \
-                                        active_workflows, \
-                                        descriptors, \
-                                        current_workflow, \
-                                        current_workflow_id
-                                    active_workflows = (
-                                        self._get_sqlite_active_workflows(
-                                            allow_fallback=not bool(
-                                                selected_session_id
-                                            ) or last is not None,
-                                            selected_session_id=selected_session_id,
-                                            limit=last,
-                                        )
-                                    )
-                                    descriptors = self._describe_sqlite_workflows(
-                                        active_workflows
-                                    )
-                                    if not active_workflows:
-                                        return current_workflow
-
-                                    if selected_session_id:
-                                        refreshed_current = (
-                                            self._resolve_selected_sqlite_workflow(
-                                                active_workflows, selected_session_id
-                                            )
-                                        )
-                                    else:
-                                        refreshed_current = next(
-                                            (
-                                                workflow
-                                                for workflow in active_workflows
-                                                if workflow["workflow_id"]
-                                                == current_workflow_id
-                                            ),
-                                            None,
-                                        )
-                                    if refreshed_current is None:
-                                        refreshed_current = (
-                                            self._select_most_recent_workflow(
-                                                active_workflows
-                                            )
-                                        )
-
-                                    if refreshed_current:
-                                        current_workflow = refreshed_current
-                                        current_workflow_id = current_workflow[
-                                            "workflow_id"
-                                        ]
-                                        self.prev_tracked |= set(
-                                            s.session_id
-                                            for s in current_workflow["all_sessions"]
-                                        )
-                                    return current_workflow
-
-                                self._inspect_recent_turns_during_live(
-                                    live,
-                                    current_workflow,
-                                    "Recent Turns",
-                                    interactive_switch,
-                                    refresh_workflow=refresh_current_turn_workflow,
-                                )
-                                live.update(
-                                    self._generate_sqlite_workflow_dashboard(
-                                        current_workflow,
-                                        self._controls_hint(interactive_switch),
-                                    )
-                                )
-                                next_refresh_at = time.time() + refresh_interval
-                                continue
-
-                            new_id, should_quit = self._handle_live_switch_command(
-                                command, descriptors, current_workflow_id
+                                if selected_metadata is None:
+                                    return None
+                                refreshed = self._hydrate_sqlite_metadata_workflow(selected_metadata, db_path)
+                                if refreshed is None:
+                                    return None
+                                current_workflow = refreshed
+                                self.prev_tracked |= {s.session_id for s in refreshed["all_sessions"]}
+                                return refreshed
+                            available = self._inspect_recent_turns_during_live(
+                                live, current_workflow, "Recent Turns", interactive_switch,
+                                refresh_workflow=refresh_current_turn_workflow,
+                                refresh_interval=refresh_interval,
+                                resolve_completed_turn_counts=lambda selected: self._get_completed_turn_counts(
+                                    selected, sqlite_mode=True
+                                ),
                             )
-                            if should_quit:
-                                self.console.print(
-                                    "\n[status.warning]Live monitoring stopped.[/status.warning]"
-                                )
+                            if not available:
                                 break
-                            selected_session_id, switched = (
-                                self._apply_switch_command_selection(
-                                    selected_session_id,
-                                    current_workflow_id,
-                                    new_id,
-                                )
-                            )
-                            if switched and selected_session_id:
-                                self.prev_tracked = set()
-                                self._live_status_line = (
-                                    f"Switched to workflow {selected_session_id}."
-                                )
-                                self.console.print(
-                                    f"[status.info]Switched to workflow [metric.value]{selected_session_id}[/metric.value][/status.info]"
-                                )
-                                immediate_current = (
-                                    self._resolve_selected_sqlite_workflow(
-                                        active_workflows, selected_session_id
-                                    )
-                                )
-                                if immediate_current:
-                                    if (
-                                        immediate_current["workflow_id"]
-                                        != current_workflow_id
-                                    ):
-                                        current_workflow_id = immediate_current[
-                                            "workflow_id"
-                                        ]
-                                        self.prev_tracked = set()
-                                    current_workflow = immediate_current
-                                    self.prev_tracked |= set(
-                                        s.session_id
-                                        for s in current_workflow["all_sessions"]
-                                    )
-                                    live.update(
-                                        self._generate_sqlite_workflow_dashboard(
-                                            current_workflow,
-                                            self._controls_hint(interactive_switch),
-                                        )
-                                    )
+                            live.update(self._generate_sqlite_workflow_dashboard(current_workflow, self._controls_hint(interactive_switch)))
+                            next_refresh_at = time.time() + refresh_interval
+                            continue
+                        if command in {"l", "list", "s", "show", "n", "next", "p", "prev", "previous"} or (command and command.isdigit()):
+                            candidates = self._get_sqlite_workflow_metadata(db_path, True, last)
+                            descriptors = self._describe_sqlite_workflows(candidates)
+                            if command in {"l", "list", "s", "show"}:
+                                target_id = self._pick_workflow_during_live(live, descriptors, "Live Workflow Switcher", interactive_switch)
+                            else:
+                                target_id, quit_requested = self._handle_live_switch_command(command, descriptors, current_workflow_id)
+                                if quit_requested:
+                                    break
+                            target_metadata = next((item for item in candidates if item["workflow_id"] == target_id or target_id in item.get("member_session_ids", [])), None) if target_id else None
+                            if target_metadata is None and target_id:
+                                target_metadata = SQLiteProcessor.get_workflow_metadata_by_id(target_id, db_path)
+                            if target_metadata:
+                                refreshed = self._hydrate_sqlite_metadata_workflow(target_metadata, db_path)
+                                if refreshed:
+                                    selected_metadata = target_metadata
+                                    selected_workflow_id = target_metadata["workflow_id"]
+                                    selected_session_id = target_id
+                                    current_workflow = refreshed
+                                    current_workflow_id = refreshed["workflow_id"]
+                                    self.prev_tracked = {s.session_id for s in refreshed["all_sessions"]}
+                                    live.update(self._generate_sqlite_workflow_dashboard(refreshed, self._controls_hint(interactive_switch)))
                                     next_refresh_at = time.time() + refresh_interval
-
+                            continue
                     if time.time() < next_refresh_at:
                         time.sleep(0.05)
                         continue
-
-                    active_workflows = self._get_sqlite_active_workflows(
-                        allow_fallback=not bool(selected_session_id) or last is not None,
-                        selected_session_id=selected_session_id,
-                        limit=last,
+                    refreshed_metadata = (
+                        self._refresh_sqlite_workflow_metadata(selected_metadata, db_path)
+                        if selected_metadata is not None else None
                     )
-                    descriptors = self._describe_sqlite_workflows(active_workflows)
-
-                    if not active_workflows:
-                        self.console.print(
-                            "[status.warning]No workflows available to monitor.[/status.warning]"
-                        )
+                    refreshed = (
+                        self._hydrate_sqlite_metadata_workflow(refreshed_metadata, db_path)
+                        if refreshed_metadata is not None else None
+                    )
+                    if refreshed is None:
+                        self.console.print("[status.warning]Selected workflow is no longer available.[/status.warning]")
                         break
-
-                    if selected_session_id:
-                        new_current = self._resolve_selected_sqlite_workflow(
-                            active_workflows, selected_session_id
-                        )
-                        if not new_current:
-                            self.console.print(
-                                f"[status.warning]Selected session/workflow '{selected_session_id}' is no longer active. Stopping monitor.[/status.warning]"
-                            )
-                            break
-                    else:
-                        new_current = self._select_most_recent_workflow(
-                            active_workflows
-                        )
-
-                    if new_current["workflow_id"] != current_workflow_id:
-                        current_workflow_id = new_current["workflow_id"]
-                        self.prev_tracked = set()
-                    current_workflow = new_current
-                    self.prev_tracked |= set(
-                        s.session_id for s in current_workflow["all_sessions"]
-                    )
-
-                    live.update(
-                        self._generate_sqlite_workflow_dashboard(
-                            current_workflow, self._controls_hint(interactive_switch)
-                        )
-                    )
+                    selected_metadata = refreshed_metadata
+                    current_workflow = refreshed
+                    self.prev_tracked |= {s.session_id for s in refreshed["all_sessions"]}
+                    live.update(self._generate_sqlite_workflow_dashboard(refreshed, self._controls_hint(interactive_switch)))
                     next_refresh_at = time.time() + refresh_interval
-
         except KeyboardInterrupt:
-            self.console.print(
-                "\n[status.warning]Live monitoring stopped.[/status.warning]"
-            )
+            self.console.print("\n[status.warning]Live monitoring stopped.[/status.warning]")
         finally:
             self._disable_raw_input_mode()
 
@@ -2796,6 +2780,7 @@ class LiveMonitor:
             tool_stats_by_model=tool_stats_by_model,
             controls_hint=controls_hint,
             burn_rate=burn_rate,
+            completed_turn_counts=self._get_completed_turn_counts(workflow, sqlite_mode=True),
         )
 
     def _calculate_sqlite_per_model_output_rates(

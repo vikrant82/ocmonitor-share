@@ -318,6 +318,189 @@ class TestLoadAllSessions:
         assert len(result) == 3
 
 
+class TestMetadataDiscovery:
+    def _write_session(self, base, session_id, agent, project, created, tokens=10):
+        session_dir = base / session_id
+        session_dir.mkdir()
+        (session_dir / "inter_0001.json").write_text(json.dumps({
+            "agent": agent,
+            "tokens": {"input": tokens},
+            "time": {"created": created, "completed": created + 1000} if created is not None else {},
+            "path": {"cwd": project},
+            "message": {"private": "payload must not be retained"},
+        }))
+        return session_dir
+
+    def test_metadata_matches_grouping_fields_without_payloads(self, tmp_path):
+        from ocmonitor.services.session_grouper import SessionGrouper
+
+        main = self._write_session(tmp_path, "ses_main", "main", "/work/project", 1700000000000)
+        sub = self._write_session(tmp_path, "ses_sub", "explore", "/work/project", 1700000005000)
+        (tmp_path / "ses_bad").mkdir()
+        (tmp_path / "ses_bad" / "bad.json").write_text("invalid")
+
+        metadata = FileProcessor.discover_session_metadata(str(tmp_path))
+        by_id = {session.session_id: session for session in metadata}
+        assert set(by_id) == {"ses_main", "ses_sub"}
+        assert by_id["ses_main"].agent == "main"
+        assert by_id["ses_main"].project_name == "project"
+        assert by_id["ses_main"].start_time is not None
+        assert by_id["ses_main"].start_time.timestamp() == pytest.approx(1700000000)
+        assert by_id["ses_main"].display_title == "ses_main"
+        assert by_id["ses_main"].last_activity_ts == pytest.approx((main / "inter_0001.json").stat().st_mtime)
+        assert "raw_data" not in vars(by_id["ses_main"])
+        workflow, = SessionGrouper().group_session_metadata(metadata)
+        assert workflow.workflow_id == "ses_main"
+        assert [session.session_id for session in workflow.all_sessions] == ["ses_main", "ses_sub"]
+        assert workflow.project_name == "project"
+        assert workflow.session_count == 2
+
+    def test_metadata_limit_candidates_and_hydrate_only_requested_ids(self, tmp_path, monkeypatch):
+        self._write_session(tmp_path, "ses_old", "main", "/work/old", 1700000000000)
+        selected = self._write_session(tmp_path, "ses_selected", "main", "/work/selected", 1700001000000)
+        ignored = self._write_session(tmp_path, "ses_ignored", "main", "/work/ignored", 1700002000000)
+        # Directory mtime determines candidate selection, independent of interaction time.
+        import os
+        os.utime(tmp_path / "ses_old", (100, 100))
+        os.utime(selected, (200, 200))
+        os.utime(ignored, (300, 300))
+        candidates = FileProcessor.discover_session_metadata(str(tmp_path), limit=2)
+        assert {session.session_id for session in candidates} == {"ses_selected", "ses_ignored"}
+
+        calls = []
+        real_loader = FileProcessor.load_session_data
+        def recording_loader(path):
+            calls.append(Path(path).name)
+            return real_loader(path)
+        monkeypatch.setattr(FileProcessor, "load_session_data", recording_loader)
+        loaded = FileProcessor.load_sessions_by_id(str(tmp_path), ["ses_selected", "ses_selected", "missing"])
+        assert [session.session_id for session in loaded] == ["ses_selected"]
+        assert calls == ["ses_selected"]
+        assert loaded[0].files[0].raw_data["message"]["private"] == "payload must not be retained"
+
+    def test_historical_loader_still_loads_full_session_data(self, tmp_path):
+        self._write_session(tmp_path, "ses_history", "main", "/work/history", 1700000000000)
+        sessions = FileProcessor.load_all_sessions(str(tmp_path))
+        assert [session.session_id for session in sessions] == ["ses_history"]
+        assert sessions[0].files[0].raw_data["message"]["private"] == "payload must not be retained"
+
+    def test_sub_agent_without_start_time_remains_an_orphan_workflow(self, tmp_path):
+        from ocmonitor.services.session_grouper import SessionGrouper
+
+        self._write_session(tmp_path, "ses_sub_orphan", "explore", "/work/project", None)
+        workflows = SessionGrouper().group_session_metadata(
+            FileProcessor.discover_session_metadata(str(tmp_path))
+        )
+        assert [workflow.workflow_id for workflow in workflows] == ["ses_sub_orphan"]
+        assert workflows[0].sub_agent_count == 0
+
+    def test_refresh_metadata_parses_new_child_directory(self, tmp_path):
+        from ocmonitor.utils.file_utils import SessionMetadataCache
+
+        cache = FileProcessor.refresh_session_metadata(str(tmp_path), None, limit=10)
+        self._write_session(tmp_path, "ses_new", "main", "/work/new", 1700000000000)
+
+        refreshed = FileProcessor.refresh_session_metadata(str(tmp_path), cache, limit=10)
+
+        assert isinstance(refreshed, SessionMetadataCache)
+        assert set(refreshed.entries) == {"ses_new"}
+        assert "ses_new" in refreshed.dir_mtimes_ns
+
+    def test_refresh_metadata_does_not_parse_unchanged_unselected_directories(self, tmp_path, monkeypatch):
+        self._write_session(tmp_path, "ses_old", "main", "/work/old", 1700000000000)
+        newest = self._write_session(tmp_path, "ses_newest", "main", "/work/new", 1700001000000)
+        import os
+        os.utime(tmp_path / "ses_old", (100, 100))
+        os.utime(newest, (200, 200))
+        cache = FileProcessor.refresh_session_metadata(str(tmp_path), None, limit=1)
+
+        calls = []
+        original = FileProcessor._discover_session_directory_metadata
+        def recording_parser(path):
+            calls.append(Path(path).name)
+            return original(path)
+        monkeypatch.setattr(FileProcessor, "_discover_session_directory_metadata", recording_parser)
+
+        FileProcessor.refresh_session_metadata(str(tmp_path), cache, limit=1)
+
+        assert calls == []
+        assert "ses_old" not in cache.entries
+
+    def test_refresh_metadata_parses_new_out_of_window_directory_only(self, tmp_path, monkeypatch):
+        import os
+
+        old = self._write_session(tmp_path, "ses_old", "main", "/work/old", 1700000000000)
+        newest = self._write_session(tmp_path, "ses_newest", "main", "/work/new", 1700001000000)
+        os.utime(old, (100, 100))
+        os.utime(newest, (300, 300))
+        cache = FileProcessor.refresh_session_metadata(str(tmp_path), None, limit=1)
+        added = self._write_session(tmp_path, "ses_added", "main", "/work/added", 1700002000000)
+        os.utime(added, (50, 50))
+
+        calls = []
+        original = FileProcessor._discover_session_directory_metadata
+
+        def recording_parser(path):
+            calls.append(Path(path).name)
+            return original(path)
+
+        monkeypatch.setattr(FileProcessor, "_discover_session_directory_metadata", recording_parser)
+        refreshed = FileProcessor.refresh_session_metadata(str(tmp_path), cache, limit=1)
+
+        assert calls == ["ses_added"]
+        assert set(refreshed.entries) == {"ses_newest", "ses_added"}
+
+    def test_cache_without_directory_baseline_establishes_without_full_hydration(self, tmp_path, monkeypatch):
+        from ocmonitor.utils.file_utils import SessionMetadataCache
+
+        old = self._write_session(tmp_path, "ses_old", "main", "/work/old", 1700000000000)
+        newest = self._write_session(tmp_path, "ses_newest", "main", "/work/new", 1700001000000)
+        import os
+        os.utime(old, (100, 100))
+        os.utime(newest, (300, 300))
+        cache = SessionMetadataCache(entries={}, dir_mtimes_ns={})
+        calls = []
+        original = FileProcessor._discover_session_directory_metadata
+
+        def recording_parser(path):
+            calls.append(Path(path).name)
+            return original(path)
+
+        monkeypatch.setattr(FileProcessor, "_discover_session_directory_metadata", recording_parser)
+        FileProcessor.refresh_session_metadata(str(tmp_path), cache, limit=1)
+        assert calls == ["ses_newest"]
+
+        added = self._write_session(tmp_path, "ses_added", "main", "/work/added", 1700002000000)
+        os.utime(added, (50, 50))
+        calls.clear()
+        FileProcessor.refresh_session_metadata(str(tmp_path), cache, limit=1)
+
+        assert calls == ["ses_added"]
+
+    def test_refresh_metadata_reparses_changed_and_removes_deleted_directory(self, tmp_path, monkeypatch):
+        changed = self._write_session(tmp_path, "ses_changed", "main", "/work/old", 1700000000000)
+        deleted = self._write_session(tmp_path, "ses_deleted", "main", "/work/delete", 1700001000000)
+        cache = FileProcessor.refresh_session_metadata(str(tmp_path), None)
+
+        # Force a directory mtime change, which is the refresh invalidation signal.
+        import os
+        os.utime(changed, (changed.stat().st_mtime + 10, changed.stat().st_mtime + 10))
+        import shutil
+        shutil.rmtree(deleted)
+        calls = []
+        original = FileProcessor._discover_session_directory_metadata
+        def recording_parser(path):
+            calls.append(Path(path).name)
+            return original(path)
+        monkeypatch.setattr(FileProcessor, "_discover_session_directory_metadata", recording_parser)
+
+        refreshed = FileProcessor.refresh_session_metadata(str(tmp_path), cache)
+
+        assert calls == ["ses_changed"]
+        assert set(refreshed.entries) == {"ses_changed"}
+        assert set(refreshed.dir_mtimes_ns) == {"ses_changed"}
+
+
 class TestValidateSessionStructure:
     """Tests for validate_session_structure method."""
     
