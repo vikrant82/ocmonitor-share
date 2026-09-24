@@ -1661,45 +1661,211 @@ class TestRecentTurnInspection:
         assert any("A: Assistant summary" in cell for cell in rendered_rows)
         assert any("Tools: bash:completed" in cell for cell in rendered_rows)
 
-    def test_inspect_recent_turns_pauses_live_and_restores_raw_mode(self, tmp_path):
+    def test_recent_turn_table_marks_cache_miss_rows(self, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        miss = self._make_turn(tmp_path, "ses-1", "miss.json", 1_000)
+        miss.tokens.cache_read = 0
+        hit = self._make_turn(tmp_path, "ses-1", "hit.json", 2_000)
+        hit.tokens.cache_read = 1
+        descriptors = monitor._describe_recent_turns(
+            SimpleNamespace(all_sessions=[SimpleNamespace(non_zero_token_files=[miss, hit])])
+        )
+
+        table = monitor._build_recent_turn_picker_table(descriptors, "Recent Turns")
+
+        assert table.columns[9].header == "Cache"
+        assert table.columns[9]._cells == ["—", "MISS"]
+        assert table.rows[1].style == "status.warning"
+        assert "not a provider miss event" in table.caption
+
+    def test_live_recent_turns_refreshes_and_resets_to_newest_page(
+        self, tmp_path, monkeypatch
+    ):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        old_turns = [
+            self._make_turn(tmp_path, "ses-1", f"old-{idx}.json", idx * 1000)
+            for idx in range(51)
+        ]
+        new_turn = self._make_turn(tmp_path, "ses-1", "newest.json", 99_000)
+        initial = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=old_turns)])
+        refreshed = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=[new_turn])])
+        live = MagicMock()
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monitor._poll_recent_turn_command = MagicMock(side_effect=[None, None, "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", MagicMock(side_effect=[0, 0, 1, 1.1]))
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+
+        monitor._inspect_recent_turns_during_live(
+            live, initial, "Recent Turns", True,
+            refresh_workflow=MagicMock(return_value=refreshed), refresh_interval=1,
+        )
+
+        assert live.update.call_count >= 3
+        final_table = live.update.call_args.args[0]
+        assert "1/1" in final_table.title
+        assert "1 turns" in final_table.title
+        assert monitor._live_status_line == "Ready."
+
+    def test_live_recent_turn_navigation_and_exit(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turns = [
+            self._make_turn(tmp_path, "ses-1", f"turn-{idx}.json", idx * 1000)
+            for idx in range(51)
+        ]
+        workflow = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=turns)])
+        live = MagicMock()
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["n", "p", "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+
+        monitor._inspect_recent_turns_during_live(live, workflow, "Recent Turns", True)
+
+        pages = [call.args[0].title for call in live.update.call_args_list]
+        assert any("page 2/2" in title for title in pages)
+        assert pages[-1].find("page 1/2") >= 0
+        assert monitor._live_status_line == "Ready."
+
+    def test_live_recent_turns_empty_initial_view_refreshes(self, monkeypatch):
+        from pathlib import Path
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(Path("."), "ses-1", "arrived.json", 1_000)
+        initial = SimpleNamespace(all_sessions=[])
+        refreshed = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=[turn])])
+        live = MagicMock()
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monitor._poll_recent_turn_command = MagicMock(side_effect=[None, "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", MagicMock(side_effect=[0, 1, 1.1]))
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+
+        monitor._inspect_recent_turns_during_live(
+            live, initial, "Recent Turns", True,
+            refresh_workflow=MagicMock(return_value=refreshed), refresh_interval=1,
+        )
+
+        assert "1 turns" in live.update.call_args.args[0].title
+
+    def test_live_recent_turns_accepts_multidigit_selection(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turns = [
+            self._make_turn(tmp_path, "ses-1", f"turn-{idx}.json", idx * 1000)
+            for idx in range(12)
+        ]
+        workflow = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=turns)])
+        monitor._stdin_fd = 42
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.select.select", lambda *a, **k: ([sys.stdin], [], []))
+        import os
+        import sys
+        keys = iter([b"1", b"2", b"\n", b"q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr(os, "read", lambda fd, size: next(keys))
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+        live = MagicMock()
+
+        monitor._inspect_recent_turns_during_live(live, workflow, "Recent Turns", True)
+
+        assert monitor._live_status_line == "Ready."
+        assert any(
+            getattr(getattr(call.args[0], "renderables", [None])[0], "title", "").startswith("Turn Details")
+            for call in live.update.call_args_list
+        )
+
+    def test_live_recent_turns_non_tty_does_not_poll(self, monkeypatch):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
         live = MagicMock()
-        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1_000)
-        monitor._stdin_fd = 9
-        monitor._stdin_termios_state = object()
-        monitor._disable_raw_input_mode = MagicMock()
-        monitor._enable_raw_input_mode = MagicMock(return_value=True)
-        monitor._prompt_for_recent_turn_selection = MagicMock(side_effect=[turn, None])
-        monitor._print_turn_detail = MagicMock()
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: False)
+        monitor._poll_recent_turn_command = MagicMock()
 
         monitor._inspect_recent_turns_during_live(
             live, SimpleNamespace(all_sessions=[]), "Recent Turns", True
         )
 
-        live.stop.assert_called_once()
-        live.start.assert_called_once_with(refresh=True)
-        monitor._disable_raw_input_mode.assert_called_once()
-        monitor._enable_raw_input_mode.assert_called_once()
-        monitor._print_turn_detail.assert_called_once_with(turn)
-        assert monitor._live_status_line is not None
-        assert "Viewed turn turn.json" in monitor._live_status_line
+        monitor._poll_recent_turn_command.assert_not_called()
+        assert "interactive terminal" in monitor._live_status_line
 
-    def test_inspect_recent_turns_can_select_another_turn(self, tmp_path):
+    def test_inspect_recent_turns_keeps_live_running_and_restores_status(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        live = MagicMock()
+        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1_000)
+        workflow = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=[turn])])
+        monitor._stdin_fd = 9
+        monitor._stdin_termios_state = object()
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["1", "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+
+        monitor._inspect_recent_turns_during_live(
+            live, workflow, "Recent Turns", True
+        )
+
+        live.stop.assert_not_called()
+        live.start.assert_not_called()
+        assert any(
+            getattr(getattr(call.args[0], "renderables", [None])[0], "title", "").startswith("Turn Details")
+            for call in live.update.call_args_list
+        )
+        assert monitor._live_status_line == "Ready."
+
+    def test_inspect_recent_turns_can_select_another_turn(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
         live = MagicMock()
         turn_1 = self._make_turn(tmp_path, "ses-1", "turn-1.json", 1_000)
         turn_2 = self._make_turn(tmp_path, "ses-1", "turn-2.json", 2_000)
-        monitor._prompt_for_recent_turn_selection = MagicMock(
-            side_effect=[turn_1, turn_2, None]
-        )
-        monitor._print_turn_detail = MagicMock()
+        workflow = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=[turn_1, turn_2])])
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["1", "n", "2", "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
 
         monitor._inspect_recent_turns_during_live(
-            live, SimpleNamespace(all_sessions=[]), "Recent Turns", True
+            live, workflow, "Recent Turns", True
         )
 
-        assert monitor._print_turn_detail.call_args_list[0].args[0] is turn_1
-        assert monitor._print_turn_detail.call_args_list[1].args[0] is turn_2
+        details = [
+            call.args[0] for call in live.update.call_args_list
+            if getattr(getattr(call.args[0], "renderables", [None])[0], "title", "").startswith("Turn Details")
+        ]
+        assert len(details) == 2
+
+    def test_live_turn_detail_preserves_full_fields_and_tools(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(tmp_path, "ses-1", "detailed.json", 1_000)
+        workflow = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=[turn])])
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["1", "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+        live = MagicMock()
+
+        monitor._inspect_recent_turns_during_live(live, workflow, "Recent Turns", True)
+
+        detail_group = next(
+            call.args[0] for call in live.update.call_args_list
+            if hasattr(call.args[0], "renderables")
+        )
+        panel, tools_table = detail_group.renderables[:2]
+        assert panel.title == "Turn Details"
+        detail_labels = [str(cell) for cell in panel.renderable.columns[0]._cells]
+        assert {"Project", "Duration", "Finish", "Cache Write", "Total Tokens", "Cost", "Output Rate"}.issubset(detail_labels)
+        assert tools_table.title == "Turn Tool Calls"
+        assert tools_table.columns[1]._cells == ["bash"]
 
     def test_poll_live_switch_command_maps_t_to_turns(self, monkeypatch):
         import os

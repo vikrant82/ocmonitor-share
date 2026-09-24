@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, cast
 
 from rich.console import Console
+from rich.console import Group
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
@@ -892,14 +893,14 @@ class LiveMonitor:
             return "unknown"
         return self.dashboard_ui.format_duration(duration_ms)
 
-    def _print_recent_turn_picker_table(
+    def _build_recent_turn_picker_table(
         self,
         descriptors: List[Dict[str, Any]],
         title: str,
         page: int = 0,
         page_size: int = RECENT_TURN_PAGE_SIZE,
-    ) -> None:
-        """Render a picker table for recent workflow turns."""
+    ) -> Table:
+        """Build the live Recent Turns renderable, marking cache misses explicitly."""
         total_pages = max(1, (len(descriptors) + page_size - 1) // page_size)
         page = max(0, min(page, total_pages - 1))
         page_start = page * page_size
@@ -918,6 +919,7 @@ class LiveMonitor:
         table.add_column("Cache Read", justify="right", style="metric.tokens")
         table.add_column("Cache Write", justify="right", style="metric.tokens")
         table.add_column("Turn Tokens", justify="right", style="metric.tokens")
+        table.add_column("Cache", justify="center")
         table.add_column("Cost", justify="right", style="metric.cost")
         table.add_column("Duration", justify="right", style="metric.value")
 
@@ -954,11 +956,26 @@ class LiveMonitor:
                 f"{descriptor['tokens_cache_read']:,}",
                 f"{descriptor['tokens_cache_write']:,}",
                 f"{descriptor['tokens_total']:,}",
+                "MISS" if descriptor["tokens_input"] > 0 and descriptor["tokens_cache_read"] == 0 else "—",
                 self.dashboard_ui._fmt_cost(descriptor["cost"]),
                 self._format_turn_duration(descriptor["duration_ms"]),
                 self._truncate_turn_text(preview, 120),
+                style="status.warning" if descriptor["tokens_input"] > 0 and descriptor["tokens_cache_read"] == 0 else "",
             )
-        self.console.print(table)
+        table.caption = "MISS = input tokens > 0 and cache-read tokens = 0 (reported token data; not a provider miss event). Keys: n/p page, number + Enter select, r refresh, q/back return."
+        return table
+
+    def _print_recent_turn_picker_table(
+        self,
+        descriptors: List[Dict[str, Any]],
+        title: str,
+        page: int = 0,
+        page_size: int = RECENT_TURN_PAGE_SIZE,
+    ) -> None:
+        """Render a picker table for recent workflow turns."""
+        self.console.print(
+            self._build_recent_turn_picker_table(descriptors, title, page, page_size)
+        )
 
     def _prompt_for_recent_turn_selection(
         self,
@@ -1041,6 +1058,12 @@ class LiveMonitor:
 
     def _print_turn_detail(self, turn: InteractionFile) -> None:
         """Render detailed stats for one historical turn."""
+        detail, tool_table = self._build_turn_detail_renderables(turn)
+        self.console.print(detail)
+        self.console.print(tool_table)
+
+    def _build_turn_detail_renderables(self, turn: InteractionFile) -> Tuple[Panel, Table]:
+        """Build the complete turn-detail panel and tool table for live or printed display."""
         duration_ms = turn.time_data.duration_ms if turn.time_data else None
         output_rate = "unknown"
         if duration_ms and duration_ms > 0 and turn.tokens.output > 0:
@@ -1078,15 +1101,12 @@ class LiveMonitor:
         detail.add_row("User", message_summary["user"])
         detail.add_row("Assistant", message_summary["assistant"])
 
-        self.console.print(
-            Panel(
-                detail,
-                title="Turn Details",
-                title_align="left",
-                border_style="dashboard.border",
-            )
+        detail_panel = Panel(
+            detail,
+            title="Turn Details",
+            title_align="left",
+            border_style="dashboard.border",
         )
-
         tool_table = Table(title="Turn Tool Calls", show_header=True)
         tool_table.add_column("#", justify="right", style="metric.value")
         tool_table.add_column("Tool", style="table.row.main")
@@ -1099,7 +1119,48 @@ class LiveMonitor:
                 )
         else:
             tool_table.add_row("—", "No tool calls found", "—", "—")
-        self.console.print(tool_table)
+        return detail_panel, tool_table
+
+    def _poll_recent_turn_command(self) -> Optional[str]:
+        """Poll Recent Turns keys without blocking the running live renderer."""
+        if not sys.stdin.isatty():
+            return None
+        try:
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+        except (OSError, ValueError):
+            return None
+        if not ready:
+            return None
+
+        if self._stdin_fd is not None:
+            try:
+                raw = os.read(self._stdin_fd, 1)
+            except OSError:
+                return None
+            if not raw:
+                return None
+            char = raw.decode(errors="ignore").lower()
+            if char == "\x03":
+                raise KeyboardInterrupt
+            if char in {"\r", "\n"}:
+                choice, self._input_buffer = self._input_buffer, ""
+                return choice or None
+            if char in {"\x7f", "\b"}:
+                self._input_buffer = self._input_buffer[:-1]
+                return None
+            if char.isdigit():
+                self._input_buffer += char
+                return None
+            if char in {"n", "p", "r", "q", "b"}:
+                self._input_buffer = ""
+                return char
+            return None
+
+        try:
+            line = sys.stdin.readline()
+        except (OSError, ValueError):
+            return None
+        return line.strip().lower() or None
 
     def _inspect_recent_turns_during_live(
         self,
@@ -1109,41 +1170,76 @@ class LiveMonitor:
         interactive_switch: bool,
         limit: int = RECENT_TURN_LIMIT,
         refresh_workflow: Optional[Callable[[], Any]] = None,
+        refresh_interval: int = 5,
     ) -> None:
-        """Pause live view, show recent-turn picker/details, then resume live view."""
-        raw_mode_was_enabled = self._stdin_fd is not None
-        if raw_mode_was_enabled:
-            self._disable_raw_input_mode()
+        """Show a persistent, auto-refreshing turn table without stopping Rich Live."""
+        current_workflow = workflow
+        descriptors = self._describe_recent_turns(current_workflow, limit)
+        page = 0
+        page_size = self.RECENT_TURN_PAGE_SIZE
+        if not sys.stdin.isatty():
+            self._live_status_line = "Recent Turns requires an interactive terminal."
+            live.update(
+                self._build_recent_turn_picker_table(descriptors, title, page, page_size)
+            )
+            return
 
+        self._live_status_line = "Recent Turns — n/p page, number + Enter select, r refresh, q/back return."
+        live.update(self._build_recent_turn_picker_table(descriptors, title, page, page_size))
+        next_refresh_at = time.monotonic() + max(0, refresh_interval)
+        showing_detail = False
         try:
-            live.stop()
-            current_workflow = workflow
-
-            def refresh_current_workflow() -> Any:
-                nonlocal current_workflow
-                if refresh_workflow is not None:
-                    refreshed = refresh_workflow()
-                    if refreshed is not None:
-                        current_workflow = refreshed
-                return current_workflow
-
             while True:
-                if refresh_workflow is not None:
-                    selected_turn = self._prompt_for_recent_turn_selection(
-                        current_workflow, title, limit, refresh_current_workflow
-                    )
-                else:
-                    selected_turn = self._prompt_for_recent_turn_selection(
-                        current_workflow, title, limit
-                    )
-                if not selected_turn:
+                command = self._poll_recent_turn_command()
+                if showing_detail and command:
+                    showing_detail = False
+                    self._live_status_line = "Recent Turns — n/p page, number + Enter select, r refresh, q/back return."
+                    if command in {"q", "quit", "back", "b"}:
+                        break
+                    command = None
+                if command in {"q", "quit", "back", "b"}:
                     break
-                self._print_turn_detail(selected_turn)
-                self._live_status_line = f"Viewed turn {selected_turn.file_name}."
+                if command in {"n", "next"}:
+                    page += 1
+                elif command in {"p", "prev", "previous"}:
+                    page -= 1
+                elif command in {"r", "refresh"}:
+                    next_refresh_at = 0
+                elif command and command.isdigit():
+                    selected_idx = int(command)
+                    if 1 <= selected_idx <= len(descriptors):
+                        selected = cast(InteractionFile, descriptors[selected_idx - 1]["turn"])
+                        detail_panel, tool_table = self._build_turn_detail_renderables(selected)
+                        live.update(
+                            Group(
+                                detail_panel,
+                                tool_table,
+                                "[dim]Press any key to return to Recent Turns.[/dim]",
+                            )
+                        )
+                        showing_detail = True
+                        self._live_status_line = f"Viewed turn {selected.file_name}."
+                        time.sleep(0.05)
+                        continue
+                now = time.monotonic()
+                if now >= next_refresh_at:
+                    if refresh_workflow is not None:
+                        refreshed = refresh_workflow()
+                        if refreshed is not None:
+                            current_workflow = refreshed
+                    descriptors = self._describe_recent_turns(current_workflow, limit)
+                    page = 0
+                    next_refresh_at = now + max(0, refresh_interval)
+                total_pages = max(1, (len(descriptors) + page_size - 1) // page_size)
+                page = max(0, min(page, total_pages - 1))
+                if not showing_detail:
+                    live.update(
+                        self._build_recent_turn_picker_table(descriptors, title, page, page_size)
+                    )
+                time.sleep(0.05)
         finally:
-            live.start(refresh=True)
-            if interactive_switch and raw_mode_was_enabled:
-                self._enable_raw_input_mode()
+            self._input_buffer = ""
+            self._live_status_line = "Ready."
 
     def _handle_live_switch_command(
         self,
@@ -1705,6 +1801,7 @@ class LiveMonitor:
                                     "Recent Turns",
                                     interactive_switch,
                                     refresh_workflow=refresh_current_turn_workflow,
+                                    refresh_interval=refresh_interval,
                                 )
                                 live.update(
                                     self._generate_workflow_dashboard(
@@ -2549,6 +2646,7 @@ class LiveMonitor:
                                     "Recent Turns",
                                     interactive_switch,
                                     refresh_workflow=refresh_current_turn_workflow,
+                                    refresh_interval=refresh_interval,
                                 )
                                 live.update(
                                     self._generate_sqlite_workflow_dashboard(

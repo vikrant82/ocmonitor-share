@@ -320,7 +320,7 @@ When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--sessi
 - 📝 Human-readable session titles instead of cryptic IDs
 - 🔗 **Workflow Tracking** - Automatically tracks entire workflow including sub-agents (explore, etc.)
 - 🔧 **Tool Usage Stats** - Shows success rates for tools (bash, read, edit, etc.) with color-coded progress bars
-- 🔍 **Recent Turns Inspector** - Press `t` to inspect all individual turns with per-turn pricing, token breakdown, and detailed turn views
+- 🔍 **Recent Turns Inspector** - Press `t` for a live-updating table of individual turns, cache-miss indicators, per-turn pricing, and detailed turn views
 - 🎮 **Interactive Controls** - `n`=next, `p`=prev, `l`=list, `t`=turns, `1..9`=jump, `q`=quit
 
 **Interactive Controls:**
@@ -336,20 +336,23 @@ When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--sessi
 
 #### `t` — Recent Turns Inspector
 
-Press `t` during live monitoring to inspect all individual turns in the current workflow. This shows per-turn pricing, token breakdown, and duration for every assistant turn.
+Press `t` during live monitoring to inspect individual turns in the current workflow. The table updates at the configured `--interval` (`-i`) and returns to the newest page when it refreshes, so new turns appear automatically. This shows per-turn pricing, token breakdown, and duration for every assistant turn.
 
 ```bash
-# During live monitoring, press 't' to open the turns inspector
-# Or use --pick to select a workflow first, then press 't'
+# Run from a source checkout, select a workflow, then press 't'
+./ocmonitor.sh live --pick -i 1 --last 50
+# Alternatively, use an editable install and run:
+ocmonitor live --pick -i 1 --last 50
 ```
 
 **Turns List View:**
 - Paginated display (e.g., "page 1/4, 154 turns")
-- Columns: #, When, Agent, Model, Input, Output, Cache Read, Cache Write, Turn Tokens, Cost, Duration, Preview
-- Press `n`/`p` to navigate pages, `r` to refresh, `q` to return to live dashboard
+- Columns: #, When, Agent, Model, Input, Output, Cache Read, Cache Write, Turn Tokens, Cache, Cost, Duration, Preview
+- Rows with input tokens but zero cache-read tokens are highlighted and marked `MISS`. This indicates reported token usage, not a confirmed provider-side cache-miss event.
+- Press `n`/`p` to navigate pages, `r` to refresh immediately, or `q` to return to the live dashboard. Automatic refresh returns to the newest page.
 
 **Turn Detail View:**
-Select any turn number to see full details:
+Type any turn number and press Enter to see full details. Press any key to return to the turns table:
 - Role, Session ID, Agent, Project, Model
 - Activity timestamp, Duration, Finish reason
 - Full token breakdown (Input, Output, Cache Read, Cache Write, Total)
