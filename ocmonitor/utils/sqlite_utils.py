@@ -6,7 +6,7 @@ import statistics
 import time
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Generator
+from typing import Dict, List, Optional, Any, Generator, Sequence
 from datetime import datetime
 
 from ..utils.file_utils import FileProcessor
@@ -562,6 +562,367 @@ class SQLiteProcessor:
                 return None
 
             return cls._build_workflow_dict(conn, main_session)
+        finally:
+            conn.close()
+
+    @classmethod
+    def _metadata_session_rows(
+        cls, conn: sqlite3.Connection, session_ids: List[str]
+    ) -> List[sqlite3.Row]:
+        """Return eligible metadata only for the supplied candidate session IDs.
+
+        Callers first bound roots by recency/activity, then add only their direct
+        children. JSON is inspected inside SQLite; message data is never returned.
+        """
+        if not session_ids:
+            return []
+        placeholders = ",".join("?" for _ in session_ids)
+        query = f"""
+            SELECT s.id, s.parent_id, s.title, s.time_created,
+                   p.name AS project_name,
+                   (SELECT MAX(m.time_created) FROM message m
+                    WHERE m.session_id = s.id) AS last_activity_ts,
+                   (SELECT MIN(CAST(CASE WHEN json_valid(m.data) = 1
+                       THEN json_extract(m.data, '$.time.created') END AS INTEGER))
+                    FROM message m WHERE m.session_id = s.id
+                      AND CASE WHEN json_valid(m.data) = 1
+                               THEN json_extract(m.data, '$.role') END = 'assistant'
+                      AND (CAST(COALESCE(CASE WHEN json_valid(m.data) = 1
+                                      THEN json_extract(m.data, '$.tokens.input') END, 0) AS INTEGER) > 0
+                        OR CAST(COALESCE(CASE WHEN json_valid(m.data) = 1
+                                      THEN json_extract(m.data, '$.tokens.output') END, 0) AS INTEGER) > 0
+                        OR CAST(COALESCE(CASE WHEN json_valid(m.data) = 1
+                                      THEN json_extract(m.data, '$.tokens.cache.read') END, 0) AS INTEGER) > 0
+                        OR CAST(COALESCE(CASE WHEN json_valid(m.data) = 1
+                                      THEN json_extract(m.data, '$.tokens.cache.write') END, 0) AS INTEGER) > 0)
+                   ) AS first_token_activity_ts,
+                   EXISTS (SELECT 1 FROM message m WHERE m.session_id = s.id) AS has_messages
+            FROM session s
+            LEFT JOIN project p ON s.project_id = p.id
+            WHERE s.id IN ({placeholders})
+              AND EXISTS (
+                SELECT 1 FROM message m WHERE m.session_id = s.id
+                  AND CASE WHEN json_valid(m.data) = 1
+                           THEN json_extract(m.data, '$.role') END = 'assistant'
+                  AND (CAST(COALESCE(CASE WHEN json_valid(m.data) = 1
+                                  THEN json_extract(m.data, '$.tokens.input') END, 0) AS INTEGER) > 0
+                    OR CAST(COALESCE(CASE WHEN json_valid(m.data) = 1
+                                  THEN json_extract(m.data, '$.tokens.output') END, 0) AS INTEGER) > 0
+                    OR CAST(COALESCE(CASE WHEN json_valid(m.data) = 1
+                                  THEN json_extract(m.data, '$.tokens.cache.read') END, 0) AS INTEGER) > 0
+                    OR CAST(COALESCE(CASE WHEN json_valid(m.data) = 1
+                                  THEN json_extract(m.data, '$.tokens.cache.write') END, 0) AS INTEGER) > 0)
+              )
+        """
+        return conn.execute(query, session_ids).fetchall()
+
+    @staticmethod
+    def _metadata_title(row: sqlite3.Row) -> str:
+        title = row["title"]
+        if title:
+            return title[:47] + "..." if len(title) > 50 else title
+        return row["id"]
+
+    @classmethod
+    def _build_workflow_metadata(
+        cls,
+        workflow_id: str,
+        main_row: sqlite3.Row,
+        member_rows: List[sqlite3.Row],
+        *,
+        is_orphan: bool = False,
+        active: bool = False,
+        last_activity_ts: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "workflow_id": workflow_id,
+            "member_session_ids": [row["id"] for row in member_rows],
+            "main_session_id": main_row["id"],
+            "project_name": main_row["project_name"] or "Unknown",
+            "display_title": cls._metadata_title(main_row),
+            "session_count": len(member_rows),
+            "sub_agent_count": max(0, len(member_rows) - 1),
+            # Milliseconds, from the parent session's message.time_created column.
+            "last_activity_ts": last_activity_ts,
+            "active": active,
+            "is_orphan": is_orphan,
+        }
+
+    @classmethod
+    def list_recent_workflow_metadata(
+        cls, db_path: Optional[Path] = None, limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """List recent token-bearing parent workflows using bounded metadata SQL.
+
+        ``limit`` bounds returned workflows, not candidate roots. A missing
+        database or non-positive limit produces an empty list. Each call uses
+        and closes its own connection; a populated ``last_activity_ts`` is in
+        Unix milliseconds.
+        """
+        if db_path is None:
+            db_path = cls.find_database_path()
+        if not db_path or not db_path.exists() or limit <= 0:
+            return []
+        conn = cls._get_connection(db_path)
+        try:
+            parents = conn.execute(
+                """SELECT id FROM session WHERE parent_id IS NULL
+                   ORDER BY time_created DESC LIMIT ?""",
+                (limit * 5,),
+            ).fetchall()
+            parent_ids = [row["id"] for row in parents]
+            if not parent_ids:
+                return []
+            placeholders = ",".join("?" for _ in parent_ids)
+            child_rows = conn.execute(
+                f"SELECT id FROM session WHERE parent_id IN ({placeholders})",
+                parent_ids,
+            ).fetchall()
+            candidate_ids = parent_ids + [row["id"] for row in child_rows]
+            metadata = cls._metadata_session_rows(conn, candidate_ids)
+            by_id = {row["id"]: row for row in metadata}
+            workflows = []
+            for parent_id in parent_ids:
+                main = by_id.get(parent_id)
+                if main is None or not main["has_messages"]:
+                    continue
+                members = [main] + sorted(
+                    (row for row in metadata if row["parent_id"] == parent_id),
+                    key=lambda row: (row["time_created"] or 0, row["id"]),
+                )
+                workflows.append(cls._build_workflow_metadata(parent_id, main, members))
+                if len(workflows) >= limit:
+                    break
+            return workflows
+        finally:
+            conn.close()
+
+    @classmethod
+    def load_workflow_from_metadata(
+        cls, metadata: Dict[str, Any], db_path: Optional[Path] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Hydrate only the sessions selected by a metadata workflow.
+
+        The metadata member order is preserved. A stale/missing main session or
+        an invalid metadata payload returns ``None``; unavailable sub-agent rows
+        are omitted without loading any sessions outside the selected IDs.
+        Missing databases also return ``None``; the method opens and closes its
+        own connection and does not cache hydrated sessions.
+        """
+        if db_path is None:
+            db_path = cls.find_database_path()
+        if not db_path or not db_path.exists():
+            return None
+        workflow_id = metadata.get("workflow_id")
+        main_session_id = metadata.get("main_session_id")
+        member_ids = metadata.get("member_session_ids")
+        if not workflow_id or not main_session_id or not isinstance(member_ids, list):
+            return None
+        if main_session_id not in member_ids:
+            return None
+        conn = cls._get_connection(db_path)
+        try:
+            placeholders = ",".join("?" for _ in member_ids)
+            if not placeholders:
+                return None
+            rows = conn.execute(
+                f"""SELECT s.*, p.worktree AS project_path, p.name AS project_name
+                    FROM session s LEFT JOIN project p ON s.project_id = p.id
+                    WHERE s.id IN ({placeholders})""",
+                member_ids,
+            ).fetchall()
+            row_by_id = {row["id"]: row for row in rows}
+            main_row = row_by_id.get(main_session_id)
+            if main_row is None:
+                return None
+            loaded_by_id = {}
+            for session_id in member_ids:
+                row = row_by_id.get(session_id)
+                if row is None:
+                    continue
+                session = cls.load_session_data(conn, row)
+                if session is not None:
+                    loaded_by_id[session_id] = session
+            main_session = loaded_by_id.get(main_session_id)
+            if main_session is None:
+                return None
+            all_sessions = [loaded_by_id[session_id] for session_id in member_ids
+                            if session_id in loaded_by_id]
+            sub_agents = [session for session in all_sessions if session.session_id != main_session_id]
+            return {
+                "main_session": main_session,
+                "sub_agents": sub_agents,
+                "all_sessions": all_sessions,
+                "project_name": metadata.get("project_name", main_session.project_name),
+                "display_title": metadata.get("display_title", main_session.display_title),
+                "session_count": len(all_sessions),
+                "sub_agent_count": len(sub_agents),
+                "has_sub_agents": bool(sub_agents),
+                "workflow_id": workflow_id,
+                "is_orphan": bool(metadata.get("is_orphan", False)),
+            }
+        finally:
+            conn.close()
+
+    @classmethod
+    def list_active_workflow_metadata(
+        cls,
+        db_path: Optional[Path] = None,
+        active_threshold_minutes: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """List active workflow metadata without loading message histories.
+
+        ``last_activity_ts`` is the parent's latest ``message.time_created`` for
+        normal workflows, or the latest child message for orphan groups, in Unix
+        milliseconds. A missing database yields an empty list; each call uses
+        its own connection and returns at most ten workflows.
+        """
+        if db_path is None:
+            db_path = cls.find_database_path()
+        if not db_path or not db_path.exists():
+            return []
+        threshold_ms = int(time.time() * 1000) - active_threshold_minutes * 60 * 1000
+        conn = cls._get_connection(db_path)
+        try:
+            parent_rows = conn.execute(
+                """SELECT s.id, MAX(m.time_created) AS last_activity_ts
+                   FROM session s JOIN message m ON m.session_id = s.id
+                   WHERE s.parent_id IS NULL GROUP BY s.id
+                   HAVING last_activity_ts > ? ORDER BY last_activity_ts DESC LIMIT 30""",
+                (threshold_ms,),
+            ).fetchall()
+            parent_ids = [row["id"] for row in parent_rows]
+            orphan_children = conn.execute(
+                """SELECT s.id, s.parent_id, s.time_created, MAX(m.time_created) AS activity_ts
+                   FROM session s JOIN message m ON m.session_id = s.id
+                   WHERE s.parent_id IS NOT NULL AND m.time_created > ?
+                   GROUP BY s.id ORDER BY activity_ts DESC LIMIT 30""",
+                (threshold_ms,),
+            ).fetchall()
+            active_parent_set = set(parent_ids)
+            orphan_parent_ids = []
+            for child in orphan_children:
+                parent_id = child["parent_id"]
+                if parent_id not in active_parent_set and parent_id not in orphan_parent_ids:
+                    orphan_parent_ids.append(parent_id)
+
+            candidate_ids = list(parent_ids)
+            all_roots = parent_ids + orphan_parent_ids
+            if all_roots:
+                placeholders = ",".join("?" for _ in all_roots)
+                child_rows = conn.execute(
+                    f"SELECT id FROM session WHERE parent_id IN ({placeholders})",
+                    all_roots,
+                ).fetchall()
+                candidate_ids.extend(row["id"] for row in child_rows)
+            metadata = cls._metadata_session_rows(conn, candidate_ids)
+            by_id = {row["id"]: row for row in metadata}
+            # Roots with recent messages but no positive-token assistant message
+            # are not eligible parent workflows. If an active child exists,
+            # expose the group's eligible children as a synthetic orphan.
+            orphan_parent_ids.extend(
+                parent_id
+                for parent_id in parent_ids
+                if parent_id not in by_id
+                and parent_id not in orphan_parent_ids
+                and any(child["parent_id"] == parent_id for child in orphan_children)
+            )
+            workflows = []
+            for candidate in parent_rows:
+                parent_id = candidate["id"]
+                main = by_id.get(parent_id)
+                if main is None:
+                    continue
+                members = [main] + sorted(
+                    (row for row in metadata if row["parent_id"] == parent_id),
+                    key=lambda row: (row["time_created"] or 0, row["id"]),
+                )
+                workflows.append(
+                    cls._build_workflow_metadata(
+                        parent_id, main, members, active=True,
+                        last_activity_ts=candidate["last_activity_ts"],
+                    )
+                )
+            for orphan_id in orphan_parent_ids:
+                active_child_ids = {
+                    child["id"] for child in orphan_children
+                    if child["parent_id"] == orphan_id
+                }
+                members = sorted(
+                    (row for row in metadata if row["parent_id"] == orphan_id
+                     and row["id"] in active_child_ids),
+                    key=lambda row: (row["first_token_activity_ts"] or 0, row["id"]),
+                )
+                if not members:
+                    continue
+                workflows.append(
+                    cls._build_workflow_metadata(
+                        orphan_id, members[0], members, is_orphan=True, active=True,
+                        last_activity_ts=max(
+                            row["last_activity_ts"] or 0 for row in members
+                        ),
+                    )
+                )
+            workflows.sort(
+                key=lambda workflow: workflow["last_activity_ts"] or 0,
+                reverse=True,
+            )
+            return workflows[:10]
+        finally:
+            conn.close()
+
+    @classmethod
+    def get_workflow_metadata_by_id(
+        cls, workflow_id: str, db_path: Optional[Path] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a parent, child, or synthetic orphan workflow ID to metadata.
+
+        Child IDs resolve to their parent workflow; roots without eligible
+        parent messages resolve to an orphan group of eligible children. Unknown
+        IDs or a missing database return ``None``. The read connection is
+        local to this call and is closed before returning.
+        """
+        if db_path is None:
+            db_path = cls.find_database_path()
+        if not db_path or not db_path.exists():
+            return None
+        conn = cls._get_connection(db_path)
+        try:
+            target = conn.execute(
+                "SELECT id, parent_id FROM session WHERE id = ?", (workflow_id,)
+            ).fetchone()
+            if target is None:
+                return None
+            main_id = target["id"] if target["parent_id"] is None else target["parent_id"]
+            child_ids = conn.execute(
+                "SELECT id FROM session WHERE parent_id = ?", (main_id,)
+            ).fetchall()
+            candidate_ids = [main_id] + [row["id"] for row in child_ids]
+            metadata = cls._metadata_session_rows(conn, candidate_ids)
+            by_id = {row["id"]: row for row in metadata}
+            main_row = by_id.get(main_id)
+            if main_row is not None:
+                members = [main_row] + sorted(
+                    (row for row in metadata if row["parent_id"] == main_id),
+                    key=lambda row: (row["time_created"] or 0, row["id"]),
+                )
+                return cls._build_workflow_metadata(main_id, main_row, members)
+
+            # A root without positive-token assistant messages is represented by
+            # its eligible children, just like a synthetic orphan group.
+            members = sorted(
+                (row for row in metadata if row["parent_id"] == main_id),
+                key=lambda row: (row["first_token_activity_ts"] or 0, row["id"]),
+            )
+            if not members:
+                return None
+            return cls._build_workflow_metadata(
+                main_id,
+                members[0],
+                members,
+                is_orphan=True,
+                last_activity_ts=max(row["last_activity_ts"] or 0 for row in members),
+            )
         finally:
             conn.close()
 
@@ -1391,5 +1752,289 @@ class SQLiteProcessor:
                 tool_stats=tool_stats,
                 tool_summary=tool_summary,
             )
+        finally:
+            conn.close()
+
+    @classmethod
+    def get_completed_turn_counts(
+        cls, session_ids: Sequence[str], db_path: Optional[Path] = None
+    ) -> Optional[Dict[str, int]]:
+        """Count validated completed user turns by the triggering user's agent.
+
+        The count follows OpenCode v1.18.32 message/part semantics: an assistant
+        message completes a turn only when it references a same-session user via
+        ``parentID``, has a non-empty non-tool finish reason, has no error, and
+        has no disqualifying tool part. User messages require parts and an agent;
+        known synthetic-only text prompts and compaction prompts are excluded.
+        An absent optional synthetic flag is treated as ordinary text only when
+        no auto+overflow compaction marker exists in the supplied histories;
+        that marker makes the entire result unavailable because replayed prompts
+        may lack synthetic provenance.
+
+        Reads are restricted to the supplied session IDs, with SQLite extracting
+        only the fields needed for validation (never message or tool text). An
+        empty mapping is a validated zero. ``None`` means data or provenance was
+        malformed, incomplete, ambiguous, the database/schema was unavailable,
+        or SQLite could not safely evaluate the required JSON fields. The method
+        assumes the caller supplies every session in the selected workflow. It
+        opens and closes its own connection and keeps no cross-call cache.
+        """
+        if not session_ids:
+            return {}
+        ids = list(dict.fromkeys(session_ids))
+        if any(not isinstance(session_id, str) or not session_id for session_id in ids):
+            return None
+
+        if db_path is None:
+            db_path = cls.find_database_path()
+        if not db_path or not db_path.exists():
+            return None
+
+        placeholders = ",".join("?" for _ in ids)
+        conn = cls._get_connection(db_path)
+        try:
+            existing_sessions = conn.execute(
+                f"SELECT id FROM session WHERE id IN ({placeholders})", ids
+            ).fetchall()
+            if {row["id"] for row in existing_sessions} != set(ids):
+                return None
+            # CASE guards ensure malformed JSON never reaches json_extract.
+            messages = conn.execute(
+                f"""
+                SELECT id, session_id,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$') END AS root_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.role') END AS role,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.role') END AS role_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.parentID') END AS parent_id,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.parentID') END AS parent_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.finish') END AS finish,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.finish') END AS finish_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.agent') END AS agent,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.agent') END AS agent_type,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.error') END AS error_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.error') END AS error_value,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.type') END AS message_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.auto') END AS auto_flag,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.overflow') END AS overflow_flag,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.compaction.auto') END AS compact_auto,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.compaction.overflow') END AS compact_overflow,
+                       json_valid(data) AS valid_json
+                FROM message WHERE session_id IN ({placeholders})
+                """,
+                ids,
+            ).fetchall()
+            parts = conn.execute(
+                f"""
+                SELECT id, message_id, session_id,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$') END AS root_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.type') END AS part_type,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.type') END AS part_type_type,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.text') END AS text_type,
+                       CASE WHEN json_valid(data) THEN length(json_extract(data, '$.text')) END AS text_length,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.synthetic') END AS synthetic,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.synthetic') END AS synthetic_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.text.synthetic') END AS text_synthetic,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.text.synthetic') END AS text_synthetic_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.metadata.synthetic') END AS metadata_synthetic,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.metadata.synthetic') END AS metadata_synthetic_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.metadata.providerExecuted') END AS provider_executed,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.metadata.providerExecuted') END AS provider_executed_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.state.status') END AS status,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.state.status') END AS status_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.state.metadata.interrupted') END AS interrupted,
+                       CASE WHEN json_valid(data) THEN json_type(data, '$.state.metadata.interrupted') END AS interrupted_type,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.auto') END AS auto_flag,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.overflow') END AS overflow_flag,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.compaction.auto') END AS compact_auto,
+                       CASE WHEN json_valid(data) THEN json_extract(data, '$.compaction.overflow') END AS compact_overflow,
+                       json_valid(data) AS valid_json
+                FROM part WHERE session_id IN ({placeholders})
+                """,
+                ids,
+            ).fetchall()
+
+            if any(not row["valid_json"] or row["root_type"] != "object" for row in messages):
+                return None
+            if any(not row["valid_json"] or row["root_type"] != "object" for row in parts):
+                return None
+
+            message_by_id: Dict[str, Any] = {}
+            messages_by_session: Dict[str, List[Any]] = {sid: [] for sid in ids}
+            for row in messages:
+                if not row["id"] or row["id"] in message_by_id:
+                    return None
+                if row["role_type"] != "text" or row["role"] not in ("user", "assistant"):
+                    return None
+                message_by_id[row["id"]] = row
+                messages_by_session[row["session_id"]].append(row)
+                is_compaction = row["message_type"] in ("compaction", "compaction_continue")
+                auto = row["auto_flag"] == 1 or row["compact_auto"] == 1
+                overflow = row["overflow_flag"] == 1 or row["compact_overflow"] == 1
+                if is_compaction:
+                    for flag_name, flag_value in (
+                        ("auto", row["auto_flag"]),
+                        ("overflow", row["overflow_flag"]),
+                        ("compaction.auto", row["compact_auto"]),
+                        ("compaction.overflow", row["compact_overflow"]),
+                    ):
+                        if flag_value is not None and flag_value not in (0, 1):
+                            return None
+                if is_compaction and auto and overflow:
+                    return None
+                if row["role"] == "user":
+                    if row["agent_type"] != "text" or not row["agent"]:
+                        return None
+                    if not isinstance(row["agent"], str):
+                        return None
+                else:
+                    if row["parent_type"] != "text" or not row["parent_id"]:
+                        return None
+
+            for row in messages:
+                if row["role"] == "assistant":
+                    parent = message_by_id.get(row["parent_id"])
+                    if (
+                        parent is None
+                        or parent["session_id"] != row["session_id"]
+                        or parent["role"] != "user"
+                    ):
+                        return None
+
+            parts_by_message: Dict[str, List[Any]] = {}
+            for part in parts:
+                if not part["message_id"] or part["message_id"] not in message_by_id:
+                    return None
+                if message_by_id[part["message_id"]]["session_id"] != part["session_id"]:
+                    return None
+                if part["part_type_type"] != "text" or not isinstance(part["part_type"], str):
+                    return None
+                for type_column in (
+                    "synthetic_type", "text_synthetic_type", "metadata_synthetic_type"
+                ):
+                    if part[type_column] not in (None, "true", "false", "null"):
+                        return None
+                if part["part_type"] == "text" and part["text_type"] not in (
+                    "text", "null", None
+                ):
+                    return None
+                parts_by_message.setdefault(part["message_id"], []).append(part)
+                if part["part_type"] in ("compaction", "compaction_continue"):
+                    auto = part["auto_flag"] == 1 or part["compact_auto"] == 1
+                    overflow = part["overflow_flag"] == 1 or part["compact_overflow"] == 1
+                    for flag_value in (
+                        part["auto_flag"], part["overflow_flag"],
+                        part["compact_auto"], part["compact_overflow"],
+                    ):
+                        if flag_value is not None and flag_value not in (0, 1):
+                            return None
+                    if auto and overflow:
+                        return None
+
+            # Part states are checked before counting, so unknown tool-state
+            # variants fail closed instead of being treated as completed.
+            tool_parts_by_message: Dict[str, List[Any]] = {}
+            for part in parts:
+                if part["part_type"] != "tool":
+                    if message_by_id[part["message_id"]]["role"] == "user" and part["part_type"] not in {
+                        "text", "file", "image", "compaction", "compaction_continue"
+                    }:
+                        return None
+                    continue
+                if part["status_type"] != "text" or part["status"] not in {
+                    "completed", "error", "running", "pending"
+                }:
+                    return None
+                if part["provider_executed_type"] not in (None, "true", "false"):
+                    return None
+                if part["interrupted_type"] not in (None, "true", "false"):
+                    return None
+                tool_parts_by_message.setdefault(part["message_id"], []).append(part)
+
+            # A non-synthetic non-empty text part is the only positive evidence
+            # accepted here for an ordinary user-originated prompt.
+            user_is_countable: Dict[str, bool] = {}
+            for row in messages:
+                if row["role"] != "user":
+                    continue
+                user_parts = parts_by_message.get(row["id"], [])
+                if not user_parts:
+                    return None
+                compaction_only = all(
+                    part["part_type"] in ("compaction", "compaction_continue")
+                    for part in user_parts
+                )
+                text_parts = [part for part in user_parts if part["part_type"] == "text"]
+                nonempty_text = [part for part in text_parts if (part["text_length"] or 0) > 0]
+                for part in nonempty_text:
+                    flags = [
+                        part["synthetic"], part["text_synthetic"], part["metadata_synthetic"]
+                    ]
+                    known_flags = [flag for flag in flags if flag is not None]
+                    if any(flag not in (0, 1) for flag in known_flags):
+                        return None
+                    if len(set(known_flags)) > 1:
+                        return None
+                synthetic_only = bool(nonempty_text) and all(
+                    any(
+                        flag == 1
+                        for flag in (
+                            part["synthetic"], part["text_synthetic"],
+                            part["metadata_synthetic"],
+                        )
+                    )
+                    for part in nonempty_text
+                )
+                has_ordinary_text = any(
+                    not any(
+                        flag == 1
+                        for flag in (
+                            part["synthetic"], part["text_synthetic"],
+                            part["metadata_synthetic"],
+                        )
+                    )
+                    for part in nonempty_text
+                )
+                if not compaction_only and not synthetic_only and not has_ordinary_text:
+                    return None
+                user_is_countable[row["id"]] = not compaction_only and not synthetic_only
+
+            candidates_by_parent: Dict[str, List[Any]] = {}
+            for row in messages:
+                if row["role"] != "assistant":
+                    continue
+                finish = row["finish"]
+                if row["finish_type"] not in (None, "text", "null"):
+                    return None
+                plausible_complete = bool(finish) and finish not in ("tool-calls", "unknown")
+                if not plausible_complete:
+                    continue
+                parent_id = row["parent_id"]
+                parent = message_by_id.get(parent_id)
+                if parent is None or parent["session_id"] != row["session_id"] or parent["role"] != "user":
+                    return None
+                if row["finish_type"] != "text":
+                    return None
+                if row["error_type"] not in (None, "null") and row["error_value"] is not None:
+                    continue
+                disqualifying_tool = any(
+                    part["provider_executed"] != 1
+                    and not (
+                        part["status"] == "error"
+                        and part["interrupted"] == 1
+                    )
+                    for part in tool_parts_by_message.get(row["id"], [])
+                )
+                if not disqualifying_tool and user_is_countable[parent_id]:
+                    candidates_by_parent.setdefault(parent_id, []).append(row)
+
+            counts: Dict[str, int] = {}
+            for user_id, candidates in candidates_by_parent.items():
+                if len(candidates) != 1:
+                    return None
+                agent = message_by_id[user_id]["agent"]
+                counts[agent] = counts.get(agent, 0) + 1
+            return counts
+        except (sqlite3.Error, TypeError, ValueError):
+            return None
         finally:
             conn.close()

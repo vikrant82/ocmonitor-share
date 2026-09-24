@@ -309,6 +309,8 @@ ocmonitor live --interactive-switch
 If `--session-id` is pinned and the selected workflow is no longer active, live monitoring stops with a clear message.
 When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--session-id` takes precedence and `--pick` is ignored.
 
+Workflow discovery and the picker use metadata only. After selection, live monitoring loads message history for that workflow alone and refreshes its history and member sessions at each `--interval` (`-i`) tick. In file mode, session-directory metadata is cached: in-place JSON edits that do not change a directory's modification time may not update its grouping metadata until an explicit picker refresh. It stays on the selected workflow until you switch. The `--last N` option limits how many recent workflows are offered in the picker; it does not limit how many messages are loaded for the selected workflow. In interactive mode, `l` refreshes the picker list and `n`/`p` refresh the available-workflow metadata before switching. Historical reports are unchanged. Recent Turns currently lists up to 500 recent non-zero-token turns; its text previews may be shortened for display.
+
 **Features:**
 - 🔄 Auto-refreshing display with professional UI design
 - 📊 Real-time cost tracking with progress indicators
@@ -320,13 +322,14 @@ When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--sessi
 - 📝 Human-readable session titles instead of cryptic IDs
 - 🔗 **Workflow Tracking** - Automatically tracks entire workflow including sub-agents (explore, etc.)
 - 🔧 **Tool Usage Stats** - Shows success rates for tools (bash, read, edit, etc.) with color-coded progress bars
-- 🔍 **Recent Turns Inspector** - Press `t` for a live-updating table of individual turns, cache-miss indicators, per-turn pricing, and detailed turn views
+- 🔍 **Recent Turns Inspector** - Press `t` for a live-updating table of individual turns, cache indicators, per-turn pricing, and detailed turn views
+- 📊 **Completed Stored Prompts by Agent** - SQLite mode counts validated stored user prompts with completed responses, excluding known synthetic prompts. The summary appears on the dashboard and above Recent Turns; file mode or ambiguous SQLite data shows `Unavailable`.
 - 🎮 **Interactive Controls** - `n`=next, `p`=prev, `l`=list, `t`=turns, `1..9`=jump, `q`=quit
 
 **Interactive Controls:**
-- `n` / `p` - Next/previous workflow
-- `l` / `s` - List all workflows (picker)
-- `t` - Recent turns inspector (shows all turns with pricing)
+- `n` / `p` - Refresh available-workflow metadata and switch to the next/previous workflow
+- `l` / `s` - Refresh and show the workflow picker
+- `t` - Recent turns inspector (shows recent turns with pricing)
 - `1`..`9` - Jump to workflow by number
 - `q` - Quit live monitoring
 
@@ -336,7 +339,9 @@ When both `--session-id` and `--pick` are supplied to `ocmonitor live`, `--sessi
 
 #### `t` — Recent Turns Inspector
 
-Press `t` during live monitoring to inspect individual turns in the current workflow. The table updates at the configured `--interval` (`-i`) and returns to the newest page when it refreshes, so new turns appear automatically. This shows per-turn pricing, token breakdown, and duration for every assistant turn.
+Press `t` during live monitoring to inspect individual turns in the current workflow. The selected workflow's history is loaded without applying the picker's `--last` limit (the inspector displays up to 500 recent non-zero-token turns). On page 1, the table updates at the configured `--interval` (`-i`) so new turns appear automatically. While viewing later pages, automatic refresh pauses and preserves the current data and page; when you return to page 1, an overdue refresh runs on the next poll. This shows per-turn pricing, token breakdown, and duration. Text previews are shortened for display; the picker limit does not truncate the selected workflow's loaded message history.
+
+The SQLite dashboard and Recent Turns report completed stored prompts by the triggering message's agent when the database history passes validation. This is a count of stored prompts, not a guarantee that each was directly initiated by a human. Known synthetic prompts are excluded; ambiguous SQLite data and file mode display `Unavailable`.
 
 ```bash
 # Run from a source checkout, select a workflow, then press 't'
@@ -348,8 +353,9 @@ ocmonitor live --pick -i 1 --last 50
 **Turns List View:**
 - Paginated display (e.g., "page 1/4, 154 turns")
 - Columns: #, When, Agent, Model, Input, Output, Cache Read, Cache Write, Turn Tokens, Cache, Cost, Duration, Preview
-- Rows with input tokens but zero cache-read tokens are highlighted and marked `MISS`. This indicates reported token usage, not a confirmed provider-side cache-miss event.
-- Press `n`/`p` to navigate pages, `r` to refresh immediately, or `q` to return to the live dashboard. Automatic refresh returns to the newest page.
+- `MISS` rows are highlighted.
+- Filter the list by exact agent name with `b` (build), `x` (bash-executor), `l` (lite-worker), `r` (reviewer), or `e` (explore). Matching is case-insensitive; the same key clears the filter, and another filter key switches it. Filtered turn numbers refer to the filtered list. Filters persist across refresh, and an empty match shows an empty list with the active filter.
+- Press `n`/`p` to navigate pages, uppercase `R` to refresh immediately (including from a later page, returning to page 1), a number followed by Enter to select a turn, or `q`/`back` to return to the live dashboard. Automatic refresh only runs on page 1. The completed-prompt count above the table remains workflow-wide even while turns are filtered.
 
 **Turn Detail View:**
 Type any turn number and press Enter to see full details. Press any key to return to the turns table:

@@ -1,631 +1,293 @@
-import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from rich.text import Text
 from ocmonitor.config import PathsConfig
 from ocmonitor.services.live_monitor import LiveMonitor
 
 
 class TestMultiWorkflowTracking:
-    def test_tracks_multiple_active_workflows(self, monkeypatch, tmp_path):
-        active_workflow_a = {
-            "workflow_id": "session-a",
-            "main_session": MagicMock(session_id="session-a", end_time=None),
-            "all_sessions": [MagicMock(session_id="session-a")],
-        }
-        active_workflow_b = {
-            "workflow_id": "session-b",
-            "main_session": MagicMock(session_id="session-b", end_time=None),
-            "all_sessions": [MagicMock(session_id="session-b")],
+    @staticmethod
+    def _metadata(workflow_id, activity, **extra):
+        return {
+            "workflow_id": workflow_id,
+            "main_session_id": workflow_id,
+            "member_session_ids": [workflow_id],
+            "last_activity_ts": activity,
+            "active": True,
+            **extra,
         }
 
+    def test_tracks_multiple_active_workflows_from_metadata(self, monkeypatch, tmp_path):
+        candidates = [self._metadata("session-a", 10), self._metadata("session-b", 20)]
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
             lambda: str(tmp_path / "test.db"),
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda db_path: [active_workflow_a, active_workflow_b],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda _: candidates,
         )
-
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+        monitor = LiveMonitor(
+            pricing_data={}, paths_config=PathsConfig(messages_dir=str(tmp_path))
+        )
 
         assert monitor._get_tracked_workflow_ids() == {"session-a", "session-b"}
+        assert monitor._displayed_workflow_id == "session-b"
+        assert monitor._get_displayed_workflow() is candidates[1]
 
-    def test_removes_ended_workflow_from_tracking(self, monkeypatch, tmp_path):
-        ended_workflow = {
-            "workflow_id": "session-ended",
-            "main_session": MagicMock(session_id="session-ended", end_time=1000),
-            "all_sessions": [MagicMock(session_id="session-ended")],
-        }
-        active_workflow = {
-            "workflow_id": "session-active",
-            "main_session": MagicMock(session_id="session-active", end_time=None),
-            "all_sessions": [MagicMock(session_id="session-active")],
-        }
-
-        call_count = [0]
-
-        def mock_get_workflows(db_path):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return [ended_workflow, active_workflow]
-            return [active_workflow]
-
+    def test_initial_tracking_uses_only_active_metadata(self, monkeypatch, tmp_path):
+        active = self._metadata("session-active", 20)
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
             lambda: str(tmp_path / "test.db"),
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            mock_get_workflows,
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda _: [active],
         )
-
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
-
-        assert monitor._get_tracked_workflow_ids() == {
-            "session-ended",
-            "session-active",
-        }
-
-        monitor._refresh_active_workflows(str(tmp_path / "test.db"))
+        monitor = LiveMonitor(
+            pricing_data={}, paths_config=PathsConfig(messages_dir=str(tmp_path))
+        )
 
         assert monitor._get_tracked_workflow_ids() == {"session-active"}
+        assert "session-ended" not in monitor._get_tracked_workflow_ids()
 
-    def test_displays_most_recently_active_workflow(self, monkeypatch, tmp_path):
-        now = 1700000000
-        older_workflow = {
-            "workflow_id": "session-old",
-            "main_session": MagicMock(
-                session_id="session-old",
-                end_time=None,
-                start_time=now - 3600,
-            ),
-            "all_sessions": [MagicMock(session_id="session-old")],
-        }
-        newer_workflow = {
-            "workflow_id": "session-new",
-            "main_session": MagicMock(
-                session_id="session-new",
-                end_time=None,
-                start_time=now,
-            ),
-            "all_sessions": [MagicMock(session_id="session-new")],
-        }
-
+    def test_displays_most_recently_active_metadata(self, monkeypatch, tmp_path):
+        older = self._metadata("session-old", 100)
+        newer = self._metadata("session-new", 200)
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
             lambda: str(tmp_path / "test.db"),
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda db_path: [older_workflow, newer_workflow],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda _: [older, newer],
+        )
+        monitor = LiveMonitor(
+            pricing_data={}, paths_config=PathsConfig(messages_dir=str(tmp_path))
         )
 
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+        assert monitor._get_displayed_workflow() is newer
 
-        displayed = monitor._get_displayed_workflow()
-        assert displayed["workflow_id"] == "session-new"
+    def test_selected_workflow_switch_resolves_from_metadata(self, monkeypatch, tmp_path):
+        candidates = [self._metadata("workflow-a", 100), self._metadata("workflow-b", 200)]
+        hydrated = {"workflow_id": "workflow-b", "all_sessions": []}
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: tmp_path / "test.db",
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.load_workflow_from_metadata",
+            lambda metadata, _db: {"workflow_id": metadata["workflow_id"], "all_sessions": []},
+        )
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
 
-    def test_prev_tracked_reset_on_workflow_switch(self, monkeypatch, tmp_path):
-        now = 1700000000
-        workflow_a = {
-            "workflow_id": "workflow-a",
-            "main_session": MagicMock(
-                session_id="workflow-a",
-                end_time=None,
-                start_time=now - 3600,
-            ),
-            "all_sessions": [
-                MagicMock(session_id="session-a1"),
-                MagicMock(session_id="session-a2"),
-            ],
+        result = monitor._get_sqlite_active_workflows(selected_session_id="workflow-b")
+
+        assert result == [hydrated]
+
+    def test_selected_hydration_tracks_sub_agents(self, monkeypatch, tmp_path):
+        candidate = self._metadata(
+            "main-session", 200, member_session_ids=["main-session", "sub-agent-1"],
+            session_count=2, sub_agent_count=1,
+        )
+        hydrated = {
+            "workflow_id": "main-session",
+            "all_sessions": [SimpleNamespace(session_id=sid) for sid in candidate["member_session_ids"]],
         }
-        workflow_b = {
-            "workflow_id": "workflow-b",
-            "main_session": MagicMock(
-                session_id="workflow-b",
-                end_time=None,
-                start_time=now,
-            ),
-            "all_sessions": [
-                MagicMock(session_id="session-b1"),
-            ],
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
+            lambda: tmp_path / "test.db",
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: [candidate],
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.load_workflow_from_metadata",
+            lambda metadata, _db: hydrated,
+        )
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+
+        workflows = monitor._get_sqlite_active_workflows(selected_session_id="main-session")
+
+        assert workflows == [hydrated]
+        assert {s.session_id for s in workflows[0]["all_sessions"]} == {
+            "main-session", "sub-agent-1"
         }
+        assert candidate["sub_agent_count"] == 1
 
-        call_count = [0]
+    def test_metadata_switch_does_not_hydrate_other_workflow(self, monkeypatch, tmp_path):
+        candidates = [
+            self._metadata("workflow-a", 100),
+            self._metadata("workflow-b", 200),
+        ]
+        hydrated_ids = []
 
-        def mock_get_workflows(db_path):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return [workflow_a]
-            return [workflow_b]
+        def hydrate(metadata, _db):
+            hydrated_ids.append(metadata["workflow_id"])
+            return {"workflow_id": metadata["workflow_id"], "all_sessions": []}
 
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
-            lambda: str(tmp_path / "test.db"),
+            lambda: tmp_path / "test.db",
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            mock_get_workflows,
-        )
-
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
-
-        assert monitor._get_displayed_workflow()["workflow_id"] == "workflow-a"
-        assert monitor.prev_tracked == {"session-a1", "session-a2"}
-
-        monitor._refresh_active_workflows(str(tmp_path / "test.db"))
-
-        assert monitor._get_displayed_workflow()["workflow_id"] == "workflow-b"
-        assert monitor.prev_tracked == set()
-
-    def test_detects_new_sub_agent_during_poll(self, monkeypatch, tmp_path):
-        now = 1700000000
-        main_session = MagicMock(
-            session_id="main-session",
-            end_time=None,
-            start_time=now,
-        )
-
-        workflow_initial = {
-            "workflow_id": "workflow-with-subagents",
-            "main_session": main_session,
-            "all_sessions": [main_session],
-            "sub_agents": [],
-            "sub_agent_count": 0,
-            "has_sub_agents": False,
-        }
-
-        sub_agent = MagicMock(
-            session_id="sub-agent-1",
-            end_time=None,
-            start_time=now + 100,
-        )
-
-        workflow_with_subagent = {
-            "workflow_id": "workflow-with-subagents",
-            "main_session": main_session,
-            "all_sessions": [main_session, sub_agent],
-            "sub_agents": [sub_agent],
-            "sub_agent_count": 1,
-            "has_sub_agents": True,
-        }
-
-        call_count = [0]
-
-        def mock_get_workflows(db_path):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return [workflow_initial]
-            return [workflow_with_subagent]
-
-        monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
-            lambda: str(tmp_path / "test.db"),
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: candidates,
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            mock_get_workflows,
+            "ocmonitor.services.live_monitor.SQLiteProcessor.load_workflow_from_metadata", hydrate
         )
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
 
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+        selected = monitor._get_sqlite_active_workflows(selected_session_id="workflow-a")
 
-        assert monitor.prev_tracked == {"main-session"}
-
-        monitor._refresh_active_workflows(str(tmp_path / "test.db"))
-
-        assert monitor.prev_tracked == {"main-session", "sub-agent-1"}
-
-    def test_no_false_sub_agent_detection_on_workflow_switch(
-        self, monkeypatch, tmp_path, caplog
-    ):
-        now = 1700000000
-        workflow_a = {
-            "workflow_id": "workflow-a",
-            "main_session": MagicMock(
-                session_id="session-a-main",
-                end_time=None,
-                start_time=now - 3600,
-            ),
-            "all_sessions": [
-                MagicMock(session_id="session-a-main"),
-                MagicMock(session_id="session-a-sub"),
-            ],
-        }
-        workflow_b = {
-            "workflow_id": "workflow-b",
-            "main_session": MagicMock(
-                session_id="session-b-main",
-                end_time=None,
-                start_time=now,
-            ),
-            "all_sessions": [
-                MagicMock(session_id="session-b-main"),
-                MagicMock(session_id="session-b-sub1"),
-                MagicMock(session_id="session-b-sub2"),
-            ],
-        }
-
-        call_count = [0]
-
-        def mock_get_workflows(db_path):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return [workflow_a]
-            return [workflow_b]
-
-        monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
-            lambda: str(tmp_path / "test.db"),
-        )
-        monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            mock_get_workflows,
-        )
-
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
-
-        assert monitor._get_displayed_workflow()["workflow_id"] == "workflow-a"
-        assert monitor.prev_tracked == {
-            "session-a-main",
-            "session-a-sub",
-        }, "prev_tracked initialized with workflow-a sessions"
-
-        caplog.set_level(logging.INFO)
-        monitor._refresh_active_workflows(str(tmp_path / "test.db"))
-
-        assert monitor._get_displayed_workflow()["workflow_id"] == "workflow-b"
-        assert monitor.prev_tracked == set(), (
-            "prev_tracked should be empty after switching workflows; "
-            "if it contained workflow-a sessions, they would interfere with tracking"
-        )
-
-        assert "New sub-agent detected" not in caplog.text, (
-            "workflow-b sessions should NOT be falsely detected as new sub-agents "
-            "even though prev_tracked had workflow-a sessions before the switch"
-        )
-
-        monitor._refresh_active_workflows(str(tmp_path / "test.db"))
-        assert monitor.prev_tracked == {
-            "session-b-main",
-            "session-b-sub1",
-            "session-b-sub2",
-        }, "prev_tracked now tracks workflow-b sessions after stable refresh"
+        assert [item["workflow_id"] for item in selected] == ["workflow-a"]
+        assert hydrated_ids == ["workflow-a"]
 
 
 class TestParentActivitySelection:
-    def test_selection_uses_parent_activity_only_not_sub_agent(
-        self, monkeypatch, tmp_path
-    ):
-        from ocmonitor.models.session import TokenUsage
-        from ocmonitor.models.session import InteractionFile
-        from ocmonitor.models.session import TimeData
-
-        now = 1700000000
-
-        parent_file = MagicMock(spec=InteractionFile)
-        parent_file.time_data = MagicMock(spec=TimeData)
-        parent_file.time_data.created = (now - 100) * 1000
-        parent_file.tokens = TokenUsage(input=100, output=50)
-
-        parent_session = MagicMock(
-            session_id="parent-a",
-            end_time=None,
-            start_time=now - 200,
-            files=[parent_file],
-        )
-
-        sub_agent_file = MagicMock(spec=InteractionFile)
-        sub_agent_file.time_data = MagicMock(spec=TimeData)
-        sub_agent_file.time_data.created = now * 1000
-        sub_agent_file.tokens = TokenUsage(input=200, output=100)
-
-        sub_agent = MagicMock(
-            session_id="sub-agent-a",
-            end_time=None,
-            start_time=now - 50,
-            files=[sub_agent_file],
-        )
-
-        parent_b_file = MagicMock(spec=InteractionFile)
-        parent_b_file.time_data = MagicMock(spec=TimeData)
-        parent_b_file.time_data.created = (now - 50) * 1000
-        parent_b_file.tokens = TokenUsage(input=50, output=25)
-
-        parent_b = MagicMock(
-            session_id="parent-b",
-            end_time=None,
-            start_time=now - 100,
-            files=[parent_b_file],
-        )
-
-        workflow_a = {
-            "workflow_id": "workflow-a",
-            "main_session": parent_session,
-            "all_sessions": [parent_session, sub_agent],
-            "sub_agents": [sub_agent],
+    @staticmethod
+    def _candidate(workflow_id, activity, member_ids=None, **extra):
+        return {
+            "workflow_id": workflow_id,
+            "main_session_id": (member_ids or [workflow_id])[0],
+            "member_session_ids": member_ids or [workflow_id],
+            "last_activity_ts": activity,
+            "active": True,
+            **extra,
         }
 
-        workflow_b = {
-            "workflow_id": "workflow-b",
-            "main_session": parent_b,
-            "all_sessions": [parent_b],
-            "sub_agents": [],
-        }
-
+    def test_selection_uses_parent_activity_only_not_sub_agent(self, monkeypatch, tmp_path):
+        # Metadata activity is derived from the parent, not the newer child activity.
+        parent_a = self._candidate("workflow-a", 100, ["parent-a", "sub-agent-a"])
+        parent_b = self._candidate("workflow-b", 150)
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
-            lambda: str(tmp_path / "test.db"),
+            lambda: tmp_path / "test.db",
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda db_path: [workflow_a, workflow_b],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: [parent_a, parent_b],
         )
+        monitor = LiveMonitor(pricing_data={}, init_from_db=True)
 
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
-
-        displayed = monitor._get_displayed_workflow()
-
-        assert displayed["workflow_id"] == "workflow-b", (
-            "Parent B should be displayed because its parent activity (now-50) "
-            "is newer than Parent A's parent activity (now-100), "
-            "even though Parent A's sub-agent has the newest activity (now)"
-        )
+        assert monitor._displayed_workflow_id == "workflow-b"
+        assert monitor._get_displayed_workflow() is parent_b
 
     def test_parent_appears_when_dispatching_sub_agent(self, monkeypatch, tmp_path):
-        from ocmonitor.models.session import TokenUsage
-        from ocmonitor.models.session import InteractionFile
-        from ocmonitor.models.session import TimeData
-
-        now = 1700000000
-
-        parent_a_file = MagicMock(spec=InteractionFile)
-        parent_a_file.time_data = MagicMock(spec=TimeData)
-        parent_a_file.time_data.created = now * 1000
-        parent_a_file.tokens = TokenUsage(input=100, output=50)
-
-        parent_a = MagicMock(
-            session_id="parent-a",
-            end_time=None,
-            start_time=now - 100,
-            files=[parent_a_file],
+        dispatching_parent = self._candidate(
+            "workflow-a", 200, ["parent-a", "sub-agent-a"], sub_agent_count=1
         )
-
-        sub_agent = MagicMock(
-            session_id="sub-agent-a",
-            end_time=None,
-            start_time=now + 50,
-            files=[],
-        )
-
-        parent_b_file = MagicMock(spec=InteractionFile)
-        parent_b_file.time_data = MagicMock(spec=TimeData)
-        parent_b_file.time_data.created = (now - 50) * 1000
-        parent_b_file.tokens = TokenUsage(input=50, output=25)
-
-        parent_b = MagicMock(
-            session_id="parent-b",
-            end_time=None,
-            start_time=now - 100,
-            files=[parent_b_file],
-        )
-
-        workflow_a = {
-            "workflow_id": "workflow-a",
-            "main_session": parent_a,
-            "all_sessions": [parent_a, sub_agent],
-            "sub_agents": [sub_agent],
-        }
-
-        workflow_b = {
-            "workflow_id": "workflow-b",
-            "main_session": parent_b,
-            "all_sessions": [parent_b],
-            "sub_agents": [],
-        }
-
+        other_parent = self._candidate("workflow-b", 150)
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
-            lambda: str(tmp_path / "test.db"),
+            lambda: tmp_path / "test.db",
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda db_path: [workflow_a, workflow_b],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: [other_parent, dispatching_parent],
         )
+        monitor = LiveMonitor(pricing_data={}, init_from_db=True)
 
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+        assert monitor._displayed_workflow_id == "workflow-a"
+        assert monitor._get_displayed_workflow()["member_session_ids"] == [
+            "parent-a", "sub-agent-a"
+        ]
 
-        displayed = monitor._get_displayed_workflow()
-
-        assert displayed["workflow_id"] == "workflow-a", (
-            "Parent A should be displayed when it has new activity (dispatching sub-agent), "
-            "even if sub-agent hasn't produced output yet"
-        )
-        assert len(displayed["sub_agents"]) == 1
-
-    def test_workflow_shows_all_sub_agents_regardless_of_activity(
+    def test_workflow_metadata_includes_all_sub_agents_regardless_of_activity(
         self, monkeypatch, tmp_path
     ):
-        from ocmonitor.models.session import TokenUsage
-        from ocmonitor.models.session import InteractionFile
-        from ocmonitor.models.session import TimeData
-
-        now = 1700000000
-
-        parent_file = MagicMock(spec=InteractionFile)
-        parent_file.time_data = MagicMock(spec=TimeData)
-        parent_file.time_data.created = now * 1000
-        parent_file.tokens = TokenUsage(input=100, output=50)
-
-        parent = MagicMock(
-            session_id="parent",
-            end_time=None,
-            start_time=now - 100,
-            files=[parent_file],
+        candidate = self._candidate(
+            "workflow-with-subs", 200,
+            ["parent", "sub-ended", "sub-active"], sub_agent_count=2,
         )
-
-        sub_agent_ended = MagicMock(
-            session_id="sub-ended",
-            end_time=now - 50,
-            start_time=now - 80,
-            files=[],
-        )
-
-        sub_agent_active = MagicMock(
-            session_id="sub-active",
-            end_time=None,
-            start_time=now - 30,
-            files=[],
-        )
-
-        workflow = {
-            "workflow_id": "workflow-with-subs",
-            "main_session": parent,
-            "all_sessions": [parent, sub_agent_ended, sub_agent_active],
-            "sub_agents": [sub_agent_ended, sub_agent_active],
-        }
-
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
-            lambda: str(tmp_path / "test.db"),
+            lambda: tmp_path / "test.db",
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda db_path: [workflow],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: [candidate],
         )
-
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+        monitor = LiveMonitor(pricing_data={}, init_from_db=True)
 
         displayed = monitor._get_displayed_workflow()
 
-        assert displayed["workflow_id"] == "workflow-with-subs"
-        assert len(displayed["sub_agents"]) == 2, (
-            "Both ended and active sub-agents should be shown when parent is displayed"
-        )
+        assert displayed["member_session_ids"] == ["parent", "sub-ended", "sub-active"]
+        assert displayed["sub_agent_count"] == 2
 
 
 class TestOrphanSubAgentDetection:
-    def test_single_orphan_group_creates_workflow(self, monkeypatch, tmp_path):
-        from ocmonitor.utils.sqlite_utils import SQLiteProcessor
-
-        orphan_workflow = {
-            "workflow_id": "missing-parent-id",
-            "main_session": MagicMock(
-                session_id="orphan-sub-1", parent_id="missing-parent-id"
-            ),
-            "sub_agents": [
-                MagicMock(session_id="orphan-sub-2", parent_id="missing-parent-id")
-            ],
-            "all_sessions": [
-                MagicMock(session_id="orphan-sub-1"),
-                MagicMock(session_id="orphan-sub-2"),
-            ],
+    @staticmethod
+    def _orphan(workflow_id, member_ids, activity=0):
+        return {
+            "workflow_id": workflow_id,
+            "main_session_id": member_ids[0],
+            "member_session_ids": member_ids,
+            "last_activity_ts": activity,
+            "active": True,
             "is_orphan": True,
         }
 
+    def test_single_orphan_group_is_available_from_metadata(self, monkeypatch, tmp_path):
+        orphan = self._orphan("missing-parent-id", ["orphan-sub-1", "orphan-sub-2"])
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
-            lambda: str(tmp_path / "test.db"),
+            lambda: tmp_path / "test.db",
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda db_path: [orphan_workflow],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: [orphan],
         )
+        monitor = LiveMonitor(pricing_data={}, init_from_db=True)
 
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+        assert monitor._displayed_workflow_id == "missing-parent-id"
+        assert monitor._get_displayed_workflow()["is_orphan"] is True
+        assert monitor._get_displayed_workflow()["member_session_ids"] == [
+            "orphan-sub-1", "orphan-sub-2"
+        ]
 
-        displayed = monitor._get_displayed_workflow()
-
-        assert displayed["workflow_id"] == "missing-parent-id"
-        assert displayed["is_orphan"] is True
-        assert len(displayed["sub_agents"]) == 1
-
-    def test_multiple_orphan_groups_separate_workflows(self, monkeypatch, tmp_path):
-        orphan_a = {
-            "workflow_id": "parent-a",
-            "main_session": MagicMock(session_id="sub-a1"),
-            "sub_agents": [MagicMock(session_id="sub-a2")],
-            "all_sessions": [MagicMock(), MagicMock()],
-            "is_orphan": True,
-        }
-        orphan_b = {
-            "workflow_id": "parent-b",
-            "main_session": MagicMock(session_id="sub-b1"),
-            "sub_agents": [],
-            "all_sessions": [MagicMock()],
-            "is_orphan": True,
-        }
-
+    def test_multiple_orphan_groups_remain_separate_metadata_workflows(
+        self, monkeypatch, tmp_path
+    ):
+        orphan_a = self._orphan("parent-a", ["sub-a1", "sub-a2"], 100)
+        orphan_b = self._orphan("parent-b", ["sub-b1"], 200)
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
-            lambda: str(tmp_path / "test.db"),
+            lambda: tmp_path / "test.db",
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda db_path: [orphan_a, orphan_b],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: [orphan_a, orphan_b],
         )
+        monitor = LiveMonitor(pricing_data={}, init_from_db=True)
 
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
+        assert monitor._get_tracked_workflow_ids() == {"parent-a", "parent-b"}
+        assert monitor._displayed_workflow_id == "parent-b"
 
-        tracked = monitor._get_tracked_workflow_ids()
-        assert tracked == {"parent-a", "parent-b"}
-
-    def test_mixed_normal_and_orphan_workflows(self, monkeypatch, tmp_path):
-        from ocmonitor.models.session import TokenUsage
-        from ocmonitor.models.session import InteractionFile
-        from ocmonitor.models.session import TimeData
-
-        now = 1700000000
-
-        normal_file = MagicMock(spec=InteractionFile)
-        normal_file.time_data = MagicMock(spec=TimeData)
-        normal_file.time_data.created = now * 1000
-        normal_file.tokens = TokenUsage(input=100, output=50)
-
-        normal_workflow = {
-            "workflow_id": "normal-parent",
-            "main_session": MagicMock(session_id="normal-parent", files=[normal_file]),
-            "sub_agents": [MagicMock(session_id="normal-sub")],
-            "all_sessions": [MagicMock(), MagicMock()],
+    def test_normal_and_orphan_workflows_both_remain_tracked(self, monkeypatch, tmp_path):
+        normal = {
+            **self._orphan("normal-parent", ["normal-parent", "normal-sub"], 200),
             "is_orphan": False,
         }
-
-        orphan_workflow = {
-            "workflow_id": "orphan-parent",
-            "main_session": MagicMock(
-                session_id="orphan-sub", files=[], parent_id="orphan-parent"
-            ),
-            "sub_agents": [],
-            "all_sessions": [MagicMock()],
-            "is_orphan": True,
-        }
-
+        orphan = self._orphan("orphan-parent", ["orphan-sub"], 100)
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
-            lambda: str(tmp_path / "test.db"),
+            lambda: tmp_path / "test.db",
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda db_path: [normal_workflow, orphan_workflow],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: [normal, orphan],
         )
+        monitor = LiveMonitor(pricing_data={}, init_from_db=True)
 
-        paths_config = PathsConfig(messages_dir=str(tmp_path))
-        monitor = LiveMonitor(pricing_data={}, paths_config=paths_config)
-
-        tracked = monitor._get_tracked_workflow_ids()
-        assert "normal-parent" in tracked
-        assert "orphan-parent" in tracked
+        assert monitor._get_tracked_workflow_ids() == {"normal-parent", "orphan-parent"}
 
 
 class TestLiveMonitorValidation:
@@ -888,70 +550,107 @@ class TestLiveMonitorSelection:
         result = monitor._get_file_active_workflows(str(tmp_path), allow_fallback=False)
         assert result == []
 
-    def test_file_loader_falls_back_to_recent_workflows(self, monkeypatch, tmp_path):
+    def test_file_loader_falls_back_to_recent_metadata_and_hydrates_one(
+        self, monkeypatch, tmp_path
+    ):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
-
-        ended_workflows = [
-            SimpleNamespace(workflow_id=f"wf-{i}", end_time=1) for i in range(10)
+        metadata = [
+            SimpleNamespace(
+                workflow_id=f"wf-{i}",
+                all_sessions=[SimpleNamespace(session_id=f"wf-{i}")],
+                end_time=1,
+                last_activity_ts=10 - i,
+            )
+            for i in range(10)
         ]
-        monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.FileProcessor.load_all_sessions",
-            lambda base_path, limit=50: [SimpleNamespace(session_id="ses_1")],
-        )
-        monkeypatch.setattr(
-            monitor.session_grouper,
-            "group_sessions",
-            lambda sessions: ended_workflows,
-        )
+        monkeypatch.setattr(monitor, "_get_file_workflow_metadata", lambda *_a, **_k: metadata[:5])
+        hydrated = []
+
+        def hydrate(_base_path, selected):
+            hydrated.append(selected.workflow_id)
+            return SimpleNamespace(workflow_id=selected.workflow_id)
+
+        monkeypatch.setattr(monitor, "_hydrate_file_metadata_workflow", hydrate)
 
         result = monitor._get_file_active_workflows(str(tmp_path), allow_fallback=True)
-        assert len(result) == 5
-        assert [w.workflow_id for w in result] == [f"wf-{i}" for i in range(5)]
+
+        assert [workflow.workflow_id for workflow in result] == ["wf-0"]
+        assert hydrated == ["wf-0"]
 
     def test_sqlite_loader_disables_fallback_in_pinned_mode(
         self, monkeypatch, tmp_path
     ):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
-
         db_path = tmp_path / "opencode.db"
         db_path.touch()
+        active = {"workflow_id": "wf-active", "active": True, "member_session_ids": ["wf-active"]}
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
             lambda: db_path,
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda _: [],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: [active],
         )
+        recent = MagicMock(return_value=[{"workflow_id": "wf-ended"}])
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_recent_workflows",
-            lambda _, limit=5: [{"workflow_id": "wf-ended"}],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_recent_workflow_metadata",
+            recent,
+        )
+        hydrated = MagicMock(return_value={"workflow_id": "wf-active"})
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.load_workflow_from_metadata",
+            hydrated,
         )
 
         result = monitor._get_sqlite_active_workflows(allow_fallback=False)
-        assert result == []
 
-    def test_sqlite_loader_falls_back_to_recent_workflows(self, monkeypatch, tmp_path):
+        assert result == [{"workflow_id": "wf-active"}]
+        recent.assert_not_called()
+        hydrated.assert_called_once_with(active, db_path)
+
+    def test_sqlite_loader_falls_back_to_recent_metadata_and_hydrates_one(
+        self, monkeypatch, tmp_path
+    ):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
-
         db_path = tmp_path / "opencode.db"
         db_path.touch()
+        recent = [
+            {
+                "workflow_id": f"wf-{i}",
+                "active": False,
+                "member_session_ids": [f"wf-{i}"],
+                "last_activity_ts": 10 - i,
+            }
+            for i in range(5)
+        ]
         monkeypatch.setattr(
             "ocmonitor.services.live_monitor.SQLiteProcessor.find_database_path",
             lambda: db_path,
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_all_active_workflows",
-            lambda _: [],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_active_workflow_metadata",
+            lambda *_args, **_kwargs: [],
         )
         monkeypatch.setattr(
-            "ocmonitor.services.live_monitor.SQLiteProcessor.get_recent_workflows",
-            lambda _, limit=5: [{"workflow_id": f"wf-{i}"} for i in range(limit)],
+            "ocmonitor.services.live_monitor.SQLiteProcessor.list_recent_workflow_metadata",
+            lambda _db, limit=5: recent[:limit],
+        )
+        hydrated = []
+
+        def hydrate(metadata, _db):
+            hydrated.append(metadata["workflow_id"])
+            return {"workflow_id": metadata["workflow_id"]}
+
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.SQLiteProcessor.load_workflow_from_metadata",
+            hydrate,
         )
 
         result = monitor._get_sqlite_active_workflows(allow_fallback=True)
-        assert len(result) == 5
-        assert [w["workflow_id"] for w in result] == [f"wf-{i}" for i in range(5)]
+
+        assert [workflow["workflow_id"] for workflow in result] == ["wf-0"]
+        assert hydrated == ["wf-0"]
 
     def test_handle_live_switch_command_show_does_not_switch(self):
         monitor = LiveMonitor(pricing_data={}, init_from_db=False)
@@ -1470,7 +1169,7 @@ class TestLiveMonitorProviderAwareRegressions:
 class TestRecentTurnInspection:
     """Tests for live-monitor recent-turn history inspection."""
 
-    def _make_turn(self, tmp_path, session_id, name, created, total_output=100):
+    def _make_turn(self, tmp_path, session_id, name, created, total_output=100, agent="build"):
         from ocmonitor.models.session import InteractionFile, TimeData, TokenUsage
 
         path = tmp_path / name
@@ -1488,7 +1187,7 @@ class TestRecentTurnInspection:
             ),
             time_data=TimeData(created=created, completed=created + 2000),
             project_path=str(tmp_path),
-            agent="build",
+            agent=agent,
             finish_reason="stop",
             raw_data={
                 "role": "assistant",
@@ -1676,9 +1375,25 @@ class TestRecentTurnInspection:
         assert table.columns[9].header == "Cache"
         assert table.columns[9]._cells == ["—", "MISS"]
         assert table.rows[1].style == "status.warning"
-        assert "not a provider miss event" in table.caption
+        assert "MISS rows are highlighted" in table.caption
+        assert "not a provider miss event" not in table.caption
 
-    def test_live_recent_turns_refreshes_and_resets_to_newest_page(
+    def test_recent_turn_table_renders_agent_markup_literally(self, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1_000)
+        descriptors = monitor._describe_recent_turns(
+            SimpleNamespace(all_sessions=[SimpleNamespace(non_zero_token_files=[turn])])
+        )
+        descriptors[0]["agent"] = "[red]PWNED[/red]"
+
+        table = monitor._build_recent_turn_picker_table(descriptors, "Recent Turns")
+
+        agent_cell = table.columns[2]._cells[0]
+        assert isinstance(agent_cell, Text)
+        assert agent_cell.plain == "[red]PWNED[/red]"
+        assert all(span.style != "red" for span in agent_cell.spans)
+
+    def test_live_recent_turns_manual_refresh_resets_to_newest_page(
         self, tmp_path, monkeypatch
     ):
         from ocmonitor.models.session import SessionData
@@ -1693,17 +1408,19 @@ class TestRecentTurnInspection:
         refreshed = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=[new_turn])])
         live = MagicMock()
         monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
-        monitor._poll_recent_turn_command = MagicMock(side_effect=[None, None, "q"])
-        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", MagicMock(side_effect=[0, 0, 1, 1.1]))
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["n", "R", "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
         monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+        refresh_workflow = MagicMock(return_value=refreshed)
 
         monitor._inspect_recent_turns_during_live(
             live, initial, "Recent Turns", True,
-            refresh_workflow=MagicMock(return_value=refreshed), refresh_interval=1,
+            refresh_workflow=refresh_workflow, refresh_interval=1,
         )
 
+        refresh_workflow.assert_called_once_with()
         assert live.update.call_count >= 3
-        final_table = live.update.call_args.args[0]
+        final_table = live.update.call_args.args[0].renderables[1]
         assert "1/1" in final_table.title
         assert "1 turns" in final_table.title
         assert monitor._live_status_line == "Ready."
@@ -1725,7 +1442,7 @@ class TestRecentTurnInspection:
 
         monitor._inspect_recent_turns_during_live(live, workflow, "Recent Turns", True)
 
-        pages = [call.args[0].title for call in live.update.call_args_list]
+        pages = [call.args[0].renderables[1].title for call in live.update.call_args_list]
         assert any("page 2/2" in title for title in pages)
         assert pages[-1].find("page 1/2") >= 0
         assert monitor._live_status_line == "Ready."
@@ -1749,7 +1466,49 @@ class TestRecentTurnInspection:
             refresh_workflow=MagicMock(return_value=refreshed), refresh_interval=1,
         )
 
-        assert "1 turns" in live.update.call_args.args[0].title
+        assert "1 turns" in live.update.call_args.args[0].renderables[1].title
+
+    def test_live_recent_turns_auto_refresh_waits_for_page_one(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turns = [
+            self._make_turn(tmp_path, "ses-1", f"turn-{idx}.json", idx * 1000)
+            for idx in range(51)
+        ]
+        initial = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=turns)])
+        refreshed = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=turns)])
+        live = MagicMock()
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monitor._poll_recent_turn_command = MagicMock(
+            side_effect=["n", None, "p", None, "q"]
+        )
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.time.monotonic",
+            MagicMock(side_effect=[0, 0.5, 1.1, 1.2, 1.3, 1.4]),
+        )
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+        refresh_workflow = MagicMock(return_value=refreshed)
+        describe_turns = MagicMock(wraps=monitor._describe_recent_turns)
+        monitor._describe_recent_turns = describe_turns
+
+        monitor._inspect_recent_turns_during_live(
+            live, initial, "Recent Turns", True,
+            refresh_workflow=refresh_workflow, refresh_interval=1,
+        )
+
+        refresh_workflow.assert_called_once_with()
+        assert describe_turns.call_count == 2  # Initial descriptors and resumed refresh only.
+        tables = [call.args[0].renderables[1] for call in live.update.call_args_list]
+        pages = [table.title for table in tables]
+        assert any("page 2/2" in title for title in pages)
+        assert pages[-1].find("page 1/2") >= 0
+        page_two = next(table for table in tables if "page 2/2" in table.title)
+        assert "Auto-refresh paused on page 2 (every 1s on page 1)" in page_two.caption
+        assert "Auto-refresh every 1s (page 1)" in tables[-1].caption
+        assert "MISS rows are highlighted" in tables[-1].caption
+        assert "not a provider miss event" not in tables[-1].caption
+        assert "Keys: n/p page" in tables[-1].caption
 
     def test_live_recent_turns_accepts_multidigit_selection(self, tmp_path, monkeypatch):
         from ocmonitor.models.session import SessionData
@@ -1856,11 +1615,11 @@ class TestRecentTurnInspection:
 
         monitor._inspect_recent_turns_during_live(live, workflow, "Recent Turns", True)
 
-        detail_group = next(
-            call.args[0] for call in live.update.call_args_list
-            if hasattr(call.args[0], "renderables")
+        detail_renderables = next(
+            call.args[0].renderables for call in live.update.call_args_list
+            if any(getattr(item, "title", None) == "Turn Details" for item in call.args[0].renderables)
         )
-        panel, tools_table = detail_group.renderables[:2]
+        panel, tools_table = detail_renderables[:2]
         assert panel.title == "Turn Details"
         detail_labels = [str(cell) for cell in panel.renderable.columns[0]._cells]
         assert {"Project", "Duration", "Finish", "Cache Write", "Total Tokens", "Cost", "Output Rate"}.issubset(detail_labels)
@@ -1881,3 +1640,182 @@ class TestRecentTurnInspection:
         monkeypatch.setattr(os, "read", lambda fd, size: b"t")
 
         assert monitor._poll_live_switch_command() == "turns"
+
+    def test_recent_turn_raw_poll_preserves_uppercase_refresh(self, monkeypatch):
+        import os
+        import select
+        import sys
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        monitor._stdin_fd = 42
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(select, "select", lambda *a, **k: ([sys.stdin], [], []))
+        monkeypatch.setattr(os, "read", lambda fd, size: b"R")
+
+        assert monitor._poll_recent_turn_command() == "R"
+
+    def test_recent_turn_raw_poll_maps_lowercase_reviewer_without_back_alias(self, monkeypatch):
+        import os
+        import select
+        import sys
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        monitor._stdin_fd = 42
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(select, "select", lambda *a, **k: ([sys.stdin], [], []))
+        keys = iter([b"r", b"b"])
+        monkeypatch.setattr(os, "read", lambda fd, size: next(keys))
+
+        assert monitor._poll_recent_turn_command() == "r"
+        assert monitor._poll_recent_turn_command() == "b"
+
+    def test_live_recent_turn_filter_exact_match_toggle_and_switch(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turns = [
+            self._make_turn(tmp_path, "ses-1", "build.json", 1000, agent="Build"),
+            self._make_turn(tmp_path, "ses-1", "bash.json", 2000, agent="bash-executor"),
+            self._make_turn(tmp_path, "ses-1", "builder.json", 3000, agent="builder"),
+            self._make_turn(tmp_path, "ses-1", "reviewer.json", 4000, agent="Reviewer"),
+        ]
+        workflow = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=turns)])
+        live = MagicMock()
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["b", "x", "x", "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+
+        monitor._inspect_recent_turns_during_live(live, workflow, "Recent Turns", True)
+
+        tables = [call.args[0].renderables[1] for call in live.update.call_args_list]
+        assert any("— build" in table.title and "1 turns" in table.title for table in tables)
+        assert any("— bash-executor" in table.title and "1 turns" in table.title for table in tables)
+        assert any("page 1/1, 4 turns" in table.title for table in tables)
+        assert all("builder" not in str(table.rows) for table in tables if "— build" in table.title)
+
+    def test_live_recent_turn_filter_zero_matches_and_filtered_selection(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turns = [
+            self._make_turn(tmp_path, "ses-1", "build.json", 1000, agent="build"),
+            self._make_turn(tmp_path, "ses-1", "review.json", 2000, agent="reviewer"),
+        ]
+        workflow = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=turns)])
+        live = MagicMock()
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["e", "r", "1", "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+
+        monitor._inspect_recent_turns_during_live(live, workflow, "Recent Turns", True)
+
+        tables = [call.args[0].renderables[1] for call in live.update.call_args_list]
+        assert any("— explore" in table.title and "0 turns" in table.title for table in tables)
+        assert any("— reviewer" in table.title and "1 turns" in table.title for table in tables)
+        details = [
+            call.args[0] for call in live.update.call_args_list
+            if hasattr(call.args[0], "renderables")
+            and any(getattr(item, "title", None) == "Turn Details" for item in call.args[0].renderables)
+        ]
+        assert len(details) == 1
+        assert details[0].renderables[0].renderable.columns[0]._cells[0] == "Role"
+
+    def test_live_recent_turn_filter_persists_refresh_and_resets_page(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        old = [
+            self._make_turn(tmp_path, "ses-1", f"old-{idx}.json", idx * 1000, agent="build")
+            for idx in range(51)
+        ]
+        refreshed = [
+            self._make_turn(tmp_path, "ses-1", "new.json", 99_000, agent="BUILD"),
+            self._make_turn(tmp_path, "ses-1", "other.json", 98_000, agent="reviewer"),
+        ]
+        initial = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=old)])
+        updated = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=refreshed)])
+        live = MagicMock()
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["b", "n", "R", "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+        refresh = MagicMock(return_value=updated)
+
+        monitor._inspect_recent_turns_during_live(
+            live, initial, "Recent Turns", True, refresh_workflow=refresh
+        )
+
+        refresh.assert_called_once_with()
+        tables = [call.args[0].renderables[1] for call in live.update.call_args_list]
+        assert any("page 2/2" in table.title for table in tables)
+        assert "Recent Turns — build (page 1/1, 1 turns)" in tables[-1].title
+
+    def test_live_recent_turn_filter_persists_automatic_refresh(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(tmp_path, "ses-1", "build.json", 1000, agent="build")
+        workflow = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=[turn])])
+        live = MagicMock()
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["b", None, "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr(
+            "ocmonitor.services.live_monitor.time.monotonic",
+            MagicMock(side_effect=[0, 1, 1.1]),
+        )
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+        refresh = MagicMock(return_value=workflow)
+
+        monitor._inspect_recent_turns_during_live(
+            live, workflow, "Recent Turns", True, refresh_workflow=refresh, refresh_interval=1
+        )
+
+        refresh.assert_called_once_with()
+        tables = [call.args[0].renderables[1] for call in live.update.call_args_list]
+        assert tables[-1].title == "Recent Turns — build (page 1/1, 1 turns)"
+
+    def test_recent_turn_footer_shows_filters_and_uppercase_refresh(self, tmp_path):
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        turn = self._make_turn(tmp_path, "ses-1", "turn.json", 1000)
+        descriptor = monitor._describe_recent_turns(
+            SimpleNamespace(all_sessions=[SimpleNamespace(non_zero_token_files=[turn])])
+        )
+
+        table = monitor._build_recent_turn_picker_table(descriptor, "Recent Turns")
+
+        for key in ("b=build", "x=bash-executor", "l=lite-worker", "r=reviewer", "e=explore", "R refresh", "q/back return"):
+            assert key in str(table.caption)
+
+    def test_recent_turn_filter_aliases_and_filtered_page_pauses_refresh(self, tmp_path, monkeypatch):
+        from ocmonitor.models.session import SessionData
+
+        monitor = LiveMonitor(pricing_data={}, init_from_db=False)
+        monkeypatch.setattr(monitor, "RECENT_TURN_PAGE_SIZE", 1)
+        turns = [
+            self._make_turn(tmp_path, "ses-1", "liteworker.json", 1000, agent="LITEWORKER"),
+            self._make_turn(tmp_path, "ses-1", "explorer.json", 2000, agent="Explorer"),
+            *[
+                self._make_turn(tmp_path, "ses-1", f"build-{idx}.json", idx * 1000, agent="build")
+                for idx in range(2, 51)
+            ],
+        ]
+        workflow = SimpleNamespace(all_sessions=[SessionData(session_id="ses-1", files=turns)])
+        live = MagicMock()
+        monitor._poll_recent_turn_command = MagicMock(side_effect=["l", "e", "b", "n", None, "q"])
+        monkeypatch.setattr("ocmonitor.services.live_monitor.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.monotonic", lambda: 0)
+        monkeypatch.setattr("ocmonitor.services.live_monitor.time.sleep", MagicMock())
+        refresh = MagicMock(return_value=workflow)
+
+        monitor._inspect_recent_turns_during_live(
+            live, workflow, "Recent Turns", True, refresh_workflow=refresh, refresh_interval=1
+        )
+
+        refresh.assert_not_called()
+        tables = [call.args[0].renderables[1] for call in live.update.call_args_list]
+        assert any("— lite-worker" in table.title and "1 turns" in table.title for table in tables)
+        assert any("— explore" in table.title and "1 turns" in table.title for table in tables)
+        assert any("— build" in table.title and "page 2/49" in table.title for table in tables)
+        assert any("Auto-refresh paused on page 2" in table.caption for table in tables)

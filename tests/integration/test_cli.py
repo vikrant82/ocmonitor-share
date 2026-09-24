@@ -674,7 +674,7 @@ class TestLiveCommand:
                 "info": {"sqlite": {"available": False}, "files": {"available": True}},
             },
         ), patch(
-            "ocmonitor.services.live_monitor.LiveMonitor._get_file_active_workflows",
+            "ocmonitor.services.live_monitor.LiveMonitor._get_file_workflow_metadata",
             new=fake_get_file_workflows,
         ), patch(
             "ocmonitor.services.live_monitor.LiveMonitor._prompt_for_workflow_selection",
