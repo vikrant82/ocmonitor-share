@@ -500,12 +500,15 @@ ocmonitor live ~/.local/share/opencode/storage/message --refresh 10
 - 🔄 Auto-refreshing display with professional UI redesign
 - 📊 Real-time cost tracking with progress indicators  
 - ⏱️ Live session duration with 5-hour progress bar and color-coded time alerts
-- 📈 Token usage updates and context window monitoring
+- 📈 Token usage updates and context window monitoring; the Tokens pane shows the cumulative cache-hit rate for the session, or the combined workflow when sub-agents are included
+- 📊 Compact per-agent/model metrics show `Completed prompts: 16 | Cache Hit: 97.0%`; each model pane for an agent repeats that agent's cumulative cache rate across models and workflow sessions
 - 🚦 Color-coded status indicators (green/orange/yellow/red based on time elapsed)
 - 📂 Project name display for better context awareness
 - 📝 Human-readable session titles replacing cryptic session IDs
 - 🎨 Clean, professional styling with optimal space utilization
 - 🔧 **Tool Usage Stats** - Real-time success rates for tools (bash, read, edit, etc.)
+
+The dashboard cache-hit rate includes all prompt usage, including the first request, and is calculated as `100 × cache_read / (input + cache_read + cache_write)` (output excluded), to one decimal place. A zero prompt-token denominator displays `N/A`. It is cumulative, not a guarantee that the first request misses. Completed prompt counts are validated stored prompts with completed responses, excluding known synthetic prompts; in compact panes, missing agent counts are zero and unavailable counts display `N/A`. The compact count appears alongside each agent/model pane; the detailed workflow-wide summary is available in Recent Turns.
 
 [![Live Dashboard Screenshot](screenshots/live_dashboard.png)](screenshots/live_dashboard.png)
 

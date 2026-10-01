@@ -315,7 +315,8 @@ Workflow discovery and the picker use metadata only. After selection, live monit
 - 🔄 Auto-refreshing display with professional UI design
 - 📊 Real-time cost tracking with progress indicators
 - ⏱️ Live session duration with 5-hour progress bar
-- 📈 Token usage updates and context window monitoring
+- 📈 Token usage updates and context window monitoring; the Tokens pane shows the cumulative cache-hit rate for the session, or the combined workflow when sub-agents are included
+- 📊 Compact per-agent/model metrics show `Completed prompts: 16 | Cache Hit: 97.0%`; each model pane for an agent repeats that agent's cumulative cache rate across models and workflow sessions
 - 🚀 **Output Rate** - Rolling 5-minute window showing output tokens per second
 - 🚦 Color-coded status indicators and time alerts
 - 📂 Project name display for better context
@@ -323,7 +324,7 @@ Workflow discovery and the picker use metadata only. After selection, live monit
 - 🔗 **Workflow Tracking** - Automatically tracks entire workflow including sub-agents (explore, etc.)
 - 🔧 **Tool Usage Stats** - Shows success rates for tools (bash, read, edit, etc.) with color-coded progress bars
 - 🔍 **Recent Turns Inspector** - Press `t` for a live-updating table of individual turns, cache indicators, per-turn pricing, and detailed turn views
-- 📊 **Completed Stored Prompts by Agent** - SQLite mode counts validated stored user prompts with completed responses, excluding known synthetic prompts. The summary appears on the dashboard and above Recent Turns; file mode or ambiguous SQLite data shows `Unavailable`.
+- 📊 **Completed Stored Prompts by Agent** - SQLite mode counts validated stored user prompts with completed responses, excluding known synthetic prompts. Compact counts appear in agent/model panes; file mode or ambiguous SQLite data shows `N/A`. The long workflow-wide summary remains in Recent Turns.
 - 🎮 **Interactive Controls** - `n`=next, `p`=prev, `l`=list, `t`=turns, `1..9`=jump, `q`=quit
 
 **Interactive Controls:**
@@ -341,7 +342,7 @@ Workflow discovery and the picker use metadata only. After selection, live monit
 
 Press `t` during live monitoring to inspect individual turns in the current workflow. The selected workflow's history is loaded without applying the picker's `--last` limit (the inspector displays up to 500 recent non-zero-token turns). On page 1, the table updates at the configured `--interval` (`-i`) so new turns appear automatically. While viewing later pages, automatic refresh pauses and preserves the current data and page; when you return to page 1, an overdue refresh runs on the next poll. This shows per-turn pricing, token breakdown, and duration. Text previews are shortened for display; the picker limit does not truncate the selected workflow's loaded message history.
 
-The SQLite dashboard and Recent Turns report completed stored prompts by the triggering message's agent when the database history passes validation. This is a count of stored prompts, not a guarantee that each was directly initiated by a human. Known synthetic prompts are excluded; ambiguous SQLite data and file mode display `Unavailable`.
+The dashboard and Recent Turns report completed stored prompts by the triggering message's agent when the database history passes validation. This is a count of stored prompts, not a guarantee that each was directly initiated by a human. Known synthetic prompts are excluded; in compact panes, missing agent counts are zero and unavailable counts display `N/A`. Cache-hit rates include all prompt usage, including the first request, and are calculated as `100 × cache_read / (input + cache_read + cache_write)` (output excluded), to one decimal place; no prompt tokens displays `N/A`. These are cumulative rates, not guarantees that the first request misses.
 
 ```bash
 # Run from a source checkout, select a workflow, then press 't'
