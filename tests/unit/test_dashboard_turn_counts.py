@@ -1,126 +1,110 @@
-from decimal import Decimal
-from types import SimpleNamespace
-from typing import Any, cast
+"""Completed stored prompt counts stay separate from interaction counts."""
 
-from ocmonitor.models.session import TokenUsage
+from io import StringIO
+from pathlib import Path
+from typing import Optional
+
+import pytest
+from rich.console import Console
+
+from ocmonitor.models.session import InteractionFile, SessionData, TokenUsage
 from ocmonitor.models.tool_usage import ModelToolUsage
+from ocmonitor.models.workflow import SessionWorkflow
 from ocmonitor.ui.dashboard import DashboardUI
+from ocmonitor.ui.theme import get_theme
 
 
-def _workflow_panel(turn_counts):
-    session = SimpleNamespace(
-        get_agent_model_breakdown=lambda pricing: {
-            "agent/model": {
-                "tokens": TokenUsage(input=10, output=5),
-                "files": 3,
-                "cost": Decimal("0.25"),
-            }
-        }
+def _session(agent: Optional[str] = "build"):
+    return SessionData(
+        session_id="main",
+        session_title="Prompt counts",
+        files=[InteractionFile(
+            file_path=Path(f"/nonexistent/{index}.json"),
+            session_id="main", model_id="model-a", agent=agent,
+            tokens=TokenUsage(input=10, output=5), raw_data={"cost": 0.25},
+        ) for index in range(3)],
     )
-    workflow = SimpleNamespace(all_sessions=[session])
-    return DashboardUI().create_workflow_model_panel(
-        cast(Any, workflow),
-        pricing_data={},
-        completed_turn_counts=turn_counts,
-    ).renderable.__str__()
 
 
-def test_workflow_model_panel_shows_counts_and_preserves_interactions():
-    panel_text = _workflow_panel({"build": 12, "test": 0})
-
-    assert "Completed stored prompts by agent:" in panel_text
-    assert "build: 12, test: 0" in panel_text
-    assert "Interactions:" in panel_text
-    assert "3" in panel_text
-
-
-def test_workflow_model_panel_shows_unavailable_when_counts_are_unknown():
-    panel_text = _workflow_panel(None)
-
-    assert "Completed stored prompts by agent:" in panel_text
-    assert "Unavailable" in panel_text
-    assert "Database-validated stored prompts with completed responses" in panel_text
-
-
-def test_workflow_model_panel_shows_turn_counts_without_model_data():
-    workflow = SimpleNamespace(all_sessions=[])
-    panel_text = DashboardUI().create_workflow_model_panel(
-        cast(Any, workflow),
-        pricing_data={},
-        completed_turn_counts={"build": 0},
-    ).renderable.__str__()
-
-    assert "Completed stored prompts by agent:" in panel_text
-    assert "build: 0" in panel_text
-    assert "No model data available" in panel_text
-
-
-def _dashboard_layout(turn_counts, grid):
-    model_stats = [
-        ModelToolUsage(model_name="model-a"),
-        ModelToolUsage(model_name="model-b"),
-    ] if grid else []
-    session = SimpleNamespace(
-        start_time=None,
-        end_time=None,
-        session_title="test",
-        display_title="test",
-        project_name="project",
-        tokens=TokenUsage(input=10, output=5),
-        total_tokens=TokenUsage(input=10, output=5),
-        interaction_count=1,
-        calculate_total_cost=lambda pricing: Decimal("0"),
-        duration_hours=0,
-        duration_percentage=0,
-        total_processing_time_ms=0,
-        get_model_breakdown=lambda pricing: {
-            "model-a": {
-                "tokens": TokenUsage(input=10, output=5),
-                "cost": Decimal("0.25"),
-            }
-        },
-    )
-    layout = DashboardUI().create_dashboard_layout(
-        cast(Any, session),
-        recent_file=None,
-        pricing_data={},
-        tool_stats_by_model=model_stats,
-        completed_turn_counts=turn_counts,
-    )
-    return layout
-
-
-def _render(layout):
-    from rich.console import Console
-    from io import StringIO
-    from ocmonitor.ui.theme import get_theme
-
+def _render(renderable):
     output = StringIO()
-    Console(file=output, width=160, theme=get_theme()).print(layout)
+    Console(file=output, width=220, height=60, theme=get_theme(), color_system=None).print(renderable)
     return output.getvalue()
 
 
-def test_dashboard_layout_displays_turn_summary_in_grid_without_model_panel():
-    rendered = _render(_dashboard_layout({"z-agent": 2, "a-agent": 0}, grid=True))
+@pytest.mark.parametrize("workflow", [False, True])
+@pytest.mark.parametrize("counts, expected", [
+    (None, "N/A"), ({}, "0"), ({"other": 12}, "0"), ({"build": 12}, "12"),
+])
+def test_model_rows_use_validated_counts_not_interactions(workflow, counts, expected):
+    session = _session()
+    ui = DashboardUI()
+    if workflow:
+        panel = ui.create_workflow_model_panel(
+            SessionWorkflow(workflow_id="main", main_session=session), {},
+            completed_turn_counts=counts,
+        )
+    else:
+        panel = ui.create_model_panel(session, {}, completed_turn_counts=counts)
 
-    assert "Completed stored prompts by agent:" in rendered
-    assert "a-agent: 0, z-agent: 2" in rendered
-    assert rendered.count("Completed stored prompts by agent:") == 1
+    text = _render(panel)
+
+    assert f"Completed prompts: {expected} | Cache Hit: 0.0%" in text
+    assert text.count("Completed prompts:") == 1
+    assert "Tokens: 45 tok" in text
+    assert "Cost: $0.75" in text
+    if workflow:
+        assert "Interactions: 3" in text
 
 
-def test_dashboard_layout_displays_turn_summary_once_in_non_grid_model_panel():
-    rendered = _render(_dashboard_layout({}, grid=False))
+@pytest.mark.parametrize("counts, expected", [
+    (None, "N/A"), ({}, "0"), ({"other": 12}, "0"), ({"main": 7}, "7"),
+])
+def test_grid_missing_agent_uses_main_counts_without_tool_activity(counts, expected):
+    session = _session(agent=None)
+    text = _render(DashboardUI().create_dashboard_layout(
+        session, None, {},
+        tool_stats_by_model=[ModelToolUsage(model_name="model-a"), ModelToolUsage(model_name="model-b")],
+        completed_turn_counts=counts,
+    ))
 
-    assert "Completed stored prompts by agent:" in rendered
-    assert "None" in rendered
-    assert rendered.count("Completed stored prompts by agent:") == 1
+    assert text.count(f"Completed prompts: {expected} | Cache Hit: 0.0%") == 2
+    assert text.count("No tool activity") == 2
+    assert "Tokens: 45 total" in text
+    assert "Cost $0.75" in text
 
 
-def test_dashboard_layout_renders_agent_markup_as_literal_text():
+@pytest.mark.parametrize("workflow", [False, True])
+def test_counts_without_model_data_do_not_invent_agent_sections(workflow):
+    session = SessionData(session_id="main", files=[])
+    ui = DashboardUI()
+    if workflow:
+        panel = ui.create_workflow_model_panel(
+            SessionWorkflow(workflow_id="main", main_session=session), {},
+            completed_turn_counts={"build": 12},
+        )
+    else:
+        panel = ui.create_model_panel(session, {}, completed_turn_counts={"build": 12})
+
+    text = _render(panel)
+
+    assert "No model data available" in text
+    assert "Completed prompts:" not in text
+    assert "build" not in text
+    assert "Completed stored prompts by agent:" not in text
+
+
+@pytest.mark.parametrize("grid", [False, True])
+def test_dashboard_renders_agent_markup_as_literal_text(grid):
     agent = "[red]injected[/red]"
-    layout = _dashboard_layout({agent: 7}, grid=True)
+    session = _session(agent)
+    model_stats = [ModelToolUsage(model_name="model-a", agent_name=agent),
+                   ModelToolUsage(model_name="model-b", agent_name=agent)] if grid else []
+    text = _render(DashboardUI().create_dashboard_layout(
+        session, None, {}, tool_stats_by_model=model_stats,
+        completed_turn_counts={agent: 7},
+    ))
 
-    rendered = _render(layout)
-
-    assert f"{agent}: 7" in rendered
-    assert "\x1b[31m" not in rendered
+    assert agent in text
+    assert "Completed prompts: 7 | Cache Hit: 0.0%" in text
+    assert "\x1b[31m" not in text
