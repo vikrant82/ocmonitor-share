@@ -52,7 +52,7 @@ class DashboardUI:
     def _format_completed_turn_summary(
         self, completed_turn_counts: Optional[Dict[str, int]]
     ) -> str:
-        """Format known completed-turn counts without inferring missing data."""
+        """Format the legacy summary used by the separate recent-turn inspector."""
         if completed_turn_counts is None:
             counts = "Unavailable"
         else:
@@ -66,6 +66,54 @@ class DashboardUI:
             "[dim]Database-validated stored prompts with completed responses; "
             "known synthetic excluded[/dim]"
         )
+
+    def _format_agent_metrics(
+        self,
+        agent: Optional[str],
+        completed_turn_counts: Optional[Dict[str, int]],
+        agent_cache_hits: Dict[str, str],
+    ) -> str:
+        """Format externally validated counts and cumulative agent cache hits."""
+        agent = agent or "main"
+        count = (
+            "N/A"
+            if completed_turn_counts is None
+            else f"{completed_turn_counts.get(agent, 0):,}"
+        )
+        return (
+            f"[metric.label]Completed prompts:[/metric.label] [metric.value]{count}[/metric.value]"
+            f" | [metric.label]Cache Hit:[/metric.label] "
+            f"[metric.value]{agent_cache_hits.get(agent, 'N/A')}[/metric.value]"
+        )
+
+    def _format_cache_hit(self, tokens: TokenUsage) -> str:
+        """Format 100 * cache_read / (input + cache_read + cache_write).
+
+        Input excludes cached tokens; output is not part of the prompt. A zero
+        prompt denominator is unavailable rather than a measured zero hit rate.
+        """
+        prompt_tokens = tokens.input + tokens.cache_read + tokens.cache_write
+        if prompt_tokens == 0:
+            return "N/A"
+        return f"{100 * tokens.cache_read / prompt_tokens:.1f}%"
+
+    def _agent_cache_hits(self, sessions: List[SessionData]) -> Dict[str, str]:
+        """Aggregate cumulative prompt usage by interaction agent across models.
+
+        Missing agent names belong to main. Missing interaction data contributes
+        no usage; no per-model percentage or session-level agent is substituted.
+        """
+        by_agent: Dict[str, TokenUsage] = {}
+        for session in sessions:
+            for interaction in getattr(session, "files", []):
+                tokens = by_agent.setdefault(interaction.agent or "main", TokenUsage())
+                tokens.input += interaction.tokens.input
+                tokens.cache_read += interaction.tokens.cache_read
+                tokens.cache_write += interaction.tokens.cache_write
+        return {
+            agent: self._format_cache_hit(tokens)
+            for agent, tokens in by_agent.items()
+        }
 
     def _format_tool_token_suffix(self, stat: ToolUsageStats) -> str:
         """Format compact attributed per-tool token details for a tool row."""
@@ -237,7 +285,11 @@ class DashboardUI:
     def create_token_panel(
         self, session: SessionData, recent_file: Optional[Any] = None
     ) -> Panel:
-        """Create token consumption panel."""
+        """Render session token counts and cumulative prompt-cache hit rate.
+
+        Recent usage never replaces the cumulative rate. Rendering is read-only
+        and uses validated session tokens without I/O or additional errors.
+        """
         session_tokens = session.total_tokens
 
         # Create compact horizontal layout
@@ -253,7 +305,8 @@ class DashboardUI:
                 f"[metric.label]Cache W:[/metric.label] [metric.value]{session_tokens.cache_write:,}[/metric.value]\n"
                 f"[metric.label]Output:[/metric.label] [metric.value]{session_tokens.output:,}[/metric.value]   "
                 f"[metric.label]Cache R:[/metric.label] [metric.value]{session_tokens.cache_read:,}[/metric.value]\n"
-                f"[metric.label]Total:[/metric.label] [metric.tokens]{session_tokens.total:,}[/metric.tokens]"
+                f"[metric.label]Total:[/metric.label] [metric.tokens]{session_tokens.total:,}[/metric.tokens]    "
+                f"[metric.label]Cache Hit:[/metric.label] [metric.value]{self._format_cache_hit(session_tokens)}[/metric.value]"
             )
         else:
             token_text = (
@@ -262,7 +315,8 @@ class DashboardUI:
                 f"[metric.label]Cache W:[/metric.label] [metric.value]{session_tokens.cache_write:,}[/metric.value]\n"
                 f"[metric.label]Output:[/metric.label] [metric.value]{session_tokens.output:,}[/metric.value]   "
                 f"[metric.label]Cache R:[/metric.label] [metric.value]{session_tokens.cache_read:,}[/metric.value]\n"
-                f"[metric.label]Total:[/metric.label] [metric.tokens]{session_tokens.total:,}[/metric.tokens]"
+                f"[metric.label]Total:[/metric.label] [metric.tokens]{session_tokens.total:,}[/metric.tokens]    "
+                f"[metric.label]Cache Hit:[/metric.label] [metric.value]{self._format_cache_hit(session_tokens)}[/metric.value]"
             )
 
         return Panel(
@@ -314,20 +368,26 @@ class DashboardUI:
         per_model_context: Optional[Dict[str, Dict[str, Any]]] = None,
         completed_turn_counts: Optional[Dict[str, int]] = None,
     ) -> Panel:
-        """Create model usage panel.
+        """Create agent/model usage rows with cumulative per-agent metrics.
 
-        ``completed_turn_counts`` maps agent names to validated completed-turn
-        counts; ``None`` means the metric is unavailable, while an empty mapping
-        is a known zero. This argument is display-only and does not affect usage
-        totals.
+        ``completed_turn_counts`` maps agents to database-validated completed
+        stored prompt counts, excluding known synthetic prompts, not interactions.
+        ``None`` means the metric is unavailable; empty mappings and missing
+        agent keys mean zero. This display-only argument does not affect usage.
+
+        Cache hits aggregate interactions by agent across all models, independent
+        of pricing: cache_read / (input + cache_read + cache_write), excluding
+        output, displayed to one decimal percent or N/A for no prompt usage.
+        Rendering is read-only and adds no I/O, error paths or synchronization
+        requirements.
         """
-        model_breakdown = session.get_model_breakdown(pricing_data)
+        model_breakdown = session.get_agent_model_breakdown(pricing_data)
+        agent_cache_hits = self._agent_cache_hits([session])
         per_model_output_rates = per_model_output_rates or {}
         per_model_context = per_model_context or {}
 
         if not model_breakdown:
             return Panel(
-                f"{self._format_completed_turn_summary(completed_turn_counts)}\n"
                 "[metric.label]No model data available[/metric.label]",
                 title=Text("Models", style="dashboard.title"),
                 border_style="dashboard.border",
@@ -335,19 +395,32 @@ class DashboardUI:
 
         model_lines = []
         for model, stats in model_breakdown.items():
-            model_name = model[:35] + "..." if len(model) > 38 else model
+            agent_name, raw_model = self._split_agent_model_key(model)
+            model_name = escape(self._format_agent_model_title(
+                agent_name, raw_model, max_length=38
+            ))
+            bare_model = raw_model.split("/", 1)[-1]
 
             # Get context usage for this model
-            context_info = per_model_context.get(model, {})
+            context_info = (
+                per_model_context.get(model)
+                or per_model_context.get(raw_model)
+                or per_model_context.get(bare_model, {})
+            )
             context_pct = context_info.get("usage_percentage", 0.0)
             context_bar = self.create_compact_progress_bar(context_pct, 8)
 
             # Get output rate for this model
-            output_rate = per_model_output_rates.get(model, 0.0)
+            output_rate = per_model_output_rates.get(
+                model, per_model_output_rates.get(
+                    raw_model, per_model_output_rates.get(bare_model, 0.0)
+                )
+            )
             rate_str = f" - {output_rate:.1f} tok/s" if output_rate > 0 else ""
 
             model_lines.append(
                 f"[metric.label]{model_name}[/metric.label]\n"
+                f"  └─ {self._format_agent_metrics(agent_name, completed_turn_counts, agent_cache_hits)}\n"
                 f"  └─ Tokens: [metric.value]{stats['tokens'].total:,}[/metric.value] tok "
                 f"(In: [metric.value]{stats['tokens'].input:,}[/metric.value] | "
                 f"Out: [metric.value]{stats['tokens'].output:,}[/metric.value] | "
@@ -357,9 +430,7 @@ class DashboardUI:
                 f"context {context_bar}{rate_str}"
             )
 
-        model_text = "\n".join(
-            [self._format_completed_turn_summary(completed_turn_counts), *model_lines]
-        )
+        model_text = "\n".join(model_lines)
 
         return Panel(
             model_text,
@@ -737,8 +808,18 @@ class DashboardUI:
         context_size: Optional[int] = None,
         context_window: Optional[int] = None,
         output_rate: Optional[float] = None,
+        completed_turn_counts: Optional[Dict[str, int]] = None,
+        agent_cache_hits: Optional[Dict[str, str]] = None,
     ) -> Panel:
         """Create a panel showing tool usage for a single model.
+
+        Completed prompts are database-validated completed stored prompts with
+        known synthetic prompts excluded, never inferred from interactions.
+        None counts are N/A; empty mappings and missing agents are zero. Cache
+        hits are supplied cumulative agent rates across all models/sessions,
+        using cache_read / (input + cache_read + cache_write), not output or
+        tool tokens, with N/A for no prompt usage. Rendering is read-only with no new
+        I/O errors or synchronization requirements.
 
         Args:
             model_tool_usage: ModelToolUsage containing model name and tool stats
@@ -751,6 +832,8 @@ class DashboardUI:
             context_size: Optional recent context size for this model
             context_window: Optional context window for this model
             output_rate: Optional output rate (tok/sec) for this model
+            completed_turn_counts: Optional validated per-agent prompt counts
+            agent_cache_hits: Optional formatted cumulative per-agent cache rates
 
         Returns:
             Panel with tool usage information for this model
@@ -764,15 +847,9 @@ class DashboardUI:
 
         tool_stats = model_tool_usage.tool_stats[:max_tools]
 
-        if not tool_stats:
-            return Panel(
-                "[metric.label]No tool activity[/metric.label]",
-                title=Text(model_name, style="dashboard.title"),
-                title_align="left",
-                border_style="dashboard.border",
-            )
-
-        lines = []
+        lines = [self._format_agent_metrics(
+            model_tool_usage.agent_name, completed_turn_counts, agent_cache_hits or {}
+        )]
 
         if model_tokens is not None:
             details = model_token_details or {"total": model_tokens}
@@ -826,6 +903,9 @@ class DashboardUI:
                 "[dashboard.border]────────────────────────[/dashboard.border]"
             )
 
+        if not tool_stats:
+            lines.append("[metric.label]No tool activity[/metric.label]")
+
         for stat in tool_stats:
             tool_name = stat.tool_name
             if len(tool_name) > 12:
@@ -857,14 +937,24 @@ class DashboardUI:
         model_breakdown: Optional[Dict[str, Dict[str, Any]]] = None,
         per_model_output_rates: Optional[Dict[str, float]] = None,
         per_model_context: Optional[Dict[str, Dict[str, Any]]] = None,
+        completed_turn_counts: Optional[Dict[str, int]] = None,
+        agent_cache_hits: Optional[Dict[str, str]] = None,
     ) -> Layout:
         """Create a 2-column grid layout for per-model tool panels.
+
+        Per-agent metrics repeat across that agent's model panes. Counts are
+        database-validated completed stored prompts excluding known synthetic;
+        None means N/A and missing keys mean zero. Cache rates are cumulative
+        across all models/sessions, not tool usage. This read-only renderer adds
+        no I/O errors or synchronization requirements.
 
         Args:
             tool_stats_by_model: List of ModelToolUsage (one per model)
             model_breakdown: Optional dict mapping model names to token/cost data
             per_model_output_rates: Optional dict mapping model to output rate
             per_model_context: Optional dict mapping model to context info
+            completed_turn_counts: Optional validated per-agent prompt counts
+            agent_cache_hits: Optional formatted cumulative per-agent cache rates
 
         Returns:
             Layout containing the grid of model tool panels
@@ -1012,7 +1102,9 @@ class DashboardUI:
                 model_name
             )
             if not isinstance(context_info, dict):
-                context_info = per_model_context_by_bare.get(bare_key, {})
+                context_info = per_model_context_by_bare.get(bare_key) or per_model_context.get(
+                    model_name.split("/", 1)[-1], {}
+                )
                 if not context_info and model_usage.agent_name is None:
                     context_info = per_model_context_by_bare.get(
                         model_name.split("/", 1)[-1], {}
@@ -1027,7 +1119,9 @@ class DashboardUI:
             if output_rate is None:
                 output_rate = per_model_output_rates.get(model_name)
             if output_rate is None:
-                output_rate = per_model_output_rates_by_bare.get(bare_key, 0.0)
+                output_rate = per_model_output_rates_by_bare.get(
+                    bare_key, per_model_output_rates.get(model_name.split("/", 1)[-1], 0.0)
+                )
             if output_rate is None and model_usage.agent_name is None:
                 output_rate = per_model_output_rates_by_bare.get(
                     model_name.split("/", 1)[-1], 0.0
@@ -1075,6 +1169,8 @@ class DashboardUI:
                     context_size=context_size,
                     context_window=context_window,
                     output_rate=output_rate,
+                    completed_turn_counts=completed_turn_counts,
+                    agent_cache_hits=agent_cache_hits,
                 )
             )
 
@@ -1101,6 +1197,8 @@ class DashboardUI:
                     context_size=context_size,
                     context_window=context_window,
                     output_rate=output_rate,
+                    completed_turn_counts=completed_turn_counts,
+                    agent_cache_hits=agent_cache_hits,
                 )
             )
 
@@ -1147,8 +1245,13 @@ class DashboardUI:
         """Create the complete dashboard layout.
 
         ``completed_turn_counts`` is an optional per-agent count mapping passed
-        through to the model area; ``None`` is displayed as unavailable and an
-        empty mapping as no completed turns. The layout does not derive counts.
+        through to each agent/model pane; ``None`` is N/A and missing keys are
+        zero. Counts are database-validated completed stored prompts excluding
+        known synthetic prompts; the layout never derives counts from interactions.
+
+        Cumulative cache hits are displayed for the session or entire workflow;
+        per-agent totals remain visible when tools replace model panels. The
+        layout is read-only and adds no I/O or synchronization requirements.
         """
         layout = Layout()
 
@@ -1230,7 +1333,7 @@ class DashboardUI:
                         model_breakdown[model]["cost"] += stats["cost"]
                 model_breakdown = dict(model_breakdown)
             else:
-                model_breakdown = session.get_model_breakdown(pricing_data)
+                model_breakdown = session.get_agent_model_breakdown(pricing_data)
 
         # Initialize variables
         tool_grid_panel: Optional[Layout] = None
@@ -1244,6 +1347,10 @@ class DashboardUI:
                 model_breakdown=model_breakdown,
                 per_model_output_rates=per_model_output_rates,
                 per_model_context=per_model_context,
+                completed_turn_counts=completed_turn_counts,
+                agent_cache_hits=self._agent_cache_hits(
+                    workflow.all_sessions if workflow and workflow.has_sub_agents else [session]
+                ),
             )
             model_ratio = 2
             tool_ratio = 3
@@ -1286,7 +1393,6 @@ class DashboardUI:
         if use_grid:
             assert tool_grid_panel is not None
             layout["models_tools"].split_column(
-                Layout(Text.from_markup(self._format_completed_turn_summary(completed_turn_counts)), size=2),
                 tool_grid_panel,
             )
         else:
@@ -1344,7 +1450,11 @@ class DashboardUI:
     def create_workflow_token_panel(
         self, workflow: SessionWorkflow, recent_file: Optional[Any] = None
     ) -> Panel:
-        """Create token consumption panel for workflow."""
+        """Render workflow token counts and aggregate prompt-cache hit rate.
+
+        The rate uses totals across sessions, never averages or recent usage.
+        Rendering is read-only with no I/O or additional error paths.
+        """
         workflow_tokens = workflow.total_tokens
 
         # Create compact horizontal layout showing workflow totals
@@ -1360,7 +1470,8 @@ class DashboardUI:
                 f"[metric.label]Cache W:[/metric.label] [metric.value]{workflow_tokens.cache_write:,}[/metric.value]\n"
                 f"[metric.label]Output:[/metric.label] [metric.value]{workflow_tokens.output:,}[/metric.value]   "
                 f"[metric.label]Cache R:[/metric.label] [metric.value]{workflow_tokens.cache_read:,}[/metric.value]\n"
-                f"[metric.label]Total:[/metric.label] [metric.tokens]{workflow_tokens.total:,}[/metric.tokens]"
+                f"[metric.label]Total:[/metric.label] [metric.tokens]{workflow_tokens.total:,}[/metric.tokens]    "
+                f"[metric.label]Cache Hit:[/metric.label] [metric.value]{self._format_cache_hit(workflow_tokens)}[/metric.value]"
             )
         else:
             token_text = (
@@ -1369,7 +1480,8 @@ class DashboardUI:
                 f"[metric.label]Cache W:[/metric.label] [metric.value]{workflow_tokens.cache_write:,}[/metric.value]\n"
                 f"[metric.label]Output:[/metric.label] [metric.value]{workflow_tokens.output:,}[/metric.value]   "
                 f"[metric.label]Cache R:[/metric.label] [metric.value]{workflow_tokens.cache_read:,}[/metric.value]\n"
-                f"[metric.label]Total:[/metric.label] [metric.tokens]{workflow_tokens.total:,}[/metric.tokens]"
+                f"[metric.label]Total:[/metric.label] [metric.tokens]{workflow_tokens.total:,}[/metric.tokens]    "
+                f"[metric.label]Cache Hit:[/metric.label] [metric.value]{self._format_cache_hit(workflow_tokens)}[/metric.value]"
             )
 
         return Panel(
@@ -1423,10 +1535,19 @@ class DashboardUI:
     ) -> Panel:
         """Create model usage panel for workflow.
 
+        Counts are database-validated completed stored prompts excluding known
+        synthetic prompts, not interaction counts. Each agent/model row repeats
+        the agent's aggregate metrics; missing count keys are zero.
+
         ``completed_turn_counts`` maps agents to externally validated counts;
         ``None`` denotes unavailable data and an empty mapping denotes a known
         zero. Counts are displayed alongside workflow model usage, not inferred
         from its session totals.
+
+        Cache hits aggregate interaction agents across all models and sessions,
+        independent of pricing: cache_read / (input + cache_read + cache_write),
+        excluding output, to one decimal percent or N/A for no prompt usage.
+        Rendering is read-only and adds no I/O errors or synchronization requirements.
         """
         from collections import defaultdict
 
@@ -1449,11 +1570,10 @@ class DashboardUI:
                 model_data[model]["files"] += stats.get("files", 0)
                 model_data[model]["cost"] += stats["cost"]
 
-        turn_summary = self._format_completed_turn_summary(completed_turn_counts)
+        agent_cache_hits = self._agent_cache_hits(workflow.all_sessions)
 
         if not model_data:
             model_text = (
-                f"{turn_summary}\n"
                 "[metric.label]No model data available[/metric.label]"
             )
             return Panel(
@@ -1473,12 +1593,16 @@ class DashboardUI:
                 include_agent=agent_name is not None,
                 max_length=38,
             )
+            model_name = escape(model_name)
             bare_model = self._bare_lookup_key(model)
             token_usage = stats["tokens"]
 
             # Get context usage for this model
-            context_info = per_model_context.get(model) or per_model_context.get(
-                bare_model, {}
+            context_info = (
+                per_model_context.get(model)
+                or per_model_context.get(bare_model)
+                or per_model_context.get(raw_model)
+                or per_model_context.get(raw_model.split("/", 1)[-1], {})
             )
             context_pct = context_info.get("usage_percentage", 0.0)
             context_bar = self.create_compact_progress_bar(context_pct, 8)
@@ -1494,12 +1618,17 @@ class DashboardUI:
 
             # Get output rate for this model
             output_rate = per_model_output_rates.get(
-                model, per_model_output_rates.get(bare_model, 0.0)
+                model, per_model_output_rates.get(
+                    bare_model, per_model_output_rates.get(
+                        raw_model, per_model_output_rates.get(raw_model.split("/", 1)[-1], 0.0)
+                    )
+                )
             )
             rate_str = f" - {output_rate:.1f} tok/s" if output_rate > 0 else ""
 
             model_lines.append(
                 f"[metric.label]{model_name}[/metric.label]\n"
+                f"  └─ {self._format_agent_metrics(agent_name, completed_turn_counts, agent_cache_hits)}\n"
                 f"  └─ Tokens: [metric.value]{token_usage.total:,}[/metric.value] tok "
                 f"([metric.label]In:[/metric.label] [metric.value]{token_usage.input:,}[/metric.value] | "
                 f"[metric.label]Out:[/metric.label] [metric.value]{token_usage.output:,}[/metric.value] | "
@@ -1510,7 +1639,7 @@ class DashboardUI:
                 f"{context_str}{rate_str}"
             )
 
-        model_text = "\n".join([turn_summary, *model_lines])
+        model_text = "\n".join(model_lines)
 
         return Panel(
             model_text,
